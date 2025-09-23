@@ -23,6 +23,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "portal-solutions-blitz-ppc64"
+version = "0.1.0"
+dependencies = [
+ "portal-solutions-blitz-common",
+]
+
+[[package]]
 name = "portal-solutions-blitz-riscv64"
 version = "0.1.0"
 dependencies = [
