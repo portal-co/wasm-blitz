@@ -1,0 +1,72 @@
+#![no_std]
+
+use core::{
+    error::Error,
+    fmt::{Formatter, Write},
+};
+extern crate alloc;
+static reg_names: &'static [&'static str; 16] = &[
+    "rax", "rbx", "rcx", "rsp", "rbp", "rsi", "rdi", "rdx", "r8", "r9", "r10", "r11", "r12", "r13",
+    "r14", "r15",
+];
+
+const RSP: u8 = 3;
+pub trait Writer {
+    type Error: Error;
+    fn set_label(&mut self, s: &str) -> Result<(), Self::Error>;
+    fn xchg(&mut self, dest: u8, src: u8, mem: Option<usize>) -> Result<(), Self::Error>;
+    fn push(&mut self, op: u8) -> Result<(), Self::Error>;
+    fn pop(&mut self, op: u8) -> Result<(), Self::Error>;
+    fn lea(
+        &mut self,
+        dest: u8,
+        src: u8,
+        offset: isize,
+        off_reg: Option<(u8, usize)>,
+    ) -> Result<(), Self::Error>;
+    fn lea_label(&mut self, dest: u8, label: &str) -> Result<(), Self::Error>;
+}
+macro_rules! writers {
+    ($($ty:ty),*) => {
+        const _: () = {
+            $(impl Writer for $ty {
+                type Error = core::fmt::Error;
+                fn set_label(&mut self, s: &str) -> Result<(), Self::Error> {
+                    write!(self, "{s}:\n")
+                }
+                fn xchg(&mut self, dest: u8, src: u8, mem: Option<usize>) -> Result<(),Self::Error>{
+                    let dest = &reg_names[(dest & 15) as usize];
+                    let src = &reg_names[(src & 15) as usize];
+                    write!(self,"xchg {dest}, ")?;
+                    match mem{
+                        None => write!(self,"{src}\n"),
+                        Some(i) => write!(self,"qword ptr [{src}+{i}]\n")
+                    }
+                }
+                fn push(&mut self, op: u8) -> Result<(), Self::Error>{
+                    let op = &reg_names[(op & 15) as usize];
+                    write!(self,"push {op}\n")
+                }
+                fn pop(&mut self, op: u8) -> Result<(), Self::Error>{
+                    let op = &reg_names[(op & 15) as usize];
+                    write!(self,"pop {op}\n")
+                }
+                 fn lea(&mut self, dest: u8, src: u8, offset: isize, off_reg: Option<(u8,usize)>) -> Result<(),Self::Error>{
+                    let dest = &reg_names[(dest & 15) as usize];
+                    let src = &reg_names[(src & 15) as usize];
+                    write!(self,"lea {dest}, [{src}")?;
+                    if let Some((r,m)) = off_reg{
+                        let r = &reg_names[(r & 15) as usize];
+                        write!(self,"+{r}*{m}")?;
+                    }
+                    write!(self,"+{offset}]\n")
+                 }
+                 fn lea_label(&mut self, dest: u8, label: &str) -> Result<(),Self::Error>{
+                    let dest = &reg_names[(dest & 15) as usize];
+                    write!(self,"lea {dest}, {label}\n")
+                 }
+            })*
+        };
+    };
+}
+writers!(Formatter<'_>, (&'_ mut (dyn Write + '_)));

@@ -1,5 +1,5 @@
 [workspace]
-members = []
+members = ["crates/blitz-aarch64","crates/blitz-common", "crates/blitz-riscv64", "crates/blitz-x86-64"]
 resolver = "3"
 
 [workspace.package]
