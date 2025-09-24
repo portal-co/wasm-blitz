@@ -25,6 +25,7 @@ pub trait Writer {
     fn jmp(&mut self, op: u8) -> Result<(), Self::Error>;
     fn cmp0(&mut self, op: u8) -> Result<(), Self::Error>;
     fn jz(&mut self, op: u8) -> Result<(), Self::Error>;
+    fn u32(&mut self, op: u8) -> Result<(), Self::Error>;
     fn lea(
         &mut self,
         dest: u8,
@@ -91,6 +92,15 @@ pub trait WriterExt: Writer {
                 }
                 Operator::I64Const { value } => {
                     self.mov64(0, *value as u64)?;
+                    self.push(0)?;
+                }
+                Operator::I32Add | Operator::I64Add => {
+                    self.pop(0)?;
+                    self.pop(1)?;
+                    self.lea(0, 0, 0, Some((1, 0)))?;
+                    if let Operator::I32Add = op{
+                        self.u32(0)?;
+                    }
                     self.push(0)?;
                 }
                 Operator::LocalGet { local_index } => {
@@ -278,6 +288,10 @@ macro_rules! writers {
                     let op = &reg_names[(op & 15) as usize];
                     write!(self,"jz {op}\n")
                 }
+                fn u32(&mut self, op: u8) -> Result<(), Self::Error>{
+                    let op = &reg_names[(op & 15) as usize];
+                    write!(self,"and {op}, 0xffffffff\n")
+                }
                 fn lea(&mut self, dest: u8, src: u8, offset: isize, off_reg: Option<(u8,usize)>) -> Result<(),Self::Error>{
                     let dest = &reg_names[(dest & 15) as usize];
                     let src = &reg_names[(src & 15) as usize];
@@ -374,6 +388,9 @@ macro_rules! writer_dispatch {
                 }
                 fn mov(&mut self, dest: u8, src: u8, mem: Option<isize>) -> Result<(), Self::Error>{
                     Writer::mov(&mut **self,dest,src,mem)
+                }
+                fn u32(&mut self, op: u8) -> Result<(), Self::Error>{
+                    Writer::u32(&mut **self,op)
                 }
             })*
         };
