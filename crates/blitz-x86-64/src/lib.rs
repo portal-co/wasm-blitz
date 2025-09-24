@@ -24,8 +24,10 @@ pub trait Writer {
     fn call(&mut self, op: u8) -> Result<(), Self::Error>;
     fn jmp(&mut self, op: u8) -> Result<(), Self::Error>;
     fn cmp0(&mut self, op: u8) -> Result<(), Self::Error>;
+    fn cmovz64(&mut self, op: u8, val: u64) -> Result<(), Self::Error>;
     fn jz(&mut self, op: u8) -> Result<(), Self::Error>;
     fn u32(&mut self, op: u8) -> Result<(), Self::Error>;
+    fn not(&mut self, op: u8) -> Result<(), Self::Error>;
     fn lea(
         &mut self,
         dest: u8,
@@ -37,6 +39,12 @@ pub trait Writer {
     fn get_ip(&mut self) -> Result<(), Self::Error>;
     fn ret(&mut self) -> Result<(), Self::Error>;
     fn mov64(&mut self, r: u8, val: u64) -> Result<(), Self::Error>;
+    fn mul(&mut self, a: u8, b: u8) -> Result<(), Self::Error>;
+    fn div(&mut self, a: u8, b: u8) -> Result<(), Self::Error>;
+    fn idiv(&mut self, a: u8, b: u8) -> Result<(), Self::Error>;
+    fn and(&mut self, a: u8, b: u8) -> Result<(), Self::Error>;
+    fn or(&mut self, a: u8, b: u8) -> Result<(), Self::Error>;
+    fn eor(&mut self, a: u8, b: u8) -> Result<(), Self::Error>;
 }
 #[derive(Default)]
 pub struct State {
@@ -98,10 +106,119 @@ pub trait WriterExt: Writer {
                     self.pop(0)?;
                     self.pop(1)?;
                     self.lea(0, 0, 0, Some((1, 0)))?;
-                    if let Operator::I32Add = op{
+                    if let Operator::I32Add = op {
                         self.u32(0)?;
                     }
                     self.push(0)?;
+                }
+                Operator::I32Sub | Operator::I64Sub => {
+                    self.pop(0)?;
+                    self.pop(1)?;
+                    self.not(1)?;
+                    self.lea(0, 0, 1, Some((1, 0)))?;
+                    if let Operator::I32Sub = op {
+                        self.u32(0)?;
+                    }
+                    self.push(0)?;
+                }
+                Operator::I32Mul | Operator::I64Mul => {
+                    self.pop(0)?;
+                    self.pop(1)?;
+                    self.mul(0, 1)?;
+                    if let Operator::I32Mul = op {
+                        self.u32(0)?;
+                    }
+                    self.push(0)?;
+                }
+                Operator::I32DivU | Operator::I64DivU => {
+                    self.pop(0)?;
+                    self.pop(1)?;
+                    self.div(0, 1)?;
+                    if let Operator::I32DivU = op {
+                        self.u32(0)?;
+                    }
+                    self.push(0)?;
+                }
+                Operator::I32DivS | Operator::I64DivS => {
+                    self.pop(0)?;
+                    self.pop(1)?;
+                    self.idiv(0, 1)?;
+                    if let Operator::I32DivS = op {
+                        self.u32(0)?;
+                    }
+                    self.push(0)?;
+                }
+                Operator::I32RemU | Operator::I64RemU => {
+                    self.pop(0)?;
+                    self.pop(1)?;
+                    self.div(0, 1)?;
+                    if let Operator::I32RemU = op {
+                        self.u32(7)?;
+                    }
+                    self.push(7)?;
+                }
+                Operator::I32RemS | Operator::I64RemS => {
+                    self.pop(0)?;
+                    self.pop(1)?;
+                    self.idiv(0, 1)?;
+                    if let Operator::I32RemS = op {
+                        self.u32(7)?;
+                    }
+                    self.push(7)?;
+                }
+                Operator::I32And | Operator::I64And => {
+                    self.pop(0)?;
+                    self.pop(1)?;
+                    self.and(0, 1)?;
+                    if let Operator::I32And = op {
+                        self.u32(0)?;
+                    }
+                    self.push(0)?;
+                }
+                Operator::I32Or | Operator::I64Or => {
+                    self.pop(0)?;
+                    self.pop(1)?;
+                    self.or(0, 1)?;
+                    if let Operator::I32Or = op {
+                        self.u32(0)?;
+                    }
+                    self.push(0)?;
+                }
+                Operator::I32Xor | Operator::I64Xor => {
+                    self.pop(0)?;
+                    self.pop(1)?;
+                    self.eor(0, 1)?;
+                    if let Operator::I32Xor = op {
+                        self.u32(0)?;
+                    }
+                    self.push(0)?;
+                }
+                Operator::I32Eqz | Operator::I64Eqz => {
+                    self.pop(0)?;
+                    self.mov64(1, 0)?;
+                    self.cmp0(0)?;
+                    self.cmovz64(1, 1)?;
+                    self.push(1)?;
+                }
+                Operator::I32Eq | Operator::I64Eq => {
+                    self.pop(0)?;
+                    self.pop(1)?;
+                    self.not(1)?;
+                    self.lea(0, 0, 1, Some((1, 0)))?;
+                    self.mov64(1, 0)?;
+                    self.cmp0(0)?;
+                    self.cmovz64(1, 1)?;
+                    self.push(1)?;
+                }
+                Operator::I32Ne | Operator::I64Ne => {
+                    self.pop(0)?;
+                    self.pop(1)?;
+                    self.not(1)?;
+                    self.lea(0, 0, 1, Some((1, 0)))?;
+                    self.mov64(1, 1)?;
+                    self.cmp0(0)?;
+                    self.cmovz64(1, 0)?;
+                    self.push(1)?;
                 }
                 Operator::LocalGet { local_index } => {
                     self.xchg(RSP, 15, Some(0))?;
@@ -284,6 +401,10 @@ macro_rules! writers {
                     let op = &reg_names[(op & 15) as usize];
                     write!(self,"cmp {op}, 0\n")
                 }
+                fn cmovz64(&mut self, op: u8,val:u64) -> Result<(), Self::Error>{
+                     let op = &reg_names[(op & 15) as usize];
+                    write!(self,"cmovz {op}, {val}\n")
+                }
                 fn jz(&mut self, op: u8) -> Result<(), Self::Error>{
                     let op = &reg_names[(op & 15) as usize];
                     write!(self,"jz {op}\n")
@@ -326,6 +447,40 @@ macro_rules! writers {
                     let r = &reg_names[(r & 15) as usize];
                     write!(self,"mov {r}, {val}\n")
                 }
+                fn not(&mut self, op: u8) -> Result<(), Self::Error>{
+                    let op = &reg_names[(op & 15) as usize];
+                    write!(self,"not {op}\n")
+                }
+                fn mul(&mut self, a: u8, b: u8) -> Result<(), Self::Error>{
+                    let a = &reg_names[(a & 15) as usize];
+                    let b = &reg_names[(b & 15) as usize];
+                    write!(self,"mul {a},{b}\n")
+                }
+                fn div(&mut self, a: u8, b: u8) -> Result<(), Self::Error>{
+                    let a = &reg_names[(a & 15) as usize];
+                    let b = &reg_names[(b & 15) as usize];
+                    write!(self,"div {a},{b}\n")
+                }
+                fn idiv(&mut self, a: u8, b: u8) -> Result<(), Self::Error>{
+                    let a = &reg_names[(a & 15) as usize];
+                    let b = &reg_names[(b & 15) as usize];
+                    write!(self,"idiv {a},{b}\n")
+                }
+                fn and(&mut self, a: u8, b: u8) -> Result<(), Self::Error>{
+                    let a = &reg_names[(a & 15) as usize];
+                    let b = &reg_names[(b & 15) as usize];
+                    write!(self,"and {a},{b}\n")
+                }
+                fn or(&mut self, a: u8, b: u8) -> Result<(), Self::Error>{
+                    let a = &reg_names[(a & 15) as usize];
+                    let b = &reg_names[(b & 15) as usize];
+                    write!(self,"or {a},{b}\n")
+                }
+                fn eor(&mut self, a: u8, b: u8) -> Result<(), Self::Error>{
+                    let a = &reg_names[(a & 15) as usize];
+                    let b = &reg_names[(b & 15) as usize];
+                    write!(self,"eor {a},{b}\n")
+                }
             })*
         };
     };
@@ -360,6 +515,9 @@ macro_rules! writer_dispatch {
                 fn cmp0(&mut self, op: u8) -> Result<(),Self::Error>{
                     Writer::cmp0(&mut **self,op)
                 }
+                fn cmovz64(&mut self, op: u8,val:u64) -> Result<(), Self::Error>{
+                    Writer::cmovz64(&mut **self,op,val)
+                }
                 fn jz(&mut self, op: u8) -> Result<(), Self::Error>{
                     Writer::jz(&mut **self,op)
                 }
@@ -391,6 +549,27 @@ macro_rules! writer_dispatch {
                 }
                 fn u32(&mut self, op: u8) -> Result<(), Self::Error>{
                     Writer::u32(&mut **self,op)
+                }
+                fn not(&mut self, op: u8) -> Result<(), Self::Error>{
+                    Writer::not(&mut **self,op)
+                }
+                fn mul(&mut self, a: u8, b: u8) -> Result<(), Self::Error>{
+                    Writer::mul(&mut **self,a,b)
+                }
+                fn div(&mut self, a: u8, b: u8) -> Result<(), Self::Error>{
+                    Writer::div(&mut **self,a,b)
+                }
+                fn idiv(&mut self, a: u8, b: u8) -> Result<(), Self::Error>{
+                    Writer::idiv(&mut **self,a,b)
+                }
+                fn and(&mut self, a: u8, b: u8) -> Result<(), Self::Error>{
+                    Writer::and(&mut **self,a,b)
+                }
+                fn or(&mut self, a: u8, b: u8) -> Result<(), Self::Error>{
+                    Writer::or(&mut **self,a,b)
+                }
+                fn eor(&mut self, a: u8, b: u8) -> Result<(), Self::Error>{
+                    Writer::eor(&mut **self,a,b)
                 }
             })*
         };
