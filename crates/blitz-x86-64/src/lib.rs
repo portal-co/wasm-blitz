@@ -60,6 +60,17 @@ enum Endable {
     If { idx: usize },
 }
 pub trait WriterExt: Writer {
+    fn br(&mut self, state: &mut State, relative_depth: u32) -> Result<(), Self::Error> {
+        self.xchg(RSP, 15, Some(8))?;
+        for _ in 0..=relative_depth {
+            self.pop(0)?;
+            self.pop(1)?;
+        }
+        self.xchg(RSP, 15, Some(8))?;
+        self.mov(RSP, 1, None)?;
+        self.jmp(0)?;
+        Ok(())
+    }
     fn handle_op(&mut self, state: &mut State, op: &MachOperator<'_>) -> Result<(), Self::Error> {
         //Stack Frame: r15[0] => local variable frame
         match op {
@@ -263,31 +274,30 @@ pub trait WriterExt: Writer {
                     self.ret()?;
                 }
                 Operator::Br { relative_depth } => {
-                    self.xchg(RSP, 15, Some(8))?;
-                    for _ in 0..=(*relative_depth) {
-                        self.pop(0)?;
-                        self.pop(1)?;
-                    }
-                    self.xchg(RSP, 15, Some(8))?;
-                    self.mov(RSP, 1, None)?;
-                    self.jmp(0)?;
+                    self.br(state, *relative_depth)?;
                 }
                 Operator::BrIf { relative_depth } => {
                     let i = state.label_index;
                     state.label_index += 1;
                     self.lea_label(1, &format_args!("_end_{i}"))?;
-                    self.pop(0)?;
-                    self.cmp0(0)?;
-                    self.jz(1)?;
-                    self.xchg(RSP, 15, Some(8))?;
-                    for _ in 0..=(*relative_depth) {
-                        self.pop(0)?;
-                        self.pop(1)?;
-                    }
-                    self.xchg(RSP, 15, Some(8))?;
-                    self.mov(RSP, 1, None)?;
-                    self.jmp(0)?;
+                    self.br(state, *relative_depth)?;
                     self.set_label(&format_args!("_end_{i}"))?;
+                }
+                Operator::BrTable { targets } => {
+                    for relative_depth in targets.targets().flatten() {
+                        let i = state.label_index;
+                        state.label_index += 1;
+                        self.lea_label(1, &format_args!("_end_{i}"))?;
+                        self.pop(0)?;
+                        self.cmp0(0)?;
+                        self.jz(1)?;
+                        self.br(state, relative_depth)?;
+                        self.set_label(&format_args!("_end_{i}"))?;
+                        self.lea(0, 0, -1, None)?;
+                        self.push(0)?;
+                    }
+                    self.pop(0)?;
+                    self.br(state, targets.default())?;
                 }
                 Operator::Block { blockty } => {
                     state.if_stack.push(Endable::Br);
