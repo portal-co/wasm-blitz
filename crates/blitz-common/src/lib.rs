@@ -1,25 +1,35 @@
 #![no_std]
 extern crate alloc;
 pub use wasmparser;
-use wasmparser::{BinaryReaderError, FunctionBody, Operator, ValType};
-pub fn mach_operators<'a>(code: &[FunctionBody<'a>]) -> impl Iterator<Item = MachOperator<'a>> {
+use wasmparser::{BinaryReaderError, FuncType, FunctionBody, Operator, ValType};
+pub fn mach_operators<'a>(
+    code: &[FunctionBody<'a>],
+    sigs_per: &[u32],
+    sigs: &[FuncType],
+) -> impl Iterator<Item = MachOperator<'a>> {
     return code
         .iter()
+        .zip(sigs_per.iter().cloned().map(|a| &sigs[a as usize]))
         .enumerate()
-        .flat_map(|(i, a)| {
+        .flat_map(|(i, (a, sig))| {
             let v = a.get_operators_reader()?;
             let l = a.get_locals_reader()?;
             Ok::<_, BinaryReaderError>(
-                [MachOperator::StartFn(i as u32)]
-                    .into_iter()
-                    .map(Ok)
-                    .chain(
-                        l.into_iter()
-                            .map(|a| a.map(|(a, b)| MachOperator::Local(a, b))),
-                    )
-                    .chain([MachOperator::StartBody].map(Ok))
-                    .chain(v.into_iter().map(|v| v.map(MachOperator::Operator)))
-                    .chain([MachOperator::EndBody].map(Ok)),
+                [MachOperator::StartFn {
+                    id: i as u32,
+                    num_params: sig.params().len(),
+                    num_returns: sig.results().len(),
+                    control_depth: control_depth(a)
+                }]
+                .into_iter()
+                .map(Ok)
+                .chain(
+                    l.into_iter()
+                        .map(|a| a.map(|(a, b)| MachOperator::Local(a, b))),
+                )
+                .chain([MachOperator::StartBody].map(Ok))
+                .chain(v.into_iter().map(|v| v.map(MachOperator::Operator)))
+                .chain([MachOperator::EndBody].map(Ok)),
             )
         })
         .flatten()
@@ -30,7 +40,12 @@ pub fn mach_operators<'a>(code: &[FunctionBody<'a>]) -> impl Iterator<Item = Mac
 pub enum MachOperator<'a> {
     Operator(Operator<'a>),
     Local(u32, ValType),
-    StartFn(u32),
+    StartFn {
+        id: u32,
+        num_params: usize,
+        num_returns: usize,
+        control_depth: usize,
+    },
     StartBody,
     EndBody,
 }

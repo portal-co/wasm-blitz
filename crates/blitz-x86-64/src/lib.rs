@@ -2,8 +2,11 @@
 
 use core::{
     error::Error,
-    fmt::{Formatter, Write},
+    fmt::{Display, Formatter, Write},
 };
+
+use alloc::vec::Vec;
+use portal_solutions_blitz_common::{MachOperator, wasmparser::Operator};
 extern crate alloc;
 static reg_names: &'static [&'static str; 16] = &[
     "rax", "rbx", "rcx", "rsp", "rbp", "rsi", "rdi", "rdx", "r8", "r9", "r10", "r11", "r12", "r13",
@@ -13,11 +16,15 @@ static reg_names: &'static [&'static str; 16] = &[
 const RSP: u8 = 3;
 pub trait Writer {
     type Error: Error;
-    fn set_label(&mut self, s: &str) -> Result<(), Self::Error>;
-    fn xchg(&mut self, dest: u8, src: u8, mem: Option<usize>) -> Result<(), Self::Error>;
+    fn set_label(&mut self, s: &(dyn Display + '_)) -> Result<(), Self::Error>;
+    fn xchg(&mut self, dest: u8, src: u8, mem: Option<isize>) -> Result<(), Self::Error>;
+    fn mov(&mut self, dest: u8, src: u8, mem: Option<isize>) -> Result<(), Self::Error>;
     fn push(&mut self, op: u8) -> Result<(), Self::Error>;
     fn pop(&mut self, op: u8) -> Result<(), Self::Error>;
     fn call(&mut self, op: u8) -> Result<(), Self::Error>;
+    fn jmp(&mut self, op: u8) -> Result<(), Self::Error>;
+    fn cmp0(&mut self, op: u8) -> Result<(), Self::Error>;
+    fn jz(&mut self, op: u8) -> Result<(), Self::Error>;
     fn lea(
         &mut self,
         dest: u8,
@@ -25,21 +32,220 @@ pub trait Writer {
         offset: isize,
         off_reg: Option<(u8, usize)>,
     ) -> Result<(), Self::Error>;
-    fn lea_label(&mut self, dest: u8, label: &str) -> Result<(), Self::Error>;
+    fn lea_label(&mut self, dest: u8, label: &(dyn Display + '_)) -> Result<(), Self::Error>;
     fn get_ip(&mut self) -> Result<(), Self::Error>;
     fn ret(&mut self) -> Result<(), Self::Error>;
+    fn mov64(&mut self, r: u8, val: u64) -> Result<(), Self::Error>;
 }
-pub trait WriterExt: Writer {}
+#[derive(Default)]
+pub struct State {
+    local_count: usize,
+    num_returns: usize,
+    control_depth: usize,
+    label_index: usize,
+    if_stack: Vec<Endable>,
+}
+// #[derive(Clone)]
+enum Endable {
+    Br,
+    If { idx: usize },
+}
+pub trait WriterExt: Writer {
+    fn handle_op(&mut self, state: &mut State, op: &MachOperator<'_>) -> Result<(), Self::Error> {
+        //Stack Frame: r15[0] => local variable frame
+        match op {
+            MachOperator::StartFn {
+                id: f,
+                num_params: params,
+                num_returns,
+                control_depth,
+            } => {
+                state.local_count = *params;
+                state.num_returns = *num_returns;
+                state.control_depth = *control_depth;
+                self.pop(1)?;
+                self.lea(0, 3, -(*params as isize), None)?;
+                self.xchg(0, 15, Some(0))?;
+                self.set_label(&format_args!("f{f}"))?;
+            }
+            MachOperator::Local(a, b) => {
+                state.local_count += 1;
+                self.push(0)?;
+            }
+            MachOperator::StartBody => {
+                self.push(1)?;
+                self.push(0)?;
+                self.lea(0, RSP, -(state.control_depth as isize * 16), None)?;
+                self.xchg(0, 15, Some(8))?;
+                self.push(0)?;
+                for _ in 0..state.control_depth {
+                    for _ in 0..2 {
+                        self.push(0)?;
+                    }
+                }
+            }
+            MachOperator::Operator(op) => match op {
+                Operator::I32Const { value } => {
+                    self.mov64(0, *value as u32 as u64)?;
+                    self.push(0)?;
+                }
+                Operator::I64Const { value } => {
+                    self.mov64(0, *value as u64)?;
+                    self.push(0)?;
+                }
+                Operator::LocalGet { local_index } => {
+                    self.xchg(RSP, 15, Some(0))?;
+                    self.lea(RSP, RSP, -((*local_index as i32 as isize) * 8), None)?;
+                    self.pop(0)?;
+                    self.lea(RSP, RSP, ((*local_index as i32 as isize + 1) * 8), None)?;
+                    self.xchg(RSP, 15, Some(0))?;
+                    self.push(0)?;
+                }
+                Operator::LocalTee { local_index } => {
+                    self.pop(0)?;
+                    self.xchg(RSP, 15, Some(0))?;
+                    self.lea(RSP, RSP, -((*local_index as i32 as isize) * 8), None)?;
+                    self.push(0)?;
+                    self.lea(RSP, RSP, ((*local_index as i32 as isize + 1) * 8), None)?;
+                    self.xchg(RSP, 15, Some(0))?;
+                    self.push(0)?;
+                }
+                Operator::LocalSet { local_index } => {
+                    self.pop(0)?;
+                    self.xchg(RSP, 15, Some(0))?;
+                    self.lea(RSP, RSP, -((*local_index as i32 as isize) * 8), None)?;
+                    self.push(0)?;
+                    self.lea(RSP, RSP, ((*local_index as i32 as isize + 1) * 8), None)?;
+                    self.xchg(RSP, 15, Some(0))?;
+                }
+                Operator::Return => {
+                    self.mov(1, RSP, None)?;
+                    self.mov(0, 15, Some(0))?;
+                    self.lea(0, 0, (state.local_count + 3) as isize * 8, None)?;
+                    self.mov(RSP, 0, None)?;
+                    self.pop(0)?;
+                    self.xchg(0, 15, Some(8))?;
+                    self.pop(0)?;
+                    self.xchg(0, 15, Some(0))?;
+                    self.pop(0)?;
+                    for a in 0..state.num_returns {
+                        self.mov(2, 1, Some(-(a as isize * 8)))?;
+                        self.push(2)?;
+                    }
+                    self.push(0)?;
+                    self.ret()?;
+                }
+                Operator::Br { relative_depth } => {
+                    self.xchg(RSP, 15, Some(8))?;
+                    for _ in 0..=(*relative_depth) {
+                        self.pop(0)?;
+                        self.pop(1)?;
+                    }
+                    self.xchg(RSP, 15, Some(8))?;
+                    self.mov(RSP, 1, None)?;
+                    self.jmp(0)?;
+                }
+                Operator::BrIf { relative_depth } => {
+                    let i = state.label_index;
+                    state.label_index += 1;
+                    self.lea_label(1, &format_args!("_end_{i}"))?;
+                    self.pop(0)?;
+                    self.cmp0(0)?;
+                    self.jz(1)?;
+                    self.xchg(RSP, 15, Some(8))?;
+                    for _ in 0..=(*relative_depth) {
+                        self.pop(0)?;
+                        self.pop(1)?;
+                    }
+                    self.xchg(RSP, 15, Some(8))?;
+                    self.mov(RSP, 1, None)?;
+                    self.jmp(0)?;
+                    self.set_label(&format_args!("_end_{i}"))?;
+                }
+                Operator::Block { blockty } => {
+                    state.if_stack.push(Endable::Br);
+                    let i = state.label_index;
+                    state.label_index += 1;
+                    self.lea_label(0, &format_args!("_end_{i}"))?;
+                    self.mov(1, RSP, None)?;
+                    self.xchg(RSP, 15, Some(8))?;
+                    // for _ in 0..=(*relative_depth) {
+                    self.push(1)?;
+                    self.push(0)?;
+                    // }
+                    self.xchg(RSP, 15, Some(8))?;
+                    self.set_label(&format_args!("_end_{i}"))?;
+                }
+                Operator::If { blockty } => {
+                    let i = state.label_index;
+                    state.label_index += 3;
+                    state.if_stack.push(Endable::If { idx: i });
+                    self.pop(2)?;
+                    self.lea_label(0, &format_args!("_end_{i}"))?;
+                    self.lea_label(1, &format_args!("_end_{}", i + 1))?;
+                    self.cmp0(2)?;
+                    self.jz(1)?;
+                    self.jmp(0)?;
+                    self.set_label(&format_args!("_end_{i}"))?;
+                }
+                Operator::Else => {
+                    let Endable::If { idx: i } = state.if_stack.last().unwrap() else {
+                        todo!()
+                    };
+                    self.lea_label(0, &format_args!("_end_{}", i + 2))?;
+                    self.jmp(0)?;
+                    self.set_label(&format_args!("_end_{}", i + 1))?;
+                }
+                Operator::Loop { blockty } => {
+                    state.if_stack.push(Endable::Br);
+                    let i = state.label_index;
+                    state.label_index += 1;
+                    self.set_label(&format_args!("_end_{i}"))?;
+                    self.lea_label(0, &format_args!("_end_{i}"))?;
+                    self.mov(1, RSP, None)?;
+                    self.xchg(RSP, 15, Some(8))?;
+                    // for _ in 0..=(*relative_depth) {
+                    self.push(1)?;
+                    self.push(0)?;
+                    // }
+                    self.xchg(RSP, 15, Some(8))?;
+                }
+                Operator::End => {
+                    self.xchg(RSP, 15, Some(8))?;
+                    // for _ in 0..=(*relative_depth) {
+                    match state.if_stack.pop().unwrap() {
+                        Endable::Br => {
+                            self.pop(0)?;
+                            self.pop(1)?;
+                        }
+                        Endable::If { idx: i } => {
+                            self.set_label(&format_args!("_end_{}", i + 2))?;
+                        }
+                    }
+                    // }
+                    self.xchg(RSP, 15, Some(8))?;
+                }
+                Operator::Call { function_index } => {
+                    self.lea_label(0, &format_args!("f{function_index}"))?;
+                    self.call(0)?;
+                }
+                _ => todo!(),
+            },
+            _ => todo!(),
+        }
+        Ok(())
+    }
+}
 impl<T: Writer + ?Sized> WriterExt for T {}
 macro_rules! writers {
     ($($ty:ty),*) => {
         const _: () = {
             $(impl Writer for $ty {
                 type Error = core::fmt::Error;
-                fn set_label(&mut self, s: &str) -> Result<(), Self::Error> {
+                fn set_label(&mut self, s: &(dyn Display + '_)) -> Result<(), Self::Error> {
                     write!(self, "{s}:\n")
                 }
-                fn xchg(&mut self, dest: u8, src: u8, mem: Option<usize>) -> Result<(),Self::Error>{
+                fn xchg(&mut self, dest: u8, src: u8, mem: Option<isize>) -> Result<(),Self::Error>{
                     let dest = &reg_names[(dest & 15) as usize];
                     let src = &reg_names[(src & 15) as usize];
                     write!(self,"xchg {dest}, ")?;
@@ -60,7 +266,19 @@ macro_rules! writers {
                     let op = &reg_names[(op & 15) as usize];
                     write!(self,"call {op}\n")
                 }
-                 fn lea(&mut self, dest: u8, src: u8, offset: isize, off_reg: Option<(u8,usize)>) -> Result<(),Self::Error>{
+                 fn jmp(&mut self, op: u8) -> Result<(), Self::Error>{
+                    let op = &reg_names[(op & 15) as usize];
+                    write!(self,"jmp {op}\n")
+                }
+                fn cmp0(&mut self, op: u8) -> Result<(),Self::Error>{
+                    let op = &reg_names[(op & 15) as usize];
+                    write!(self,"cmp {op}, 0\n")
+                }
+                fn jz(&mut self, op: u8) -> Result<(), Self::Error>{
+                    let op = &reg_names[(op & 15) as usize];
+                    write!(self,"jz {op}\n")
+                }
+                fn lea(&mut self, dest: u8, src: u8, offset: isize, off_reg: Option<(u8,usize)>) -> Result<(),Self::Error>{
                     let dest = &reg_names[(dest & 15) as usize];
                     let src = &reg_names[(src & 15) as usize];
                     write!(self,"lea {dest}, [{src}")?;
@@ -69,18 +287,31 @@ macro_rules! writers {
                         write!(self,"+{r}*{m}")?;
                     }
                     write!(self,"+{offset}]\n")
-                 }
-                 fn lea_label(&mut self, dest: u8, label: &str) -> Result<(),Self::Error>{
+                }
+                fn mov(&mut self, dest: u8, src: u8, mem: Option<isize>) -> Result<(), Self::Error>{
+                     let dest = &reg_names[(dest & 15) as usize];
+                    let src = &reg_names[(src & 15) as usize];
+                    write!(self,"mov {dest}, ")?;
+                    match mem{
+                        None => write!(self,"{src}\n"),
+                        Some(i) => write!(self,"qword ptr [{src}+{i}]\n")
+                    }
+                }
+                fn lea_label(&mut self, dest: u8, label: &(dyn Display + '_)) -> Result<(),Self::Error>{
                     let dest = &reg_names[(dest & 15) as usize];
                     write!(self,"lea {dest}, {label}\n")
-                 }
-                  fn get_ip(&mut self) -> Result<(),Self::Error>{
-                    //   let dest = &reg_names[(dest & 15) as usize];
+                }
+                fn get_ip(&mut self) -> Result<(),Self::Error>{
+                //   let dest = &reg_names[(dest & 15) as usize];
                     write!(self,"call 1f\n1:\n")
-                 }
-                 fn ret(&mut self) -> Result<(), Self::Error>{
+                }
+                fn ret(&mut self) -> Result<(), Self::Error>{
                     write!(self,"ret\n")
-                 }
+                }
+                fn mov64(&mut self, r: u8, val: u64) -> Result<(),Self::Error>{
+                    let r = &reg_names[(r & 15) as usize];
+                    write!(self,"mov {r}, {val}\n")
+                }
             })*
         };
     };
@@ -91,11 +322,11 @@ macro_rules! writer_dispatch {
             $(impl<$($t)*> Writer for $ty{
                 type Error = $e;
 
-                fn set_label(&mut self, s: &str) -> Result<(), Self::Error> {
+                fn set_label(&mut self, s: &(dyn Display + '_)) -> Result<(), Self::Error> {
                     Writer::set_label(&mut **self, s)
                 }
 
-                fn xchg(&mut self, dest: u8, src: u8, mem: Option<usize>) -> Result<(), Self::Error> {
+                fn xchg(&mut self, dest: u8, src: u8, mem: Option<isize>) -> Result<(), Self::Error> {
                     Writer::xchg(&mut **self, dest, src, mem)
                 }
 
@@ -109,6 +340,15 @@ macro_rules! writer_dispatch {
                 fn call(&mut self, op: u8) -> Result<(), Self::Error>{
                     Writer::call(&mut **self,op)
                 }
+                fn jmp(&mut self, op: u8) -> Result<(), Self::Error>{
+                    Writer::jmp(&mut **self,op)
+                }
+                fn cmp0(&mut self, op: u8) -> Result<(),Self::Error>{
+                    Writer::cmp0(&mut **self,op)
+                }
+                fn jz(&mut self, op: u8) -> Result<(), Self::Error>{
+                    Writer::jz(&mut **self,op)
+                }
 
                 fn lea(
                     &mut self,
@@ -120,7 +360,7 @@ macro_rules! writer_dispatch {
                     Writer::lea(&mut **self, dest, src, offset, off_reg)
                 }
 
-                fn lea_label(&mut self, dest: u8, label: &str) -> Result<(), Self::Error> {
+                fn lea_label(&mut self, dest: u8, label: &(dyn Display + '_)) -> Result<(), Self::Error> {
                     Writer::lea_label(&mut **self, dest, label)
                 }
                 fn get_ip(&mut self) -> Result<(), Self::Error>{
@@ -128,6 +368,12 @@ macro_rules! writer_dispatch {
                 }
                 fn ret(&mut self) -> Result<(), Self::Error>{
                     Writer::ret(&mut **self)
+                }
+                fn mov64(&mut self, r: u8, val: u64) -> Result<(),Self::Error>{
+                    Writer::mov64(&mut **self,r,val)
+                }
+                fn mov(&mut self, dest: u8, src: u8, mem: Option<isize>) -> Result<(), Self::Error>{
+                    Writer::mov(&mut **self,dest,src,mem)
                 }
             })*
         };
