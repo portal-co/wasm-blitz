@@ -31,7 +31,13 @@ pub fn mach_operators<'a>(
                 )
                 .chain([MachOperator::StartBody].map(Ok))
                 .chain(v.into_iter().map(|v| v.map(MachOperator::Operator)))
-                .chain([MachOperator::EndBody].map(Ok)),
+                .chain(
+                    [
+                        MachOperator::Operator(Operator::Return),
+                        MachOperator::EndBody,
+                    ]
+                    .map(Ok),
+                ),
             )
         })
         .flatten()
@@ -53,6 +59,7 @@ pub enum MachOperator<'a> {
     StartBody,
     EndBody,
 }
+
 pub fn control_depth(a: &FunctionBody<'_>) -> usize {
     let mut cur: usize = 0;
     let mut max: usize = 0;
@@ -82,7 +89,7 @@ impl<
     'a,
     I: Iterator<Item = MachOperator<'a>>,
     T,
-    F: FnMut(&mut FnData,u32, MachOperator<'a>, &mut D) -> T,
+    F: FnMut(&mut FnData, u32, MachOperator<'a>, &mut D) -> T,
     D,
 > Iterator for ScanMach<I, F, D>
 {
@@ -93,17 +100,22 @@ impl<
         if let MachOperator::StartFn { id, data } = &o {
             self.data = data.clone();
             self.locals = 0;
-            return Some((self.handler)(&mut self.data,self.locals, o, &mut self.userdata));
+            return Some((self.handler)(
+                &mut self.data,
+                self.locals,
+                o,
+                &mut self.userdata,
+            ));
         }
-        if let MachOperator::Local(a, b) = &o{
+        if let MachOperator::Local(a, b) = &o {
             self.locals += 1;
         }
         let mut tmp = self.data.clone();
-        return Some((self.handler)(&mut tmp,self.locals, o, &mut self.userdata));
+        return Some((self.handler)(&mut tmp, self.locals, o, &mut self.userdata));
     }
 }
 pub trait IteratorExt: Iterator {
-    fn scan_mach<'a, F: FnMut(&mut FnData,u32, MachOperator<'a>, &mut D) -> T, T, D>(
+    fn scan_mach<'a, F: FnMut(&mut FnData, u32, MachOperator<'a>, &mut D) -> T, T, D>(
         self,
         handler: F,
         userdata: D,
@@ -116,7 +128,7 @@ pub trait IteratorExt: Iterator {
             handler,
             userdata,
             data: Default::default(),
-            locals:0,
+            locals: 0,
         }
     }
 }
