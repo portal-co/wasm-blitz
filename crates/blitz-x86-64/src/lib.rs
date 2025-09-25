@@ -71,7 +71,25 @@ pub trait WriterExt: Writer {
         self.jmp(0)?;
         Ok(())
     }
-    fn handle_op(&mut self, state: &mut State, op: &MachOperator<'_>) -> Result<(), Self::Error> {
+    fn hcall(&mut self, state: &mut State) -> Result<(), Self::Error> {
+        self.pop(1)?;
+        let i = state.label_index;
+        state.label_index += 1;
+        self.lea_label(0, &format_args!("_end_{i}"))?;
+        self.push(0)?;
+        self.push(1)?;
+        self.mov(0, 15, Some(-8))?;
+        self.xchg(0, RSP, Some(0))?;
+        self.ret()?;
+        self.set_label(&format_args!("_end_{i}"))?;
+        Ok(())
+    }
+    fn handle_op(
+        &mut self,
+        state: &mut State,
+        func_imports: &[(&str, &str)],
+        op: &MachOperator<'_>,
+    ) -> Result<(), Self::Error> {
         //Stack Frame: r15[0] => local variable frame
         match op {
             MachOperator::StartFn {
@@ -113,6 +131,18 @@ pub trait WriterExt: Writer {
                     self.mov64(0, *value as u64)?;
                     self.push(0)?;
                 }
+                Operator::F32Const { value } => {
+                    self.mov64(0, value.bits() as u64)?;
+                    self.push(0)?;
+                }
+                Operator::F64Const { value } => {
+                    self.mov64(0, value.bits())?;
+                    self.push(0)?;
+                }
+                Operator::I64ReinterpretF64
+                | Operator::F64ReinterpretI64
+                | Operator::I32ReinterpretF32
+                | Operator::F32ReinterpretI32 => {}
                 Operator::I32Add | Operator::I64Add => {
                     self.pop(0)?;
                     self.pop(1)?;
@@ -363,10 +393,18 @@ pub trait WriterExt: Writer {
                     self.xchg(RSP, 15, Some(8))?;
                 }
                 Operator::Call { function_index } => {
-                    self.lea_label(0, &format_args!("f{function_index}"))?;
-                    self.call(0)?;
+                    match func_imports.get(*function_index as usize) {
+                        Some(("blitz", h)) if h.starts_with("hypercall") => {
+                            self.hcall(state)?;
+                        }
+                        _ => {
+                            let function_index = *function_index - func_imports.len() as u32;
+                            self.lea_label(0, &format_args!("f{function_index}"))?;
+                            self.call(0)?;
+                        }
+                    }
                 }
-                _ => todo!(),
+                _ => {}
             },
             _ => todo!(),
         }
