@@ -17,9 +17,11 @@ pub fn mach_operators<'a>(
             Ok::<_, BinaryReaderError>(
                 [MachOperator::StartFn {
                     id: i as u32,
-                    num_params: sig.params().len(),
-                    num_returns: sig.results().len(),
-                    control_depth: control_depth(a)
+                    data: FnData {
+                        num_params: sig.params().len(),
+                        num_returns: sig.results().len(),
+                        control_depth: control_depth(a),
+                    },
                 }]
                 .into_iter()
                 .map(Ok)
@@ -35,17 +37,19 @@ pub fn mach_operators<'a>(
         .flatten()
         .flatten();
 }
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct FnData {
+    pub num_params: usize,
+    pub num_returns: usize,
+    pub control_depth: usize,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MachOperator<'a> {
     Operator(Operator<'a>),
     Local(u32, ValType),
-    StartFn {
-        id: u32,
-        num_params: usize,
-        num_returns: usize,
-        control_depth: usize,
-    },
+    StartFn { id: u32, data: FnData },
     StartBody,
     EndBody,
 }
@@ -66,3 +70,55 @@ pub fn control_depth(a: &FunctionBody<'_>) -> usize {
     }
     return max;
 }
+#[derive(Clone)]
+pub struct ScanMach<T, F, D> {
+    wrapped: T,
+    handler: F,
+    userdata: D,
+    data: FnData,
+    locals: u32,
+}
+impl<
+    'a,
+    I: Iterator<Item = MachOperator<'a>>,
+    T,
+    F: FnMut(&mut FnData,u32, MachOperator<'a>, &mut D) -> T,
+    D,
+> Iterator for ScanMach<I, F, D>
+{
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let o = self.wrapped.next()?;
+        if let MachOperator::StartFn { id, data } = &o {
+            self.data = data.clone();
+            self.locals = 0;
+            return Some((self.handler)(&mut self.data,self.locals, o, &mut self.userdata));
+        }
+        if let MachOperator::Local(a, b) = &o{
+            self.locals += 1;
+        }
+        let mut tmp = self.data.clone();
+        return Some((self.handler)(&mut tmp,self.locals, o, &mut self.userdata));
+    }
+}
+pub trait IteratorExt: Iterator {
+    fn scan_mach<'a, F: FnMut(&mut FnData,u32, MachOperator<'a>, &mut D) -> T, T, D>(
+        self,
+        handler: F,
+        userdata: D,
+    ) -> ScanMach<Self, F, D>
+    where
+        Self: Sized,
+    {
+        ScanMach {
+            wrapped: self,
+            handler,
+            userdata,
+            data: Default::default(),
+            locals:0,
+        }
+    }
+}
+impl<T: Iterator + ?Sized> IteratorExt for T {}
+pub mod passes;

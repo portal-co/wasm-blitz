@@ -6,7 +6,7 @@ use core::{
 };
 
 use alloc::vec::Vec;
-use portal_solutions_blitz_common::{MachOperator, wasmparser::Operator};
+use portal_solutions_blitz_common::{FnData, MachOperator, wasmparser::Operator};
 extern crate alloc;
 static reg_names: &'static [&'static str; 16] = &[
     "rax", "rbx", "rcx", "rsp", "rbp", "rsi", "rdi", "rdx", "r8", "r9", "r10", "r11", "r12", "r13",
@@ -94,9 +94,13 @@ pub trait WriterExt: Writer {
         match op {
             MachOperator::StartFn {
                 id: f,
-                num_params: params,
-                num_returns,
-                control_depth,
+                data:
+                    FnData {
+                        num_params: params,
+                        num_returns,
+                        control_depth,
+                        ..
+                    },
             } => {
                 state.local_count = *params;
                 state.num_returns = *num_returns;
@@ -232,6 +236,11 @@ pub trait WriterExt: Writer {
                     if let Operator::I32Xor = op {
                         self.u32(0)?;
                     }
+                    self.push(0)?;
+                }
+                Operator::I32WrapI64 => {
+                    self.pop(0)?;
+                    self.u32(0)?;
                     self.push(0)?;
                 }
                 Operator::I32Eqz | Operator::I64Eqz => {
