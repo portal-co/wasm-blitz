@@ -45,6 +45,8 @@ pub trait Writer {
     fn and(&mut self, a: u8, b: u8) -> Result<(), Self::Error>;
     fn or(&mut self, a: u8, b: u8) -> Result<(), Self::Error>;
     fn eor(&mut self, a: u8, b: u8) -> Result<(), Self::Error>;
+    fn shl(&mut self, a: u8, b: u8) -> Result<(), Self::Error>;
+    fn shr(&mut self, a: u8, b: u8) -> Result<(), Self::Error>;
 }
 #[derive(Default)]
 pub struct State {
@@ -238,6 +240,24 @@ pub trait WriterExt: Writer {
                     }
                     self.push(0)?;
                 }
+                Operator::I32Shl | Operator::I64Shl => {
+                    self.pop(0)?;
+                    self.pop(1)?;
+                    self.shl(0, 1)?;
+                    if let Operator::I32Shl = op {
+                        self.u32(0)?;
+                    }
+                    self.push(0)?;
+                }
+                Operator::I32ShrU | Operator::I64ShrU => {
+                    self.pop(0)?;
+                    self.pop(1)?;
+                    self.shr(0, 1)?;
+                    if let Operator::I32ShrU = op {
+                        self.u32(0)?;
+                    }
+                    self.push(0)?;
+                }
                 Operator::I32WrapI64 => {
                     self.pop(0)?;
                     self.u32(0)?;
@@ -254,7 +274,7 @@ pub trait WriterExt: Writer {
                     self.pop(0)?;
                     self.pop(1)?;
                     self.not(1)?;
-                    self.lea(0, 0, 1, Some((1, 0)))?;
+                    self.lea(0, 0, 1, Some((1, 1)))?;
                     self.mov64(1, 0)?;
                     self.cmp0(0)?;
                     self.cmovz64(1, 1)?;
@@ -264,11 +284,26 @@ pub trait WriterExt: Writer {
                     self.pop(0)?;
                     self.pop(1)?;
                     self.not(1)?;
-                    self.lea(0, 0, 1, Some((1, 0)))?;
+                    self.lea(0, 0, 1, Some((1, 1)))?;
                     self.mov64(1, 1)?;
                     self.cmp0(0)?;
                     self.cmovz64(1, 0)?;
                     self.push(1)?;
+                }
+                Operator::I64Load { memarg } => {
+                    self.pop(0)?;
+                    self.mov64(1, memarg.offset)?;
+                    self.lea(0, 0, 0, Some((1, 1)))?;
+                    self.mov(0, 0, Some(0))?;
+                    self.push(0)?;
+                }
+                Operator::I64Store { memarg } => {
+                    self.pop(2)?;
+                    self.pop(0)?;
+                    self.mov64(1, memarg.offset)?;
+                    self.lea(0, 0, 0, Some((1, 1)))?;
+                    self.xchg(2, 0, Some(0))?;
+                    // self.push(0)?;
                 }
                 Operator::LocalGet { local_index } => {
                     self.xchg(RSP, 15, Some(0))?;
@@ -538,6 +573,16 @@ macro_rules! writers {
                     let b = &reg_names[(b & 15) as usize];
                     write!(self,"eor {a},{b}\n")
                 }
+                fn shl(&mut self, a: u8, b: u8) -> Result<(), Self::Error>{
+                    let a = &reg_names[(a & 15) as usize];
+                    let b = &reg_names[(b & 15) as usize];
+                    write!(self,"shl {a},{b}\n")
+                }
+                fn shr(&mut self, a: u8, b: u8) -> Result<(), Self::Error>{
+                    let a = &reg_names[(a & 15) as usize];
+                    let b = &reg_names[(b & 15) as usize];
+                    write!(self,"shr {a},{b}\n")
+                }
             })*
         };
     };
@@ -627,6 +672,12 @@ macro_rules! writer_dispatch {
                 }
                 fn eor(&mut self, a: u8, b: u8) -> Result<(), Self::Error>{
                     Writer::eor(&mut **self,a,b)
+                }
+                fn shl(&mut self, a: u8, b: u8) -> Result<(), Self::Error>{
+                    Writer::shl(&mut **self,a,b)
+                }
+                fn shr(&mut self, a: u8, b: u8) -> Result<(), Self::Error>{
+                    Writer::shr(&mut **self,a,b)
                 }
             })*
         };

@@ -8,3 +8,4 @@ description = "Fast WASM compiler"
 
 [workspace.dependencies]
 wasmparser = { version = "0.239.0", default-features = false }
+wasm-encoder = { version = "0.239.0", default-features = false,features = ["wasmparser"] }
