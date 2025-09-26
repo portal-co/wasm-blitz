@@ -354,6 +354,9 @@ pub trait WriterExt: Writer {
                     let i = state.label_index;
                     state.label_index += 1;
                     self.lea_label(1, &format_args!("_end_{i}"))?;
+                    self.pop(0)?;
+                    self.cmp0(0)?;
+                    self.jz(1)?;
                     self.br(state, *relative_depth)?;
                     self.set_label(&format_args!("_end_{i}"))?;
                 }
