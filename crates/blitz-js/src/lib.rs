@@ -38,7 +38,7 @@ pub trait JsWrite: Write {
     fn call(&mut self, function_index: &(dyn Display + '_)) -> core::fmt::Result {
         write!(
             self,
-            "args=[];for(let i = 0;i < {function_index}.__sig.params;i++)args=[...args,{}];tmp_locals={function_index}(...args);if(tmp_locals.length==={function_index}.__sig.rets){{stack=[...stack,...tmp_locals];}}else{{for(let i = 0;i < {function_index}.__sig.rets;i++)stack=[...stack,tmp_locals[i]];}};",
+            "args=[];for(let i = 0;i < {function_index}.__sig.params;i++)args=[...args,{}];tmp_locals=[...{function_index}(...args)];if(tmp_locals.length==={function_index}.__sig.rets){{stack=[...stack,...tmp_locals];}}else{{for(let i = 0;i < {function_index}.__sig.rets;i++)stack=[...stack,tmp_locals[i]];}};",
             pop!()
         )
     }
@@ -69,7 +69,7 @@ pub trait JsWrite: Write {
                 let id = *id + func_imports.len() as u32;
                 write!(
                     self,
-                    "Object.defineProperty(${id},'__sig',{{value:Object.freeze({{params:{},rets:{}}}),enumerable:false,configurable:false,writable:false}});function ${id}(...locals){{let stack=[],tmp,mask32=0xffff_ffffn,mask64=(mask32<<32n)|mask32,{{params,rets}}=${id}.__sig,tmp_locals=[],args=[];if(locals.length!==params){{for(let i = 0; i < params;i++)tmp_locals=[...tmp_locals,locals[locals.length - params + i]];locals=tmp_locals;}};",
+                    "Object.defineProperty(${id},'__sig',{{value:Object.freeze({{params:{},rets:{}}}),enumerable:false,configurable:false,writable:false}});function ${id}(...locals){{let stack=[],tmp,mask32=0xffff_ffffn,mask64=(mask32<<32n)|mask32,{{params,rets}}=${id}.__sig,tmp_locals=[],args=[];if(locals.length!==params){{for(let i = 0; i < params;i++)tmp_locals=[...tmp_locals,locals[locals.length - params + i]];locals=tmp_locals;}};const toInt=(a,b)=>BigInt.asIntN(b,a);const toUint=(a,b)=>BigInt.asUintN(b,a)",
                     data.num_params, data.num_returns
                 )
             }
@@ -92,6 +92,123 @@ pub trait JsWrite: Write {
                     Operator::I64Eqz | Operator::I32Eqz => {
                         push(self, &format_args!("({}===0n?1n:0n)", pop!()))
                     }
+                    Operator::I32Add => push(
+                        self,
+                        &format_args!("((a={},b={0})=>(a+b)&mask32)()", pop!()),
+                    ),
+                    Operator::I32Sub => push(
+                        self,
+                        &format_args!("((a={},b={0})=>toUint((a-b)&mask32,32))()", pop!()),
+                    ),
+                    Operator::I32Mul => push(
+                        self,
+                        &format_args!("((a={},b={0})=>(a*b)&mask32)()", pop!()),
+                    ),
+                    Operator::I32DivU => push(
+                        self,
+                        &format_args!("((a={},b={0})=>(a/b)&mask32)()", pop!()),
+                    ),
+                    Operator::I32RemU => push(
+                        self,
+                        &format_args!("((a={},b={0})=>(a%b)&mask32)()", pop!()),
+                    ),
+                    Operator::I32DivS => push(
+                        self,
+                        &format_args!(
+                            "((a=toInt({},32),b=toInt({0},32))=>toUint((a/b)&mask32))()",
+                            pop!()
+                        ),
+                    ),
+                    Operator::I32RemS => push(
+                        self,
+                        &format_args!(
+                            "((a=toInt({},32),b=toInt({0},32))=>toUint((a%b)&mask32))()",
+                            pop!()
+                        ),
+                    ),
+                    Operator::I32Shl => push(
+                        self,
+                        &format_args!("((a={},b={0}%32n)=>(a<<b)&mask32)()", pop!()),
+                    ),
+                    Operator::I32ShrU => push(
+                        self,
+                        &format_args!("((a={},b={0}%32n)=>(a>>b)&mask32)()", pop!()),
+                    ),
+                    Operator::I32ShrS => push(
+                        self,
+                        &format_args!(
+                            "((a=toInt({},32),b={0}%32n)=>toUint((a>>b)&mask32),32)()",
+                            pop!()
+                        ),
+                    ),
+                    Operator::I32Rotl => push(
+                        self,
+                        &format_args!("((a={},b={0}%32n)=>((a<<b)|(a>>(32n-b)))&mask32)()", pop!()),
+                    ),
+                    Operator::I32Rotr => push(
+                        self,
+                        &format_args!("((a={},b={0}%32n)=>((a>>b)|(a<<(32n-b)))&mask32)()", pop!()),
+                    ),
+
+                    // 64 bit
+                    Operator::I64Add => push(
+                        self,
+                        &format_args!("((a={},b={0})=>(a+b)&mask64)()", pop!()),
+                    ),
+                    Operator::I64Sub => push(
+                        self,
+                        &format_args!("((a={},b={0})=>toUint((a-b)&mask64,64))()", pop!()),
+                    ),
+                    Operator::I64Mul => push(
+                        self,
+                        &format_args!("((a={},b={0})=>(a*b)&mask64)()", pop!()),
+                    ),
+                    Operator::I64DivU => push(
+                        self,
+                        &format_args!("((a={},b={0})=>(a/b)&mask64)()", pop!()),
+                    ),
+                    Operator::I64RemU => push(
+                        self,
+                        &format_args!("((a={},b={0})=>(a%b)&mask64)()", pop!()),
+                    ),
+                    Operator::I64DivS => push(
+                        self,
+                        &format_args!(
+                            "((a=toInt({},64),b=toInt({0},64))=>toUint((a/b)&mask64))()",
+                            pop!()
+                        ),
+                    ),
+                    Operator::I64RemS => push(
+                        self,
+                        &format_args!(
+                            "((a=toInt({},64),b=toInt({0},64))=>toUint((a%b)&mask64))()",
+                            pop!()
+                        ),
+                    ),
+                    Operator::I64Shl => push(
+                        self,
+                        &format_args!("((a={},b={0}%64n)=>(a<<b)&mask64)()", pop!()),
+                    ),
+                    Operator::I64ShrU => push(
+                        self,
+                        &format_args!("((a={},b={0}%64n)=>(a>>b)&mask64)()", pop!()),
+                    ),
+                    Operator::I64ShrS => push(
+                        self,
+                        &format_args!(
+                            "((a=toInt({},64),b={0}%64n)=>toUint((a>>b)&mask64),64)()",
+                            pop!()
+                        ),
+                    ),
+                    Operator::I64Rotl => push(
+                        self,
+                        &format_args!("((a={},b={0}%64n)=>((a<<b)|(a>>(64n-b)))&mask64)()", pop!()),
+                    ),
+                    Operator::I64Rotr => push(
+                        self,
+                        &format_args!("((a={},b={0}%64n)=>((a>>b)|(a<<(64n-b)))&mask64)()", pop!()),
+                    ),
+                    //
                     Operator::Return => {
                         write!(
                             self,
@@ -141,9 +258,13 @@ pub trait JsWrite: Write {
                         DisplayFn(&|f| f.br(state, *relative_depth))
                     ),
                     Operator::BrTable { targets } => {
-                        write!(self,"{}",pop!())?;
-                        for t in targets.targets().flatten(){
-                            write!(self,"if(tmp===0n){{{}}};tmp--;", DisplayFn(&|f| f.br(state, t)))?;
+                        write!(self, "{}", pop!())?;
+                        for t in targets.targets().flatten() {
+                            write!(
+                                self,
+                                "if(tmp===0n){{{}}};tmp--;",
+                                DisplayFn(&|f| f.br(state, t))
+                            )?;
                         }
                         self.br(state, targets.default())?;
                         Ok(())
