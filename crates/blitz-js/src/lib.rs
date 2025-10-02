@@ -38,7 +38,7 @@ pub trait JsWrite: Write {
     fn call(&mut self, function_index: &(dyn Display + '_)) -> core::fmt::Result {
         write!(
             self,
-            "args=[];for(let i = 0;i < {function_index}.__sig.params;i++)args=[...args,{}];stack=[...stack,{function_index}(...args)]",
+            "args=[];for(let i = 0;i < {function_index}.__sig.params;i++)args=[...args,{}];tmp_locals={function_index}(...args);if(tmp_locals.length==={function_index}.__sig.rets){{stack=[...stack,...tmp_locals];}}else{{for(let i = 0;i < {function_index}.__sig.rets;i++)stack=[...stack,tmp_locals[i]];}};",
             pop!()
         )
     }
@@ -53,8 +53,8 @@ pub trait JsWrite: Write {
             .unwrap();
         let idx = idx + 1;
         match frame {
-            Frame::Block => write!(self, "stack=[];break l{idx};"),
-            Frame::Loop => write!(self, "stack=[];continue l{idx}"),
+            Frame::Block => write!(self, "{{stack=[];break l{idx};}}"),
+            Frame::Loop => write!(self, "{{stack=[];continue l{idx};}}"),
             _ => todo!(),
         }
     }
