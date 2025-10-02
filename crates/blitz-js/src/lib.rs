@@ -28,7 +28,10 @@ pub trait JsWrite: Write {
     fn on_mach(&mut self, m: &MachOperator<'_>) -> core::fmt::Result {
         match m {
             MachOperator::StartFn { id, data } => {
-                write!(self, "function ${id}(...locals){{let stack=[],tmp;")
+                write!(
+                    self,
+                    "function ${id}(...locals){{let stack=[],tmp,mask32=0xffff_ffffn,mask64=(mask32<<32n)|mask32;"
+                )
             }
             MachOperator::Local(a, b) => write!(
                 self,
@@ -40,17 +43,20 @@ pub trait JsWrite: Write {
             ),
             MachOperator::StartBody => Ok(()),
 
-            MachOperator::Operator(o) => match o {
-                Operator::I64Const { value } => push(self, &format_args!("{}n", *value as u64)),
-                Operator::I32Const { value } => {
-                    push(self, &format_args!("{}n", *value as u32 as u64))
-                }
-                Operator::I64Eqz | Operator::I32Eqz => push(
-                    self,
-                    &format_args!("({}===0n?1n:0n)", pop!()),
-                ),
-                _ => todo!(),
-            },
+            MachOperator::Operator(o) => {
+                match o {
+                    Operator::I64Const { value } => push(self, &format_args!("{}n", *value as u64)),
+                    Operator::I32Const { value } => {
+                        push(self, &format_args!("{}n", *value as u32 as u64))
+                    }
+                    Operator::I64Eqz | Operator::I32Eqz => {
+                        push(self, &format_args!("({}===0n?1n:0n)", pop!()))
+                    }
+                    _ => todo!(),
+                }?;
+                write!(self, ";")?;
+                Ok(())
+            }
             MachOperator::EndBody => write!(self, "}}"),
             _ => todo!(),
         }
