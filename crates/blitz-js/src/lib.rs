@@ -28,7 +28,7 @@ pub trait JsWrite: Write {
     fn call(&mut self, function_index: &(dyn Display + '_)) -> core::fmt::Result {
         write!(
             self,
-            "args=[];for(let i = 0;i < ${function_index}.__sig.params;i++)args=[...args,{}];stack=[...stack,${function_index}(...args)]",
+            "args=[];for(let i = 0;i < {function_index}.__sig.params;i++)args=[...args,{}];stack=[...stack,{function_index}(...args)]",
             pop!()
         )
     }
@@ -71,7 +71,7 @@ pub trait JsWrite: Write {
                             "tmp_locals=[];for(let i = 0; i < rets;i++)tmp_locals=[...tmp_locals,stack[stack.length-rets+i]];return tmp_locals;"
                         )
                     }
-                    Operator::Call { function_index } => self.call(function_index),
+                    Operator::Call { function_index } => self.call(&format_args!("${function_index}")),
                     _ => todo!(),
                 }?;
                 write!(self, ";")?;
