@@ -7,6 +7,7 @@ use core::{
 pub mod __ {
     pub use portal_solutions_blitz_common::DisplayFn;
 }
+use alloc::vec::Vec;
 use portal_solutions_blitz_common::{
     DisplayFn, MachOperator,
     wasmparser::{Operator, ValType},
@@ -24,6 +25,15 @@ macro_rules! pop {
         $crate::__::DisplayFn(&|f| $crate::pop(f))
     };
 }
+#[derive(Default)]
+pub struct State {
+    stack: Vec<Frame>,
+}
+enum Frame {
+    Block,
+    Loop,
+    If,
+}
 pub trait JsWrite: Write {
     fn call(&mut self, function_index: &(dyn Display + '_)) -> core::fmt::Result {
         write!(
@@ -32,9 +42,25 @@ pub trait JsWrite: Write {
             pop!()
         )
     }
+    fn br(&mut self, state: &State, idx: u32) -> core::fmt::Result {
+        let (idx, frame) = state
+            .stack
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(_, a)| !matches!(a, Frame::If))
+            .nth(idx as usize)
+            .unwrap();
+        match frame {
+            Frame::Block => write!(self, "break l{idx};"),
+            Frame::Loop => write!(self, "continue l{idx}"),
+            _ => todo!(),
+        }
+    }
     fn on_mach(
         &mut self,
         func_imports: &[(&str, &str)],
+        state: &mut State,
         m: &MachOperator<'_>,
     ) -> core::fmt::Result {
         match m {
@@ -82,6 +108,44 @@ pub trait JsWrite: Write {
                     }
                     Operator::LocalTee { local_index } => {
                         push(self, &format_args!("locals[{local_index}={}", pop!()))
+                    }
+                    Operator::Block { blockty } => {
+                        state.stack.push(Frame::Block);
+                        write!(self, "l{}: for(;;){{", state.stack.len())
+                    }
+                    Operator::Loop { blockty } => {
+                        state.stack.push(Frame::Loop);
+                        write!(self, "l{}: for(;;){{", state.stack.len())
+                    }
+                    Operator::If { blockty } => {
+                        state.stack.push(Frame::If);
+                        write!(self, "if({}){{", pop!())
+                    }
+                    Operator::Else => {
+                        write!(self, "}}else{{")
+                    }
+                    Operator::End => {
+                        let s = state.stack.pop();
+                        match s.unwrap() {
+                            Frame::Block | Frame::Loop => write!(self, "break;")?,
+                            _ => {}
+                        }
+                        write!(self, "}}")
+                    }
+                    Operator::Br { relative_depth } => self.br(state, *relative_depth),
+                    Operator::BrIf { relative_depth } => write!(
+                        self,
+                        "if({}!==0n){}",
+                        pop!(),
+                        DisplayFn(&|f| f.br(state, *relative_depth))
+                    ),
+                    Operator::BrTable { targets } => {
+                        write!(self,"{}",pop!())?;
+                        for t in targets.targets().flatten(){
+                            write!(self,"if(tmp===0n){{{}}};tmp--;", DisplayFn(&|f| f.br(state, t)))?;
+                        }
+                        self.br(state, targets.default())?;
+                        Ok(())
                     }
                     _ => todo!(),
                 }?;
