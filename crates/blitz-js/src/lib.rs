@@ -51,9 +51,10 @@ pub trait JsWrite: Write {
             .filter(|(_, a)| !matches!(a, Frame::If))
             .nth(idx as usize)
             .unwrap();
+        let idx = idx + 1;
         match frame {
-            Frame::Block => write!(self, "break l{idx};"),
-            Frame::Loop => write!(self, "continue l{idx}"),
+            Frame::Block => write!(self, "stack=[];break l{idx};"),
+            Frame::Loop => write!(self, "stack=[];continue l{idx}"),
             _ => todo!(),
         }
     }
