@@ -13,7 +13,7 @@ use portal_solutions_blitz_common::{
 };
 extern crate alloc;
 pub fn push(w: &mut (impl Write + ?Sized), a: &(dyn Display + '_)) -> core::fmt::Result {
-    write!(w, "(stack=[...stack,{a}])")
+    write!(w, "((v={a})=>(stack=[...stack,v],v))()")
 }
 pub fn pop(w: &mut (impl Write + ?Sized)) -> core::fmt::Result {
     write!(w, "(([...stack,tmp]=stack),tmp)")
