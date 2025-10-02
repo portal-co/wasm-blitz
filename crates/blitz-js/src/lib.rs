@@ -71,7 +71,18 @@ pub trait JsWrite: Write {
                             "tmp_locals=[];for(let i = 0; i < rets;i++)tmp_locals=[...tmp_locals,stack[stack.length-rets+i]];return tmp_locals;"
                         )
                     }
-                    Operator::Call { function_index } => self.call(&format_args!("${function_index}")),
+                    Operator::Call { function_index } => {
+                        self.call(&format_args!("${function_index}"))
+                    }
+                    Operator::LocalGet { local_index } => {
+                        push(self, &format_args!("locals[{local_index}]"))
+                    }
+                    Operator::LocalSet { local_index } => {
+                        write!(self, "locals[{local_index}={}", pop!())
+                    }
+                    Operator::LocalTee { local_index } => {
+                        push(self, &format_args!("locals[{local_index}={}", pop!()))
+                    }
                     _ => todo!(),
                 }?;
                 write!(self, ";")?;
