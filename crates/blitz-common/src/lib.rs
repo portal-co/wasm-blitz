@@ -1,7 +1,16 @@
 #![no_std]
 extern crate alloc;
+use core::fmt::{Display, Formatter};
+
 pub use wasmparser;
 use wasmparser::{BinaryReaderError, FuncType, FunctionBody, Operator, ValType};
+#[derive(Clone, Copy)]
+pub struct DisplayFn<'a>(pub &'a (dyn Fn(&mut Formatter) -> core::fmt::Result + 'a));
+impl<'a> Display for DisplayFn<'a> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        (self.0)(f)
+    }
+}
 pub fn mach_operators<'a>(
     code: &[FunctionBody<'a>],
     sigs_per: &[u32],
