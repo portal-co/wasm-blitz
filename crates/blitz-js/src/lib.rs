@@ -25,12 +25,25 @@ macro_rules! pop {
     };
 }
 pub trait JsWrite: Write {
-    fn on_mach(&mut self, m: &MachOperator<'_>) -> core::fmt::Result {
+    fn call(&mut self, function_index: &(dyn Display + '_)) -> core::fmt::Result {
+        write!(
+            self,
+            "args=[];for(let i = 0;i < ${function_index}.__sig.params;i++)args=[...args,{}];stack=[...stack,${function_index}(...args)]",
+            pop!()
+        )
+    }
+    fn on_mach(
+        &mut self,
+        func_imports: &[(&str, &str)],
+        m: &MachOperator<'_>,
+    ) -> core::fmt::Result {
         match m {
             MachOperator::StartFn { id, data } => {
+                let id = *id + func_imports.len() as u32;
                 write!(
                     self,
-                    "function ${id}(...locals){{let stack=[],tmp,mask32=0xffff_ffffn,mask64=(mask32<<32n)|mask32;"
+                    "Object.defineProperty(${id},'__sig',{{value:Object.freeze({{params:{},rets:{}}}),enumerable:false,configurable:false,writable:false}});function ${id}(...locals){{let stack=[],tmp,mask32=0xffff_ffffn,mask64=(mask32<<32n)|mask32,{{params,rets}}=${id}.__sig,tmp_locals=[],args=[];for(let i = 0; i < params;i++)tmp_locals=[...tmp_locals,locals[locals.length - params + i]];locals=tmp_locals;",
+                    data.num_params, data.num_returns
                 )
             }
             MachOperator::Local(a, b) => write!(
@@ -52,6 +65,13 @@ pub trait JsWrite: Write {
                     Operator::I64Eqz | Operator::I32Eqz => {
                         push(self, &format_args!("({}===0n?1n:0n)", pop!()))
                     }
+                    Operator::Return => {
+                        write!(
+                            self,
+                            "tmp_locals=[];for(let i = 0; i < rets;i++)tmp_locals=[...tmp_locals,stack[stack.length-rets+i]];return tmp_locals;"
+                        )
+                    }
+                    Operator::Call { function_index } => self.call(function_index),
                     _ => todo!(),
                 }?;
                 write!(self, ";")?;
