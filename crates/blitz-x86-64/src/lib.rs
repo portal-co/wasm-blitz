@@ -16,9 +16,13 @@ static reg_names: &'static [&'static str; 16] = &[
 pub struct Reg(pub u8);
 
 const RSP: Reg = Reg(3);
+
+pub trait Label: Display {}
+impl<T: Display + ?Sized> Label for T {}
+
 pub trait Writer {
     type Error: Error;
-    fn set_label(&mut self, s: &(dyn Display + '_)) -> Result<(), Self::Error>;
+    fn set_label(&mut self, s: &(dyn Label + '_)) -> Result<(), Self::Error>;
     fn xchg(&mut self, dest: Reg, src: Reg, mem: Option<isize>) -> Result<(), Self::Error>;
     fn mov(&mut self, dest: Reg, src: Reg, mem: Option<isize>) -> Result<(), Self::Error>;
     fn push(&mut self, op: Reg) -> Result<(), Self::Error>;
@@ -37,7 +41,7 @@ pub trait Writer {
         offset: isize,
         off_reg: Option<(Reg, usize)>,
     ) -> Result<(), Self::Error>;
-    fn lea_label(&mut self, dest: Reg, label: &(dyn Display + '_)) -> Result<(), Self::Error>;
+    fn lea_label(&mut self, dest: Reg, label: &(dyn Label + '_)) -> Result<(), Self::Error>;
     fn get_ip(&mut self) -> Result<(), Self::Error>;
     fn ret(&mut self) -> Result<(), Self::Error>;
     fn mov64(&mut self, r: Reg, val: u64) -> Result<(), Self::Error>;
@@ -466,7 +470,7 @@ macro_rules! writers {
         const _: () = {
             $(impl Writer for $ty {
                 type Error = core::fmt::Error;
-                fn set_label(&mut self, s: &(dyn Display + '_)) -> Result<(), Self::Error> {
+                fn set_label(&mut self, s: &(dyn Label + '_)) -> Result<(), Self::Error> {
                     write!(self, "{s}:\n")
                 }
                 fn xchg(&mut self, Reg(dest): Reg, Reg(src): Reg, mem: Option<isize>) -> Result<(),Self::Error>{
@@ -529,7 +533,7 @@ macro_rules! writers {
                         Some(i) => write!(self,"qword ptr [{src}+{i}]\n")
                     }
                 }
-                fn lea_label(&mut self, Reg(dest): Reg, label: &(dyn Display + '_)) -> Result<(),Self::Error>{
+                fn lea_label(&mut self, Reg(dest): Reg, label: &(dyn Label + '_)) -> Result<(),Self::Error>{
                     let dest = &reg_names[(dest & 15) as usize];
                     write!(self,"lea {dest}, {label}\n")
                 }
@@ -598,7 +602,7 @@ macro_rules! writer_dispatch {
             $(impl<$($t)*> Writer for $ty{
                 type Error = $e;
 
-                fn set_label(&mut self, s: &(dyn Display + '_)) -> Result<(), Self::Error> {
+                fn set_label(&mut self, s: &(dyn Label + '_)) -> Result<(), Self::Error> {
                     Writer::set_label(&mut **self, s)
                 }
 
@@ -639,7 +643,7 @@ macro_rules! writer_dispatch {
                     Writer::lea(&mut **self, dest, src, offset, off_reg)
                 }
 
-                fn lea_label(&mut self, dest: Reg, label: &(dyn Display + '_)) -> Result<(), Self::Error> {
+                fn lea_label(&mut self, dest: Reg, label: &(dyn Label + '_)) -> Result<(), Self::Error> {
                     Writer::lea_label(&mut **self, dest, label)
                 }
                 fn get_ip(&mut self) -> Result<(), Self::Error>{
