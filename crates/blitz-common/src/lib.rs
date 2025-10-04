@@ -1,9 +1,23 @@
 #![no_std]
 extern crate alloc;
-use core::fmt::{Display, Formatter};
+use core::{
+    fmt::{Display, Formatter},
+    mem::{transmute, transmute_copy},
+};
 
 pub use wasmparser;
 use wasmparser::{BinaryReaderError, FuncType, FunctionBody, Operator, ValType};
+pub trait Label<X: Clone + 'static>: Display {
+    fn raw(&self) -> Option<X> {
+        if typeid::of::<Self>() == typeid::of::<X>() {
+            let this: &X = unsafe { transmute_copy(&self) };
+            Some(this.clone())
+        } else {
+            None
+        }
+    }
+}
+impl<T: Display + ?Sized, X: Clone + 'static> Label<X> for T {}
 #[derive(Clone, Copy)]
 pub struct DisplayFn<'a>(pub &'a (dyn Fn(&mut Formatter) -> core::fmt::Result + 'a));
 impl<'a> Display for DisplayFn<'a> {

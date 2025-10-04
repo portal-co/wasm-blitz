@@ -6,4 +6,5 @@ license.workspace = true
 description.workspace = true
 
 [dependencies]
+typeid.workspace = true
 wasmparser.workspace = true

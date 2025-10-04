@@ -12,13 +12,47 @@ static reg_names: &'static [&'static str; 16] = &[
     "rax", "rbx", "rcx", "rsp", "rbp", "rsi", "rdi", "rdx", "r8", "r9", "r10", "r11", "r12", "r13",
     "r14", "r15",
 ];
+#[derive(Default, Clone)]
+#[non_exhaustive]
+pub struct RegFormatOpts {}
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Reg(pub u8);
+impl Reg {
+    pub fn format(&self, f: &mut Formatter<'_>, opts: &RegFormatOpts) -> core::fmt::Result {
+        write!(f, "{}", &reg_names[(self.0 as usize) % 16])
+    }
+    pub fn display<'a>(&'a self, opts: RegFormatOpts) -> RegDisplay<'a> {
+        RegDisplay { reg: self, opts }
+    }
+}
+pub struct RegDisplay<'a> {
+    reg: &'a Reg,
+    opts: RegFormatOpts,
+}
+impl Display for RegDisplay<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        self.reg.format(f, &self.opts)
+    }
+}
 
 const RSP: Reg = Reg(3);
 
-pub trait Label: Display {}
-impl<T: Display + ?Sized> Label for T {}
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+pub enum X64Label {
+    Indexed { idx: usize },
+    Func { r#fn: u32 },
+}
+impl Display for X64Label {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        match self {
+            X64Label::Indexed { idx } => write!(f, "_idx_{idx}"),
+            X64Label::Func { r#fn } => write!(f, "f{}", r#fn),
+        }
+    }
+}
+
+pub trait Label: portal_solutions_blitz_common::Label<X64Label> {}
+impl<T: portal_solutions_blitz_common::Label<X64Label> + ?Sized> Label for T {}
 
 pub trait Writer {
     type Error: Error;
@@ -83,13 +117,13 @@ pub trait WriterExt: Writer {
         self.pop(Reg(1))?;
         let i = state.label_index;
         state.label_index += 1;
-        self.lea_label(Reg(0), &format_args!("_end_{i}"))?;
+        self.lea_label(Reg(0), &X64Label::Indexed { idx: i })?;
         self.push(Reg(0))?;
         self.push(Reg(1))?;
         self.mov(Reg(0), Reg(15), Some(-8))?;
         self.xchg(Reg(0), RSP, Some(0))?;
         self.ret()?;
-        self.set_label(&format_args!("_end_{i}"))?;
+        self.set_label(&X64Label::Indexed { idx: i })?;
         Ok(())
     }
     fn handle_op(
@@ -116,7 +150,7 @@ pub trait WriterExt: Writer {
                 self.pop(Reg(1))?;
                 self.lea(Reg(0), Reg(1), -(*params as isize), None)?;
                 self.xchg(Reg(0), Reg(15), Some(0))?;
-                self.set_label(&format_args!("f{f}"))?;
+                self.set_label(&X64Label::Func { r#fn: *f })?;
             }
             MachOperator::Local(a, b) => {
                 state.local_count += 1;
@@ -359,23 +393,23 @@ pub trait WriterExt: Writer {
                 Operator::BrIf { relative_depth } => {
                     let i = state.label_index;
                     state.label_index += 1;
-                    self.lea_label(Reg(1), &format_args!("_end_{i}"))?;
+                    self.lea_label(Reg(1), &X64Label::Indexed { idx: i })?;
                     self.pop(Reg(0))?;
                     self.cmp0(Reg(0))?;
                     self.jz(Reg(1))?;
                     self.br(state, *relative_depth)?;
-                    self.set_label(&format_args!("_end_{i}"))?;
+                    self.set_label(&X64Label::Indexed { idx: i })?;
                 }
                 Operator::BrTable { targets } => {
                     for relative_depth in targets.targets().flatten() {
                         let i = state.label_index;
                         state.label_index += 1;
-                        self.lea_label(Reg(1), &format_args!("_end_{i}"))?;
+                        self.lea_label(Reg(1), &X64Label::Indexed { idx: i })?;
                         self.pop(Reg(0))?;
                         self.cmp0(Reg(0))?;
                         self.jz(Reg(1))?;
                         self.br(state, relative_depth)?;
-                        self.set_label(&format_args!("_end_{i}"))?;
+                        self.set_label(&X64Label::Indexed { idx: i })?;
                         self.lea(Reg(0), Reg(0), -1, None)?;
                         self.push(Reg(0))?;
                     }
@@ -386,7 +420,7 @@ pub trait WriterExt: Writer {
                     state.if_stack.push(Endable::Br);
                     let i = state.label_index;
                     state.label_index += 1;
-                    self.lea_label(Reg(0), &format_args!("_end_{i}"))?;
+                    self.lea_label(Reg(0), &X64Label::Indexed { idx: i })?;
                     self.mov(Reg(1), RSP, None)?;
                     self.xchg(RSP, Reg(15), Some(8))?;
                     // for _ in Reg(0)..=(*relative_depth) {
@@ -394,34 +428,34 @@ pub trait WriterExt: Writer {
                     self.push(Reg(0))?;
                     // }
                     self.xchg(RSP, Reg(15), Some(8))?;
-                    self.set_label(&format_args!("_end_{i}"))?;
+                    self.set_label(&X64Label::Indexed { idx: i })?;
                 }
                 Operator::If { blockty } => {
                     let i = state.label_index;
                     state.label_index += 3;
                     state.if_stack.push(Endable::If { idx: i });
                     self.pop(Reg(2))?;
-                    self.lea_label(Reg(0), &format_args!("_end_{i}"))?;
-                    self.lea_label(Reg(1), &format_args!("_end_{}", i + 1))?;
+                    self.lea_label(Reg(0), &X64Label::Indexed { idx: i })?;
+                    self.lea_label(Reg(1), &X64Label::Indexed { idx: i + 1 })?;
                     self.cmp0(Reg(2))?;
                     self.jz(Reg(1))?;
                     self.jmp(Reg(0))?;
-                    self.set_label(&format_args!("_end_{i}"))?;
+                    self.set_label(&X64Label::Indexed { idx: i })?;
                 }
                 Operator::Else => {
                     let Endable::If { idx: i } = state.if_stack.last().unwrap() else {
                         todo!()
                     };
-                    self.lea_label(Reg(0), &format_args!("_end_{}", i + 2))?;
+                    self.lea_label(Reg(0), &X64Label::Indexed { idx: i + 2 })?;
                     self.jmp(Reg(0))?;
-                    self.set_label(&format_args!("_end_{}", i + 1))?;
+                    self.set_label(&X64Label::Indexed { idx: i + 1 })?;
                 }
                 Operator::Loop { blockty } => {
                     state.if_stack.push(Endable::Br);
                     let i = state.label_index;
                     state.label_index += 1;
-                    self.set_label(&format_args!("_end_{i}"))?;
-                    self.lea_label(Reg(0), &format_args!("_end_{i}"))?;
+                    self.set_label(&X64Label::Indexed { idx: i })?;
+                    self.lea_label(Reg(0), &X64Label::Indexed { idx: i })?;
                     self.mov(Reg(1), RSP, None)?;
                     self.xchg(RSP, Reg(15), Some(8))?;
                     // for _ in Reg(0)..=(*relative_depth) {
@@ -439,7 +473,7 @@ pub trait WriterExt: Writer {
                             self.pop(Reg(1))?;
                         }
                         Endable::If { idx: i } => {
-                            self.set_label(&format_args!("_end_{}", i + 2))?;
+                            self.set_label(&X64Label::Indexed { idx: i + 2 })?;
                         }
                     }
                     // }
@@ -452,7 +486,12 @@ pub trait WriterExt: Writer {
                         }
                         _ => {
                             let function_index = *function_index - func_imports.len() as u32;
-                            self.lea_label(Reg(0), &format_args!("f{function_index}"))?;
+                            self.lea_label(
+                                Reg(0),
+                                &X64Label::Func {
+                                    r#fn: function_index,
+                                },
+                            )?;
                             self.call(Reg(0))?;
                         }
                     }

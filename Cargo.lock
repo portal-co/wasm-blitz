@@ -19,6 +19,7 @@ dependencies = [
 name = "portal-solutions-blitz-common"
 version = "0.1.0"
 dependencies = [
+ "typeid",
  "wasmparser",
 ]
 
@@ -49,6 +50,12 @@ version = "0.1.0"
 dependencies = [
  "portal-solutions-blitz-common",
 ]
+
+[[package]]
+name = "typeid"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc7d623258602320d5c55d1bc22793b57daff0ec7efc270ea7d55ce1d5f5471c"
 
 [[package]]
 name = "wasmparser"
