@@ -13,6 +13,7 @@ name = "portal-solutions-blitz-aarch64"
 version = "0.1.0"
 dependencies = [
  "portal-solutions-blitz-common",
+ "portal-solutions-blitz-i4",
 ]
 
 [[package]]
@@ -21,6 +22,13 @@ version = "0.1.0"
 dependencies = [
  "typeid",
  "wasmparser",
+]
+
+[[package]]
+name = "portal-solutions-blitz-i4"
+version = "0.1.0"
+dependencies = [
+ "portal-solutions-blitz-common",
 ]
 
 [[package]]
@@ -42,6 +50,7 @@ name = "portal-solutions-blitz-riscv64"
 version = "0.1.0"
 dependencies = [
  "portal-solutions-blitz-common",
+ "portal-solutions-blitz-i4",
 ]
 
 [[package]]

@@ -7,3 +7,4 @@ description.workspace = true
 
 [dependencies]
 portal-solutions-blitz-common = { version = "0.1.0", path = "../blitz-common" }
+portal-solutions-blitz-i4 = { version = "0.1.0", path = "../blitz-i4" }
