@@ -131,7 +131,7 @@ impl<
             ));
         }
         if let MachOperator::Local(a, b) = &o {
-            self.locals += 1;
+            self.locals += *a;
         }
         let mut tmp = self.data.clone();
         return Some((self.handler)(&mut tmp, self.locals, o, &mut self.userdata));
