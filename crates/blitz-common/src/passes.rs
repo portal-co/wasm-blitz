@@ -8,8 +8,7 @@ pub fn load_coalescing<'a>(
         .scan_mach(
             |d, l, o, x| match o {
                 MachOperator::StartBody => [
-                    MachOperator::Local(l, ValType::I64),
-                    MachOperator::Local(l + 1, ValType::I64),
+                    MachOperator::Local(2, ValType::I64),
                     MachOperator::StartBody,
                 ]
                 .into_iter()
