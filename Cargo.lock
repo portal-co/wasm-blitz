@@ -9,6 +9,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2261d10cca569e4643e526d8dc2e62e433cc8aba21ab764233731f8d369bf394"
 
 [[package]]
+name = "leb128fmt"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
+
+[[package]]
 name = "portal-solutions-blitz-aarch64"
 version = "0.1.0"
 dependencies = [
@@ -46,6 +52,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "portal-solutions-blitz-reencode"
+version = "0.1.0"
+dependencies = [
+ "portal-solutions-blitz-common",
+ "wasm-encoder",
+]
+
+[[package]]
 name = "portal-solutions-blitz-riscv64"
 version = "0.1.0"
 dependencies = [
@@ -65,6 +79,16 @@ name = "typeid"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc7d623258602320d5c55d1bc22793b57daff0ec7efc270ea7d55ce1d5f5471c"
+
+[[package]]
+name = "wasm-encoder"
+version = "0.239.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5be00faa2b4950c76fe618c409d2c3ea5a3c9422013e079482d78544bb2d184c"
+dependencies = [
+ "leb128fmt",
+ "wasmparser",
+]
 
 [[package]]
 name = "wasmparser"
