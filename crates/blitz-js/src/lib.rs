@@ -73,14 +73,19 @@ pub trait JsWrite: Write {
                     data.num_params, data.num_returns
                 )
             }
-            MachOperator::Local(a, b) => write!(
-                self,
-                "locals=[...locals,{}];",
-                match b {
-                    ValType::F32 | ValType::F64 => "0",
-                    _ => "0n",
+            MachOperator::Local(a, b) => {
+                for _ in 0..*a {
+                    write!(
+                        self,
+                        "locals=[...locals,{}];",
+                        match b {
+                            ValType::F32 | ValType::F64 => "0",
+                            _ => "0n",
+                        }
+                    )?
                 }
-            ),
+                Ok(())
+            }
             MachOperator::StartBody => Ok(()),
 
             MachOperator::Operator(o) => {
