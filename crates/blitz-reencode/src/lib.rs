@@ -23,7 +23,7 @@ pub trait ReencodeExt: Reencode {
     ) -> Result<(), wasm_encoder::reencode::Error<Self::Error>> {
         match a {
             MachOperator::StartFn { id, data } => {}
-            MachOperator::Local(a, b) => {
+            MachOperator::Local { count: a, ty: b } => {
                 state.locals.push((*a, self.val_type(b.clone())?));
             }
             MachOperator::StartBody => {

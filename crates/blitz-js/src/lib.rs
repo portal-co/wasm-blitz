@@ -73,7 +73,7 @@ pub trait JsWrite: Write {
                     data.num_params, data.num_returns
                 )
             }
-            MachOperator::Local(a, b) => {
+            MachOperator::Local { count: a, ty: b } => {
                 for _ in 0..*a {
                     write!(
                         self,

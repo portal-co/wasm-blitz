@@ -98,7 +98,7 @@ pub trait WriterExt: Writer {
                 self.xchg(Reg(0), Reg(15), Some(0))?;
                 self.set_label(&X64Label::Func { r#fn: *f })?;
             }
-            MachOperator::Local(a, b) => {
+            MachOperator::Local { count: a, ty: b } => {
                 for _ in 0..*a {
                     state.local_count += 1;
                     self.push(Reg(0))?;

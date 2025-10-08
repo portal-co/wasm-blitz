@@ -50,7 +50,7 @@ pub fn mach_operators<'a>(
                 .map(Ok)
                 .chain(
                     l.into_iter()
-                        .map(|a| a.map(|(a, b)| MachOperator::Local(a, b))),
+                        .map(|a| a.map(|(a, b)| MachOperator::Local { count: a, ty: b })),
                 )
                 .chain([MachOperator::StartBody].map(Ok))
                 .chain(v.into_iter().map(|v| v.map(MachOperator::Operator)))
@@ -77,7 +77,7 @@ pub struct FnData {
 #[non_exhaustive]
 pub enum MachOperator<'a> {
     Operator(Operator<'a>),
-    Local(u32, ValType),
+    Local { count: u32, ty: ValType },
     StartFn { id: u32, data: FnData },
     StartBody,
     EndBody,
@@ -130,7 +130,7 @@ impl<
                 &mut self.userdata,
             ));
         }
-        if let MachOperator::Local(a, b) = &o {
+        if let MachOperator::Local { count: a, ty: b } = &o {
             self.locals += *a;
         }
         let mut tmp = self.data.clone();
