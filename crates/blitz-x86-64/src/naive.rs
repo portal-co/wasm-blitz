@@ -116,7 +116,7 @@ pub trait WriterExt: Writer {
                     }
                 }
             }
-            MachOperator::Operator { op } => match op {
+            MachOperator::Operator { op, annot } => match op {
                 Operator::I32Const { value } => {
                     self.mov64(Reg(0), *value as u32 as u64)?;
                     self.push(Reg(0))?;

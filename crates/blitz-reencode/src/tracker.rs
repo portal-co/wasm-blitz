@@ -15,9 +15,9 @@ impl MachTracker {
         }
     }
 }
-pub fn do_mach_instruction<E>(
+pub fn do_mach_instruction<E,A>(
     r: &mut (impl Reencode<Error = E> + ?Sized),
-    a: &MachOperator<'_>,
+    a: &MachOperator<'_,A>,
     state: &mut MachTracker,
 ) -> Result<(), wasm_encoder::reencode::Error<E>> {
     match a {
@@ -31,7 +31,7 @@ pub fn do_mach_instruction<E>(
                 .push(wasm_encoder::Function::new(state.locals.drain(..)));
         }
         MachOperator::EndBody => {}
-        MachOperator::Operator { op: o } => {
+        MachOperator::Operator { op: o,.. } => {
             let mut f = state.funcs.last_mut().unwrap();
             match o {
                 Operator::Else => {

@@ -55,12 +55,12 @@ pub fn mach_operators<'a>(
                 .chain([MachOperator::StartBody].map(Ok))
                 .chain(
                     v.into_iter()
-                        .map(|v| v.map(|op| MachOperator::Operator { op })),
+                        .map(|v| v.map(|op| MachOperator::Operator { op,annot:() })),
                 )
                 .chain(
                     [
                         MachOperator::Operator {
-                            op: Operator::Return,
+                            op: Operator::Return,annot: ()
                         },
                         MachOperator::EndBody,
                     ]
@@ -80,8 +80,8 @@ pub struct FnData {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum MachOperator<'a> {
-    Operator { op: Operator<'a> },
+pub enum MachOperator<'a,Annot = ()> {
+    Operator { op: Operator<'a>,annot: Annot },
     Local { count: u32, ty: ValType },
     StartFn { id: u32, data: FnData },
     StartBody,
@@ -115,9 +115,10 @@ pub struct ScanMach<T, F, D> {
 }
 impl<
     'a,
-    I: Iterator<Item = MachOperator<'a>>,
+    A,
+    I: Iterator<Item = MachOperator<'a,A>>,
     T,
-    F: FnMut(&mut FnData, u32, MachOperator<'a>, &mut D) -> T,
+    F: FnMut(&mut FnData, u32, MachOperator<'a,A>, &mut D) -> T,
     D,
 > Iterator for ScanMach<I, F, D>
 {

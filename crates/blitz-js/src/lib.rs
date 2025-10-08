@@ -88,7 +88,7 @@ pub trait JsWrite: Write {
             }
             MachOperator::StartBody => Ok(()),
 
-            MachOperator::Operator { op: o } => {
+            MachOperator::Operator { op: o,annot } => {
                 match o {
                     Operator::I64Const { value } => push(self, &format_args!("{}n", *value as u64)),
                     Operator::I32Const { value } => {
