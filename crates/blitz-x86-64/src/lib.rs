@@ -8,7 +8,7 @@ use core::{
 use alloc::vec::Vec;
 use portal_solutions_blitz_common::{FnData, MachOperator, wasmparser::Operator};
 extern crate alloc;
-static reg_names: &'static [&'static str; 8] =
+static REG_NAMES: &'static [&'static str; 8] =
     &["rax", "rbx", "rcx", "rsp", "rbp", "rsi", "rdi", "rdx"];
 #[derive(Default, Clone)]
 #[non_exhaustive]
@@ -22,14 +22,14 @@ impl Reg {
         if opts.apx {
             let idx = (self.0 as usize) % 32;
             if idx < 8 {
-                write!(f, "{}", &reg_names[idx])
+                write!(f, "{}", &REG_NAMES[idx])
             } else {
                 write!(f, "r{idx}")
             }
         } else {
             let idx = (self.0 as usize) % 16;
             if idx < 8 {
-                write!(f, "{}", &reg_names[idx])
+                write!(f, "{}", &REG_NAMES[idx])
             } else {
                 write!(f, "r{idx}")
             }

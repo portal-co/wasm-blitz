@@ -460,123 +460,123 @@ macro_rules! writers {
                 fn set_label(&mut self, s: &(dyn Label + '_)) -> Result<(), Self::Error> {
                     write!(self, "{s}:\n")
                 }
-                fn xchg(&mut self, Reg(dest): Reg, Reg(src): Reg, mem: Option<isize>) -> Result<(),Self::Error>{
-                    let dest = &reg_names[(dest & 15) as usize];
-                    let src = &reg_names[(src & 15) as usize];
+                fn xchg(&mut self, dest: Reg, src: Reg, mem: Option<isize>) -> Result<(),Self::Error>{
+                    let dest = dest.display(Default::default());
+                    let src = src.display(Default::default());
                     write!(self,"xchg {dest}, ")?;
                     match mem{
                         None => write!(self,"{src}\n"),
                         Some(i) => write!(self,"qword ptr [{src}+{i}]\n")
                     }
                 }
-                fn push(&mut self, Reg(op): Reg) -> Result<(), Self::Error>{
-                    let op = &reg_names[(op & 15) as usize];
+                fn push(&mut self, op: Reg) -> Result<(), Self::Error>{
+                    let op = op.display(Default::default());
                     write!(self,"push {op}\n")
                 }
-                fn pop(&mut self, Reg(op): Reg) -> Result<(), Self::Error>{
-                    let op = &reg_names[(op & 15) as usize];
+                fn pop(&mut self, op: Reg) -> Result<(), Self::Error>{
+                    let op = op.display(Default::default());
                     write!(self,"pop {op}\n")
                 }
-                fn call(&mut self, Reg(op): Reg) -> Result<(), Self::Error>{
-                    let op = &reg_names[(op & 15) as usize];
+                fn call(&mut self, op: Reg) -> Result<(), Self::Error>{
+                    let op = op.display(Default::default());
                     write!(self,"call {op}\n")
                 }
-                 fn jmp(&mut self, Reg(op): Reg) -> Result<(), Self::Error>{
-                    let op = &reg_names[(op & 15) as usize];
+                 fn jmp(&mut self, op: Reg) -> Result<(), Self::Error>{
+                    let op = op.display(Default::default());
                     write!(self,"jmp {op}\n")
                 }
-                fn cmp0(&mut self, Reg(op): Reg) -> Result<(),Self::Error>{
-                    let op = &reg_names[(op & 15) as usize];
+                fn cmp0(&mut self, op: Reg) -> Result<(),Self::Error>{
+                    let op = op.display(Default::default());
                     write!(self,"cmp {op}, 0\n")
                 }
-                fn cmovz64(&mut self, Reg(op): Reg,val:u64) -> Result<(), Self::Error>{
-                     let op = &reg_names[(op & 15) as usize];
+                fn cmovz64(&mut self, op: Reg,val:u64) -> Result<(), Self::Error>{
+                     let op = op.display(Default::default());
                     write!(self,"cmovz {op}, {val}\n")
                 }
-                fn jz(&mut self, Reg(op): Reg) -> Result<(), Self::Error>{
-                    let op = &reg_names[(op & 15) as usize];
+                fn jz(&mut self, op: Reg) -> Result<(), Self::Error>{
+                    let op = op.display(Default::default());
                     write!(self,"jz {op}\n")
                 }
-                fn u32(&mut self, Reg(op): Reg) -> Result<(), Self::Error>{
-                    let op = &reg_names[(op & 15) as usize];
+                fn u32(&mut self, op: Reg) -> Result<(), Self::Error>{
+                    let op = op.display(Default::default());
                     write!(self,"and {op}, 0xffffffff\n")
                 }
-                fn lea(&mut self, Reg(dest): Reg, Reg(src): Reg, offset: isize, off_reg: Option<(Reg,usize)>) -> Result<(),Self::Error>{
-                    let dest = &reg_names[(dest & 15) as usize];
-                    let src = &reg_names[(src & 15) as usize];
+                fn lea(&mut self, dest: Reg, src: Reg, offset: isize, off_reg: Option<(Reg,usize)>) -> Result<(),Self::Error>{
+                    let dest = dest.display(Default::default());
+                    let src = src.display(Default::default());
                     write!(self,"lea {dest}, [{src}")?;
-                    if let Some((Reg(r),m)) = off_reg{
-                        let r = &reg_names[(r & 15) as usize];
+                    if let Some((r,m)) = off_reg{
+                        let r = r.display(Default::default());
                         write!(self,"+{r}*{m}")?;
                     }
                     write!(self,"+{offset}]\n")
                 }
-                fn mov(&mut self, Reg(dest): Reg, Reg(src): Reg, mem: Option<isize>) -> Result<(), Self::Error>{
-                     let dest = &reg_names[(dest & 15) as usize];
-                    let src = &reg_names[(src & 15) as usize];
+                fn mov(&mut self, dest: Reg, src: Reg, mem: Option<isize>) -> Result<(), Self::Error>{
+                     let dest = dest.display(Default::default());
+                    let src = src.display(Default::default());
                     write!(self,"mov {dest}, ")?;
                     match mem{
                         None => write!(self,"{src}\n"),
                         Some(i) => write!(self,"qword ptr [{src}+{i}]\n")
                     }
                 }
-                fn lea_label(&mut self, Reg(dest): Reg, label: &(dyn Label + '_)) -> Result<(),Self::Error>{
-                    let dest = &reg_names[(dest & 15) as usize];
+                fn lea_label(&mut self, dest: Reg, label: &(dyn Label + '_)) -> Result<(),Self::Error>{
+                    let dest = dest.display(Default::default());
                     write!(self,"lea {dest}, {label}\n")
                 }
                 fn get_ip(&mut self) -> Result<(),Self::Error>{
-                //   let dest = &reg_names[(dest & 15) as usize];
+                //   let dest = dest.display(Default::default());
                     write!(self,"call 1f\n1:\n")
                 }
                 fn ret(&mut self) -> Result<(), Self::Error>{
                     write!(self,"ret\n")
                 }
-                fn mov64(&mut self, Reg(r): Reg, val: u64) -> Result<(),Self::Error>{
-                    let r = &reg_names[(r & 15) as usize];
+                fn mov64(&mut self, r: Reg, val: u64) -> Result<(),Self::Error>{
+                    let r = r.display(Default::default());
                     write!(self,"mov {r}, {val}\n")
                 }
-                fn not(&mut self, Reg(op): Reg) -> Result<(), Self::Error>{
-                    let op = &reg_names[(op & 15) as usize];
+                fn not(&mut self, op: Reg) -> Result<(), Self::Error>{
+                    let op = op.display(Default::default());
                     write!(self,"not {op}\n")
                 }
-                fn mul(&mut self, Reg(a): Reg, Reg(b): Reg) -> Result<(), Self::Error>{
-                    let a = &reg_names[(a & 15) as usize];
-                    let b = &reg_names[(b & 15) as usize];
+                fn mul(&mut self, a: Reg, b: Reg) -> Result<(), Self::Error>{
+                    let a = a.display(Default::default());
+                    let b = b.display(Default::default());
                     write!(self,"mul {a},{b}\n")
                 }
-                fn div(&mut self, Reg(a): Reg, Reg(b): Reg) -> Result<(), Self::Error>{
-                    let a = &reg_names[(a & 15) as usize];
-                    let b = &reg_names[(b & 15) as usize];
+                fn div(&mut self, a: Reg, b: Reg) -> Result<(), Self::Error>{
+                    let a = a.display(Default::default());
+                    let b = b.display(Default::default());
                     write!(self,"div {a},{b}\n")
                 }
-                fn idiv(&mut self, Reg(a): Reg, Reg(b): Reg) -> Result<(), Self::Error>{
-                    let a = &reg_names[(a & 15) as usize];
-                    let b = &reg_names[(b & 15) as usize];
+                fn idiv(&mut self, a: Reg, b: Reg) -> Result<(), Self::Error>{
+                    let a = a.display(Default::default());
+                    let b = b.display(Default::default());
                     write!(self,"idiv {a},{b}\n")
                 }
-                fn and(&mut self, Reg(a): Reg, Reg(b): Reg) -> Result<(), Self::Error>{
-                    let a = &reg_names[(a & 15) as usize];
-                    let b = &reg_names[(b & 15) as usize];
+                fn and(&mut self, a: Reg, b: Reg) -> Result<(), Self::Error>{
+                    let a = a.display(Default::default());
+                    let b = b.display(Default::default());
                     write!(self,"and {a},{b}\n")
                 }
-                fn or(&mut self, Reg(a): Reg, Reg(b): Reg) -> Result<(), Self::Error>{
-                    let a = &reg_names[(a & 15) as usize];
-                    let b = &reg_names[(b & 15) as usize];
+                fn or(&mut self, a: Reg, b: Reg) -> Result<(), Self::Error>{
+                    let a = a.display(Default::default());
+                    let b = b.display(Default::default());
                     write!(self,"or {a},{b}\n")
                 }
-                fn eor(&mut self, Reg(a): Reg, Reg(b): Reg) -> Result<(), Self::Error>{
-                    let a = &reg_names[(a & 15) as usize];
-                    let b = &reg_names[(b & 15) as usize];
+                fn eor(&mut self, a: Reg, b: Reg) -> Result<(), Self::Error>{
+                    let a = a.display(Default::default());
+                    let b = b.display(Default::default());
                     write!(self,"eor {a},{b}\n")
                 }
-                fn shl(&mut self, Reg(a): Reg, Reg(b): Reg) -> Result<(), Self::Error>{
-                    let a = &reg_names[(a & 15) as usize];
-                    let b = &reg_names[(b & 15) as usize];
+                fn shl(&mut self, a: Reg, b: Reg) -> Result<(), Self::Error>{
+                    let a = a.display(Default::default());
+                    let b = b.display(Default::default());
                     write!(self,"shl {a},{b}\n")
                 }
-                fn shr(&mut self, Reg(a): Reg, Reg(b): Reg) -> Result<(), Self::Error>{
-                    let a = &reg_names[(a & 15) as usize];
-                    let b = &reg_names[(b & 15) as usize];
+                fn shr(&mut self, a: Reg, b: Reg) -> Result<(), Self::Error>{
+                    let a = a.display(Default::default());
+                    let b = b.display(Default::default());
                     write!(self,"shr {a},{b}\n")
                 }
             })*
