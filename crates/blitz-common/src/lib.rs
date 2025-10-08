@@ -53,10 +53,15 @@ pub fn mach_operators<'a>(
                         .map(|a| a.map(|(a, b)| MachOperator::Local { count: a, ty: b })),
                 )
                 .chain([MachOperator::StartBody].map(Ok))
-                .chain(v.into_iter().map(|v| v.map(MachOperator::Operator)))
+                .chain(
+                    v.into_iter()
+                        .map(|v| v.map(|op| MachOperator::Operator { op })),
+                )
                 .chain(
                     [
-                        MachOperator::Operator(Operator::Return),
+                        MachOperator::Operator {
+                            op: Operator::Return,
+                        },
                         MachOperator::EndBody,
                     ]
                     .map(Ok),
@@ -76,7 +81,7 @@ pub struct FnData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MachOperator<'a> {
-    Operator(Operator<'a>),
+    Operator { op: Operator<'a> },
     Local { count: u32, ty: ValType },
     StartFn { id: u32, data: FnData },
     StartBody,

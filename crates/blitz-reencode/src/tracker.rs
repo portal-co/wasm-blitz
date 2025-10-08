@@ -31,7 +31,7 @@ pub fn do_mach_instruction<E>(
                 .push(wasm_encoder::Function::new(state.locals.drain(..)));
         }
         MachOperator::EndBody => {}
-        MachOperator::Operator(o) => {
+        MachOperator::Operator { op: o } => {
             let mut f = state.funcs.last_mut().unwrap();
             match o {
                 Operator::Else => {
