@@ -14,12 +14,23 @@ static reg_names: &'static [&'static str; 16] = &[
 ];
 #[derive(Default, Clone)]
 #[non_exhaustive]
-pub struct RegFormatOpts {}
+pub struct RegFormatOpts {
+    pub apx: bool,
+}
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Reg(pub u8);
 impl Reg {
     pub fn format(&self, f: &mut Formatter<'_>, opts: &RegFormatOpts) -> core::fmt::Result {
-        write!(f, "{}", &reg_names[(self.0 as usize) % 16])
+        if opts.apx {
+            let idx = (self.0 as usize) % 32;
+            if idx < 16 {
+                write!(f, "{}", &reg_names[idx])
+            } else {
+                write!(f, "r{idx}")
+            }
+        } else {
+            write!(f, "{}", &reg_names[(self.0 as usize) % 16])
+        }
     }
     pub fn display<'a>(&'a self, opts: RegFormatOpts) -> RegDisplay<'a> {
         RegDisplay { reg: self, opts }
