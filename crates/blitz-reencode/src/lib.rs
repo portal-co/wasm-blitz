@@ -4,9 +4,15 @@ use alloc::vec::Vec;
 use portal_solutions_blitz_common::MachOperator;
 pub use wasm_encoder;
 use wasm_encoder::reencode::Reencode;
+#[derive(Default)]
 pub struct MachTracker {
-    pub funcs: Vec<wasm_encoder::Function>,
-    pub locals: Vec<(u32, wasm_encoder::ValType)>,
+    funcs: Vec<wasm_encoder::Function>,
+    locals: Vec<(u32, wasm_encoder::ValType)>,
+}
+impl MachTracker {
+    pub fn current(&mut self) -> Option<&mut wasm_encoder::Function> {
+        return self.funcs.last_mut();
+    }
 }
 pub trait ReencodeExt: Reencode {
     fn mach_instruction(
