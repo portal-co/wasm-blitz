@@ -3,6 +3,7 @@ extern crate alloc;
 use core::{
     fmt::{Display, Formatter},
     mem::{transmute, transmute_copy},
+    str::MatchIndices,
 };
 
 pub use wasmparser;
@@ -55,12 +56,13 @@ pub fn mach_operators<'a>(
                 .chain([MachOperator::StartBody].map(Ok))
                 .chain(
                     v.into_iter()
-                        .map(|v| v.map(|op| MachOperator::Operator { op,annot:() })),
+                        .map(|v| v.map(|op| MachOperator::Operator { op, annot: () })),
                 )
                 .chain(
                     [
                         MachOperator::Operator {
-                            op: Operator::Return,annot: ()
+                            op: Operator::Return,
+                            annot: (),
                         },
                         MachOperator::EndBody,
                     ]
@@ -80,14 +82,66 @@ pub struct FnData {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum MachOperator<'a,Annot = ()> {
-    Operator { op: Operator<'a>,annot: Annot },
+pub enum MachOperator<'a, Annot = ()> {
+    Operator { op: Operator<'a>, annot: Annot },
     Local { count: u32, ty: ValType },
     StartFn { id: u32, data: FnData },
     StartBody,
     EndBody,
 }
-
+impl<'a, Annot> MachOperator<'a, Annot> {
+    pub fn map<Annot2, E>(
+        self,
+        f: &mut (dyn FnMut(Annot) -> Result<Annot2, E> + '_),
+    ) -> Result<MachOperator<'a, Annot2>, E> {
+        Ok(match self {
+            MachOperator::Operator { op, annot } => MachOperator::Operator {
+                op,
+                annot: f(annot)?,
+            },
+            MachOperator::Local { count, ty } => MachOperator::Local { count, ty },
+            MachOperator::StartFn { id, data } => MachOperator::StartFn { id, data },
+            MachOperator::StartBody => MachOperator::StartBody,
+            MachOperator::EndBody => MachOperator::EndBody,
+        })
+    }
+    pub fn as_ref<'b>(&'b self) -> MachOperator<'a, &'b Annot> {
+        match self {
+            MachOperator::Operator { op, annot } => MachOperator::Operator {
+                op: op.clone(),
+                annot,
+            },
+            MachOperator::Local { count, ty } => MachOperator::Local {
+                count: *count,
+                ty: *ty,
+            },
+            MachOperator::StartFn { id, data } => MachOperator::StartFn {
+                id: *id,
+                data: data.clone(),
+            },
+            MachOperator::StartBody => MachOperator::StartBody,
+            MachOperator::EndBody => MachOperator::EndBody,
+        }
+    }
+    pub fn as_mut<'b>(&'b mut self) -> MachOperator<'a, &'b mut Annot> {
+        match self {
+            MachOperator::Operator { op, annot } => MachOperator::Operator {
+                op: op.clone(),
+                annot,
+            },
+            MachOperator::Local { count, ty } => MachOperator::Local {
+                count: *count,
+                ty: *ty,
+            },
+            MachOperator::StartFn { id, data } => MachOperator::StartFn {
+                id: *id,
+                data: data.clone(),
+            },
+            MachOperator::StartBody => MachOperator::StartBody,
+            MachOperator::EndBody => MachOperator::EndBody,
+        }
+    }
+}
 pub fn control_depth(a: &FunctionBody<'_>) -> usize {
     let mut cur: usize = 0;
     let mut max: usize = 0;
@@ -116,9 +170,9 @@ pub struct ScanMach<T, F, D> {
 impl<
     'a,
     A,
-    I: Iterator<Item = MachOperator<'a,A>>,
+    I: Iterator<Item = MachOperator<'a, A>>,
     T,
-    F: FnMut(&mut FnData, u32, MachOperator<'a,A>, &mut D) -> T,
+    F: FnMut(&mut FnData, u32, MachOperator<'a, A>, &mut D) -> T,
     D,
 > Iterator for ScanMach<I, F, D>
 {
