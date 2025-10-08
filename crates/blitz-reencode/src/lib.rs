@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use portal_solutions_blitz_common::{MachOperator, wasmparser::Operator};
 pub use wasm_encoder;
-use wasm_encoder::reencode::Reencode;
+use wasm_encoder::{CodeSection, reencode::Reencode};
 #[derive(Default)]
 pub struct MachTracker {
     funcs: Vec<wasm_encoder::Function>,
@@ -13,6 +13,11 @@ pub struct MachTracker {
 impl MachTracker {
     pub fn current(&mut self) -> Option<&mut wasm_encoder::Function> {
         return self.funcs.last_mut();
+    }
+    pub fn on_code_section(&self, code: &mut CodeSection) {
+        for f in self.funcs.iter() {
+            code.function(f);
+        }
     }
 }
 pub trait ReencodeExt: Reencode {
