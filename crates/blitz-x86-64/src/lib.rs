@@ -8,10 +8,8 @@ use core::{
 use alloc::vec::Vec;
 use portal_solutions_blitz_common::{FnData, MachOperator, wasmparser::Operator};
 extern crate alloc;
-static reg_names: &'static [&'static str; 16] = &[
-    "rax", "rbx", "rcx", "rsp", "rbp", "rsi", "rdi", "rdx", "r8", "r9", "r10", "r11", "r12", "r13",
-    "r14", "r15",
-];
+static reg_names: &'static [&'static str; 8] =
+    &["rax", "rbx", "rcx", "rsp", "rbp", "rsi", "rdi", "rdx"];
 #[derive(Default, Clone)]
 #[non_exhaustive]
 pub struct RegFormatOpts {
@@ -23,13 +21,18 @@ impl Reg {
     pub fn format(&self, f: &mut Formatter<'_>, opts: &RegFormatOpts) -> core::fmt::Result {
         if opts.apx {
             let idx = (self.0 as usize) % 32;
-            if idx < 16 {
+            if idx < 8 {
                 write!(f, "{}", &reg_names[idx])
             } else {
                 write!(f, "r{idx}")
             }
         } else {
-            write!(f, "{}", &reg_names[(self.0 as usize) % 16])
+            let idx = (self.0 as usize) % 16;
+            if idx < 8 {
+                write!(f, "{}", &reg_names[idx])
+            } else {
+                write!(f, "r{idx}")
+            }
         }
     }
     pub fn display<'a>(&'a self, opts: RegFormatOpts) -> RegDisplay<'a> {
