@@ -1,11 +1,11 @@
-use portal_solutions_blitz_common::dce;
+use portal_solutions_blitz_common::dce::{DceStack, dce};
 
 use crate::*;
 #[derive(Default)]
 pub struct MachTracker {
     funcs: Vec<wasm_encoder::Function>,
     locals: Vec<(u32, wasm_encoder::ValType)>,
-    dce_stack: Vec<bool>,
+    dce_stack: DceStack,
 }
 impl MachTracker {
     pub fn current(&mut self) -> Option<&mut wasm_encoder::Function> {
@@ -32,7 +32,9 @@ pub fn do_mach_instruction<E, A>(
                 .funcs
                 .push(wasm_encoder::Function::new(state.locals.drain(..)));
         }
-        MachOperator::EndBody => {}
+        MachOperator::EndBody => {
+            state.dce_stack = Default::default();
+        }
         MachOperator::Operator { op: o, .. } => {
             let mut f = state.funcs.last_mut().unwrap();
             if !dce(&mut state.dce_stack, &o) {
