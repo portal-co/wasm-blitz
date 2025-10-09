@@ -6,8 +6,42 @@ use core::{
     str::MatchIndices,
 };
 
+use alloc::vec::Vec;
 pub use wasmparser;
 use wasmparser::{BinaryReaderError, FuncType, FunctionBody, Operator, ValType};
+pub fn dce(stack: &mut Vec<bool>, o: &Operator<'_>) -> bool {
+    match o {
+        Operator::Else => {
+            if let Some(a) = stack.last_mut() {
+                *a = false
+            }
+        }
+        Operator::If { .. } | Operator::Block { .. } | Operator::Loop { .. } => {
+            stack.push(false);
+        }
+        Operator::End => {
+            stack.pop();
+        }
+        Operator::Br { .. }
+        | Operator::BrTable { .. }
+        | Operator::Return
+        | Operator::ReturnCall { .. }
+        | Operator::ReturnCallIndirect { .. }
+        | Operator::ReturnCallRef { .. }
+        | Operator::Unreachable => {
+            if let Some(a) = stack.last_mut() {
+                *a = true
+            }
+        }
+        o => {
+            if stack.iter().any(|a| *a) {
+                return true;
+            } else {
+            }
+        }
+    };
+    return false;
+}
 pub trait Label<X: Clone + 'static>: Display {
     fn raw(&self) -> Option<X> {
         if typeid::of::<Self>() == typeid::of::<X>() {

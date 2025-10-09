@@ -1,3 +1,5 @@
+use portal_solutions_blitz_common::dce;
+
 use crate::*;
 #[derive(Default)]
 pub struct MachTracker {
@@ -15,9 +17,9 @@ impl MachTracker {
         }
     }
 }
-pub fn do_mach_instruction<E,A>(
+pub fn do_mach_instruction<E, A>(
     r: &mut (impl Reencode<Error = E> + ?Sized),
-    a: &MachOperator<'_,A>,
+    a: &MachOperator<'_, A>,
     state: &mut MachTracker,
 ) -> Result<(), wasm_encoder::reencode::Error<E>> {
     match a {
@@ -31,38 +33,11 @@ pub fn do_mach_instruction<E,A>(
                 .push(wasm_encoder::Function::new(state.locals.drain(..)));
         }
         MachOperator::EndBody => {}
-        MachOperator::Operator { op: o,.. } => {
+        MachOperator::Operator { op: o, .. } => {
             let mut f = state.funcs.last_mut().unwrap();
-            match o {
-                Operator::Else => {
-                    if let Some(a) = state.dce_stack.last_mut() {
-                        *a = false
-                    }
-                }
-                Operator::If { .. } | Operator::Block { .. } | Operator::Loop { .. } => {
-                    state.dce_stack.push(false);
-                }
-                Operator::End => {
-                    state.dce_stack.pop();
-                }
-                Operator::Br { .. }
-                | Operator::BrTable { .. }
-                | Operator::Return
-                | Operator::ReturnCall { .. }
-                | Operator::ReturnCallIndirect { .. }
-                | Operator::ReturnCallRef { .. }
-                | Operator::Unreachable => {
-                    if let Some(a) = state.dce_stack.last_mut() {
-                        *a = true
-                    }
-                }
-                o => {
-                    if state.dce_stack.iter().any(|a| *a) {
-                        return Ok(());
-                    } else {
-                    }
-                }
-            };
+            if dce(&mut state.dce_stack, &o) {
+                return Ok(());
+            }
             f.instruction(&r.instruction(o.clone())?);
         }
         _ => todo!(),
