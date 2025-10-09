@@ -35,10 +35,9 @@ pub fn do_mach_instruction<E, A>(
         MachOperator::EndBody => {}
         MachOperator::Operator { op: o, .. } => {
             let mut f = state.funcs.last_mut().unwrap();
-            if dce(&mut state.dce_stack, &o) {
-                return Ok(());
+            if !dce(&mut state.dce_stack, &o) {
+                f.instruction(&r.instruction(o.clone())?);
             }
-            f.instruction(&r.instruction(o.clone())?);
         }
         _ => todo!(),
     };
