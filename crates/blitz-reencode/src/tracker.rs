@@ -36,6 +36,9 @@ pub fn do_mach_instruction<E, A>(
             state.dce_stack = Default::default();
         }
         MachOperator::Operator { op: o, .. } => {
+            let Some(o) = o.as_ref() else {
+                return Ok(());
+            };
             let mut f = state.funcs.last_mut().unwrap();
             if !dce(&mut state.dce_stack, &o) {
                 f.instruction(&r.instruction(o.clone())?);

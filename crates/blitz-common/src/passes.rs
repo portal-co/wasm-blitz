@@ -9,7 +9,7 @@ macro_rules! dce_pass {
                 a,
                 |_, _, o, dce_stack| match o {
                     $crate::MachOperator::Operator { op, annot }
-                        if $crate::dce::dce(dce_stack, &op) =>
+                        if $crate::dce::dce(dce_stack,$crate::core::option::Option::as_ref(op)?) =>
                     {
                         $crate::core::option::Option::None
                     }
@@ -43,14 +43,14 @@ pub fn load_coalescing<'a>(
                 ]
                 .into_iter()
                 .collect::<Vec<_>>(),
-                MachOperator::Operator { op: o, annot } => match o {
+                MachOperator::Operator { op: Some(o), annot } => match o {
                     Operator::I64Load8U { memarg } => [
                         Operator::I64Load { memarg },
                         Operator::I64Const { value: 0xff },
                         Operator::I64Add,
                     ]
                     .into_iter()
-                    .map(|v| MachOperator::Operator { op: v, annot })
+                    .map(|v| MachOperator::Operator { op: Some(v), annot })
                     .collect(),
                     Operator::I64Load16U { memarg } => [
                         Operator::I64Load { memarg },
@@ -58,7 +58,7 @@ pub fn load_coalescing<'a>(
                         Operator::I64Add,
                     ]
                     .into_iter()
-                    .map(|v| MachOperator::Operator { op: v, annot })
+                    .map(|v| MachOperator::Operator { op: Some(v), annot })
                     .collect(),
                     Operator::I64Load32U { memarg } => [
                         Operator::I64Load { memarg },
@@ -66,7 +66,7 @@ pub fn load_coalescing<'a>(
                         Operator::I64Add,
                     ]
                     .into_iter()
-                    .map(|v| MachOperator::Operator { op: v, annot })
+                    .map(|v| MachOperator::Operator { op: Some(v), annot })
                     .collect(),
                     Operator::I32Load8U { memarg } => [
                         Operator::I64Load { memarg },
@@ -75,7 +75,7 @@ pub fn load_coalescing<'a>(
                         Operator::I32Add,
                     ]
                     .into_iter()
-                    .map(|v| MachOperator::Operator { op: v, annot })
+                    .map(|v| MachOperator::Operator { op: Some(v), annot })
                     .collect(),
                     Operator::I32Load16U { memarg } => [
                         Operator::I64Load { memarg },
@@ -84,12 +84,12 @@ pub fn load_coalescing<'a>(
                         Operator::I32Add,
                     ]
                     .into_iter()
-                    .map(|v| MachOperator::Operator { op: v, annot })
+                    .map(|v| MachOperator::Operator { op: Some(v), annot })
                     .collect(),
                     Operator::I32Load { memarg } => {
                         [Operator::I64Load { memarg }, Operator::I32WrapI64]
                             .into_iter()
-                            .map(|v| MachOperator::Operator { op: v, annot })
+                            .map(|v| MachOperator::Operator { op: Some(v), annot })
                             .collect()
                     }
                     Operator::I64Store8 { memarg } => [
@@ -106,7 +106,7 @@ pub fn load_coalescing<'a>(
                         Operator::I64Store { memarg },
                     ]
                     .into_iter()
-                    .map(|v| MachOperator::Operator { op: v, annot })
+                    .map(|v| MachOperator::Operator { op: Some(v), annot })
                     .collect(),
                     Operator::I64Store16 { memarg } => [
                         Operator::LocalSet { local_index: l },
@@ -122,7 +122,7 @@ pub fn load_coalescing<'a>(
                         Operator::I64Store { memarg },
                     ]
                     .into_iter()
-                    .map(|v| MachOperator::Operator { op: v, annot })
+                    .map(|v| MachOperator::Operator { op: Some(v), annot })
                     .collect(),
                     Operator::I64Store32 { memarg } => [
                         Operator::LocalSet { local_index: l },
@@ -140,7 +140,7 @@ pub fn load_coalescing<'a>(
                         Operator::I64Store { memarg },
                     ]
                     .into_iter()
-                    .map(|v| MachOperator::Operator { op: v, annot })
+                    .map(|v| MachOperator::Operator { op: Some(v), annot })
                     .collect(),
                     Operator::I32Store8 { memarg } => [
                         Operator::LocalSet { local_index: l },
@@ -157,7 +157,7 @@ pub fn load_coalescing<'a>(
                         Operator::I64Store { memarg },
                     ]
                     .into_iter()
-                    .map(|v| MachOperator::Operator { op: v, annot })
+                    .map(|v| MachOperator::Operator { op: Some(v), annot })
                     .collect(),
                     Operator::I32Store16 { memarg } => [
                         Operator::LocalSet { local_index: l },
@@ -174,7 +174,7 @@ pub fn load_coalescing<'a>(
                         Operator::I64Store { memarg },
                     ]
                     .into_iter()
-                    .map(|v| MachOperator::Operator { op: v, annot })
+                    .map(|v| MachOperator::Operator { op: Some(v), annot })
                     .collect(),
                     Operator::I32Store { memarg } => [
                         Operator::LocalSet { local_index: l },
@@ -189,9 +189,9 @@ pub fn load_coalescing<'a>(
                         Operator::I64Store { memarg },
                     ]
                     .into_iter()
-                    .map(|v| MachOperator::Operator { op: v, annot })
+                    .map(|v| MachOperator::Operator { op: Some(v), annot })
                     .collect(),
-                    o => [MachOperator::Operator { op: o, annot }]
+                    o => [MachOperator::Operator { op: Some(o), annot }]
                         .into_iter()
                         .collect::<Vec<_>>(),
                 },

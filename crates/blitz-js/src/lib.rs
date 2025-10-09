@@ -89,6 +89,9 @@ pub trait JsWrite: Write {
             MachOperator::StartBody => Ok(()),
 
             MachOperator::Operator { op: o, annot } => {
+                let Some(o) = o.as_ref() else{
+                    return Ok(());
+                };
                 match o {
                     Operator::I64Const { value } => push(self, &format_args!("{}n", *value as u64)),
                     Operator::I32Const { value } => {
