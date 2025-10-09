@@ -1,5 +1,10 @@
 #![no_std]
-extern crate alloc;
+#[doc(hidden)]
+pub extern crate alloc;
+#[doc(hidden)]
+pub mod __{
+    pub use core;
+}
 use core::{
     fmt::{Display, Formatter},
     mem::{transmute, transmute_copy},

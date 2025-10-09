@@ -1,6 +1,11 @@
 use crate::*;
 #[derive(Default)]
 pub struct DceStack(Vec<bool>);
+impl DceStack{
+    pub fn new() -> Self{
+        return Default::default();
+    }
+}
 pub fn dce(DceStack(stack): &mut DceStack, o: &Operator<'_>) -> bool {
     match o {
         Operator::Else => {
