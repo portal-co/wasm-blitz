@@ -9,7 +9,15 @@ macro_rules! dce_pass {
                 a,
                 |_, _, o, dce_stack| match o {
                     $crate::MachOperator::Operator { op, annot }
-                        if $crate::dce::dce(dce_stack,$crate::core::option::Option::as_ref(op)?) =>
+                        if $crate::dce::dce(
+                            dce_stack,
+                            match $crate::core::option::Option::as_ref(op) {
+                                $crate::core::option::Option::Some(o) => o,
+                                $crate::core::option::Option::None => {
+                                    return $crate::core::option::Option::None
+                                }
+                            },
+                        ) =>
                     {
                         $crate::core::option::Option::None
                     }
