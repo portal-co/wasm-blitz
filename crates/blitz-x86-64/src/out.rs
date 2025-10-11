@@ -1,3 +1,5 @@
+use alloc::boxed::Box;
+
 use crate::*;
 pub trait Writer {
     type Error: Error;
@@ -130,4 +132,7 @@ macro_rules! writer_dispatch {
         };
     };
 }
-writer_dispatch!([ T: Writer + ?Sized ] &'_ mut T => T::Error);
+writer_dispatch!(
+    [ T: Writer + ?Sized ] &'_ mut T => T::Error,
+    [ T: Writer + ?Sized ] Box<T> => T::Error
+);
