@@ -4,6 +4,9 @@ use crate::*;
 pub mod asm;
 pub trait Arg: Display {
     fn reg(&self) -> Reg;
+    fn display(&self, opts: RegFormatOpts) -> RegDisplay {
+        return self.reg().display(opts);
+    }
 }
 impl Arg for Reg {
     fn reg(&self) -> Reg {
@@ -13,8 +16,18 @@ impl Arg for Reg {
 pub trait Writer {
     type Error: Error;
     fn set_label(&mut self, s: &(dyn Label + '_)) -> Result<(), Self::Error>;
-    fn xchg(&mut self, dest: &(dyn Arg + '_), src: &(dyn Arg + '_), mem: Option<isize>) -> Result<(), Self::Error>;
-    fn mov(&mut self, dest: &(dyn Arg + '_), src: &(dyn Arg + '_), mem: Option<isize>) -> Result<(), Self::Error>;
+    fn xchg(
+        &mut self,
+        dest: &(dyn Arg + '_),
+        src: &(dyn Arg + '_),
+        mem: Option<isize>,
+    ) -> Result<(), Self::Error>;
+    fn mov(
+        &mut self,
+        dest: &(dyn Arg + '_),
+        src: &(dyn Arg + '_),
+        mem: Option<isize>,
+    ) -> Result<(), Self::Error>;
     fn push(&mut self, op: &(dyn Arg + '_)) -> Result<(), Self::Error>;
     fn pop(&mut self, op: &(dyn Arg + '_)) -> Result<(), Self::Error>;
     fn call(&mut self, op: &(dyn Arg + '_)) -> Result<(), Self::Error>;
@@ -31,7 +44,11 @@ pub trait Writer {
         offset: isize,
         off_reg: Option<(&(dyn Arg + '_), usize)>,
     ) -> Result<(), Self::Error>;
-    fn lea_label(&mut self, dest: &(dyn Arg + '_), label: &(dyn Label + '_)) -> Result<(), Self::Error>;
+    fn lea_label(
+        &mut self,
+        dest: &(dyn Arg + '_),
+        label: &(dyn Label + '_),
+    ) -> Result<(), Self::Error>;
     fn get_ip(&mut self) -> Result<(), Self::Error>;
     fn ret(&mut self) -> Result<(), Self::Error>;
     fn mov64(&mut self, r: &(dyn Arg + '_), val: u64) -> Result<(), Self::Error>;
