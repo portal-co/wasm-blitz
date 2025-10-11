@@ -10,30 +10,26 @@ use portal_solutions_blitz_common::{FnData, MachOperator, wasmparser::Operator};
 extern crate alloc;
 static REG_NAMES: &'static [&'static str; 8] =
     &["rax", "rbx", "rcx", "rsp", "rbp", "rsi", "rdi", "rdx"];
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct X64Arch {
+    pub apx: bool,
+}
 #[derive(Default, Clone)]
 #[non_exhaustive]
 pub struct RegFormatOpts {
-    pub apx: bool,
+    pub arch: X64Arch,
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Reg(pub u8);
 impl Reg {
     pub const CTX: Reg = Reg(255);
     pub fn format(&self, f: &mut Formatter<'_>, opts: &RegFormatOpts) -> core::fmt::Result {
-        if opts.apx {
-            let idx = (self.0 as usize) % 32;
-            if idx < 8 {
-                write!(f, "{}", &REG_NAMES[idx])
-            } else {
-                write!(f, "r{idx}")
-            }
+        let idx = (self.0 as usize) % (if opts.arch.apx { 32 } else { 16 });
+        if idx < 8 {
+            write!(f, "{}", &REG_NAMES[idx])
         } else {
-            let idx = (self.0 as usize) % 16;
-            if idx < 8 {
-                write!(f, "{}", &REG_NAMES[idx])
-            } else {
-                write!(f, "r{idx}")
-            }
+            write!(f, "r{idx}")
         }
     }
     pub fn display<'a>(&'a self, opts: RegFormatOpts) -> RegDisplay {
