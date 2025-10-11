@@ -1,5 +1,5 @@
 use crate::{
-    out::{Arg, Writer},
+    out::{arg::Arg, Writer},
     *,
 };
 
