@@ -6,4 +6,4 @@ license.workspace = true
 description.workspace = true
 
 [dependencies]
-portal-solutions-blitz-common = { version = "0.1.0", path = "../blitz-common" }
+portal-solutions-blitz-common = { workspace = true, features = ["asm"] }

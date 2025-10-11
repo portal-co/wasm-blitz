@@ -9,4 +9,7 @@ description = "Fast WASM compiler"
 [workspace.dependencies]
 wasmparser = { version = "0.239.0", default-features = false }
 wasm-encoder = { version = "0.239.0", default-features = false,features = ["wasmparser"] }
+portal-solutions-blitz-common = { version = "0.1.0", path = "crates/blitz-common", default-features = false }
+portal-solutions-blitz-i4 = { version = "0.1.0", path = "crates/blitz-i4" }
+
 typeid = "1.0.3"
