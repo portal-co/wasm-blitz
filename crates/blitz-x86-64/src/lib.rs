@@ -35,15 +35,20 @@ impl Reg {
             }
         }
     }
-    pub fn display<'a>(&'a self, opts: RegFormatOpts) -> RegDisplay<'a> {
-        RegDisplay { reg: self, opts }
+    pub fn display<'a>(&'a self, opts: RegFormatOpts) -> RegDisplay {
+        RegDisplay { reg: *self, opts }
     }
 }
-pub struct RegDisplay<'a> {
-    reg: &'a Reg,
+impl Display for Reg{
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        self.format(f, &Default::default())
+    }
+}
+pub struct RegDisplay {
+    reg: Reg,
     opts: RegFormatOpts,
 }
-impl Display for RegDisplay<'_> {
+impl Display for RegDisplay {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         self.reg.format(f, &self.opts)
     }
