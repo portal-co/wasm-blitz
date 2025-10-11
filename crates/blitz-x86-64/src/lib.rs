@@ -18,6 +18,7 @@ pub struct RegFormatOpts {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Reg(pub u8);
 impl Reg {
+    pub const CTX: Reg = Reg(255);
     pub fn format(&self, f: &mut Formatter<'_>, opts: &RegFormatOpts) -> core::fmt::Result {
         if opts.apx {
             let idx = (self.0 as usize) % 32;
@@ -39,7 +40,7 @@ impl Reg {
         RegDisplay { reg: *self, opts }
     }
 }
-impl Display for Reg{
+impl Display for Reg {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         self.format(f, &Default::default())
     }

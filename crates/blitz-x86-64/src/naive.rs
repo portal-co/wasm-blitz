@@ -18,12 +18,12 @@ enum Endable {
 }
 pub trait WriterExt: Writer {
     fn br(&mut self, state: &mut State, relative_depth: u32) -> Result<(), Self::Error> {
-        self.xchg(&RSP, &Reg(15), Some(8))?;
+        self.xchg(&RSP, &Reg::CTX, Some(8))?;
         for _ in 0..=relative_depth {
             self.pop(&Reg(0))?;
             self.pop(&Reg(1))?;
         }
-        self.xchg(&RSP, &Reg(15), Some(8))?;
+        self.xchg(&RSP, &Reg::CTX, Some(8))?;
         self.mov(&RSP, &Reg(1), None)?;
         self.jmp(&Reg(0))?;
         Ok(())
@@ -35,7 +35,7 @@ pub trait WriterExt: Writer {
         self.lea_label(&Reg(0), &X64Label::Indexed { idx: i })?;
         self.push(&Reg(0))?;
         self.push(&Reg(1))?;
-        self.mov(&Reg(0), &Reg(15), Some(-8))?;
+        self.mov(&Reg(0), &Reg::CTX, Some(-8))?;
         self.xchg(&Reg(0), &RSP, Some(0))?;
         self.ret()?;
         self.set_label(&X64Label::Indexed { idx: i })?;
@@ -47,7 +47,7 @@ pub trait WriterExt: Writer {
         func_imports: &[(&str, &str)],
         op: &MachOperator<'_>,
     ) -> Result<(), Self::Error> {
-        //Stack Frame: r&Reg(15)[&Reg(0)] => local variable frame
+        //Stack Frame: r&Reg::CTX[&Reg(0)] => local variable frame
         match op {
             MachOperator::StartFn {
                 id: f,
@@ -64,7 +64,7 @@ pub trait WriterExt: Writer {
                 state.control_depth = *control_depth;
                 self.pop(&Reg(1))?;
                 self.lea(&Reg(0), &Reg(1), -(*params as isize), None)?;
-                self.xchg(&Reg(0), &Reg(15), Some(0))?;
+                self.xchg(&Reg(0), &Reg::CTX, Some(0))?;
                 self.set_label(&X64Label::Func { r#fn: *f })?;
             }
             MachOperator::Local { count: a, ty: b } => {
@@ -77,7 +77,7 @@ pub trait WriterExt: Writer {
                 self.push(&Reg(1))?;
                 self.push(&Reg(0))?;
                 self.lea(&Reg(0), &RSP, -(state.control_depth as isize * 16), None)?;
-                self.xchg(&Reg(0), &Reg(15), Some(8))?;
+                self.xchg(&Reg(0), &Reg::CTX, Some(8))?;
                 self.push(&Reg(0))?;
                 for _ in 0..state.control_depth {
                     for _ in 0..2 {
@@ -267,39 +267,39 @@ pub trait WriterExt: Writer {
                         // self.push(&Reg(0))?;
                     }
                     Operator::LocalGet { local_index } => {
-                        self.xchg(&RSP, &Reg(15), Some(0))?;
+                        self.xchg(&RSP, &Reg::CTX, Some(0))?;
                         self.lea(&RSP, &RSP, -((*local_index as i32 as isize) * 8), None)?;
                         self.pop(&Reg(0))?;
                         self.lea(&RSP, &RSP, ((*local_index as i32 as isize + 1) * 8), None)?;
-                        self.xchg(&RSP, &Reg(15), Some(0))?;
+                        self.xchg(&RSP, &Reg::CTX, Some(0))?;
                         self.push(&Reg(0))?;
                     }
                     Operator::LocalTee { local_index } => {
                         self.pop(&Reg(0))?;
-                        self.xchg(&RSP, &Reg(15), Some(0))?;
+                        self.xchg(&RSP, &Reg::CTX, Some(0))?;
                         self.lea(&RSP, &RSP, -((*local_index as i32 as isize) * 8), None)?;
                         self.push(&Reg(0))?;
                         self.lea(&RSP, &RSP, ((*local_index as i32 as isize + 1) * 8), None)?;
-                        self.xchg(&RSP, &Reg(15), Some(0))?;
+                        self.xchg(&RSP, &Reg::CTX, Some(0))?;
                         self.push(&Reg(0))?;
                     }
                     Operator::LocalSet { local_index } => {
                         self.pop(&Reg(0))?;
-                        self.xchg(&RSP, &Reg(15), Some(0))?;
+                        self.xchg(&RSP, &Reg::CTX, Some(0))?;
                         self.lea(&RSP, &RSP, -((*local_index as i32 as isize) * 8), None)?;
                         self.push(&Reg(0))?;
                         self.lea(&RSP, &RSP, ((*local_index as i32 as isize + 1) * 8), None)?;
-                        self.xchg(&RSP, &Reg(15), Some(0))?;
+                        self.xchg(&RSP, &Reg::CTX, Some(0))?;
                     }
                     Operator::Return => {
                         self.mov(&Reg(1), &RSP, None)?;
-                        self.mov(&Reg(0), &Reg(15), Some(0))?;
+                        self.mov(&Reg(0), &Reg::CTX, Some(0))?;
                         self.lea(&Reg(0), &Reg(0), (state.local_count + 3) as isize * 8, None)?;
                         self.mov(&RSP, &Reg(0), None)?;
                         self.pop(&Reg(0))?;
-                        self.xchg(&Reg(0), &Reg(15), Some(8))?;
+                        self.xchg(&Reg(0), &Reg::CTX, Some(8))?;
                         self.pop(&Reg(0))?;
-                        self.xchg(&Reg(0), &Reg(15), Some(0))?;
+                        self.xchg(&Reg(0), &Reg::CTX, Some(0))?;
                         self.pop(&Reg(0))?;
                         for a in 0..state.num_returns {
                             self.mov(&Reg(2), &Reg(1), Some(-(a as isize * 8)))?;
@@ -343,12 +343,12 @@ pub trait WriterExt: Writer {
                         state.label_index += 1;
                         self.lea_label(&Reg(0), &X64Label::Indexed { idx: i })?;
                         self.mov(&Reg(1), &RSP, None)?;
-                        self.xchg(&RSP, &Reg(15), Some(8))?;
+                        self.xchg(&RSP, &Reg::CTX, Some(8))?;
                         // for _ in &Reg(0)..=(*relative_depth) {
                         self.push(&Reg(1))?;
                         self.push(&Reg(0))?;
                         // }
-                        self.xchg(&RSP, &Reg(15), Some(8))?;
+                        self.xchg(&RSP, &Reg::CTX, Some(8))?;
                         self.set_label(&X64Label::Indexed { idx: i })?;
                     }
                     Operator::If { blockty } => {
@@ -378,15 +378,15 @@ pub trait WriterExt: Writer {
                         self.set_label(&X64Label::Indexed { idx: i })?;
                         self.lea_label(&Reg(0), &X64Label::Indexed { idx: i })?;
                         self.mov(&Reg(1), &RSP, None)?;
-                        self.xchg(&RSP, &Reg(15), Some(8))?;
+                        self.xchg(&RSP, &Reg::CTX, Some(8))?;
                         // for _ in &Reg(0)..=(*relative_depth) {
                         self.push(&Reg(1))?;
                         self.push(&Reg(0))?;
                         // }
-                        self.xchg(&RSP, &Reg(15), Some(8))?;
+                        self.xchg(&RSP, &Reg::CTX, Some(8))?;
                     }
                     Operator::End => {
-                        self.xchg(&RSP, &Reg(15), Some(8))?;
+                        self.xchg(&RSP, &Reg::CTX, Some(8))?;
                         // for _ in &Reg(0)..=(*relative_depth) {
                         match state.if_stack.pop().unwrap() {
                             Endable::Br => {
@@ -398,7 +398,7 @@ pub trait WriterExt: Writer {
                             }
                         }
                         // }
-                        self.xchg(&RSP, &Reg(15), Some(8))?;
+                        self.xchg(&RSP, &Reg::CTX, Some(8))?;
                     }
                     Operator::Call { function_index } => {
                         match func_imports.get(*function_index as usize) {
