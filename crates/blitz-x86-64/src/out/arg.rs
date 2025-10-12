@@ -35,16 +35,16 @@ impl Display for ArgKind {
 }
 
 pub trait Arg {
-    fn reg(&self) -> ArgKind;
+    fn kind(&self) -> ArgKind;
     fn format(&self, f: &mut Formatter<'_>, opts: X64Arch) -> core::fmt::Result {
         write!(f, "{}", self.display(opts))
     }
     fn display(&self, opts: X64Arch) -> ArgKindDisplay {
-        return self.reg().display(opts);
+        return self.kind().display(opts);
     }
 }
 impl Arg for Reg {
-    fn reg(&self) -> ArgKind {
+    fn kind(&self) -> ArgKind {
         ArgKind::Reg { reg: self.clone() }
     }
     fn display(&self, opts: X64Arch) -> ArgKindDisplay {
@@ -58,12 +58,12 @@ impl Arg for Reg {
     }
 }
 impl Arg for ArgKind {
-    fn reg(&self) -> ArgKind {
+    fn kind(&self) -> ArgKind {
         self.clone()
     }
 }
 impl Arg for u64 {
-    fn reg(&self) -> ArgKind {
+    fn kind(&self) -> ArgKind {
         ArgKind::Lit(*self)
     }
     fn display(&self, opts: X64Arch) -> ArgKindDisplay {
