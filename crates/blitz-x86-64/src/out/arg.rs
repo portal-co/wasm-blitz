@@ -2,13 +2,13 @@ use super::*;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[non_exhaustive]
 pub enum ArgKind {
-    Reg(Reg),
+    Reg { reg: Reg },
     Lit(u64),
 }
 impl ArgKind {
     pub fn display(&self, opts: X64Arch) -> ArgKindDisplay {
         match self {
-            ArgKind::Reg(reg) => ArgKindDisplay::Reg(reg.display(RegFormatOpts::default_with_arch(opts))),
+            ArgKind::Reg { reg } => ArgKindDisplay::Reg(reg.display(RegFormatOpts::default_with_arch(opts))),
             ArgKind::Lit(i) => ArgKindDisplay::Lit(*i),
         }
     }
@@ -40,7 +40,7 @@ pub trait Arg: Display {
 }
 impl Arg for Reg {
     fn reg(&self) -> ArgKind {
-        ArgKind::Reg(self.clone())
+        ArgKind::Reg { reg: self.clone() }
     }
     fn display(&self, opts: X64Arch) -> ArgKindDisplay {
         ArgKindDisplay::Reg(self.display(RegFormatOpts::default_with_arch(opts)))
