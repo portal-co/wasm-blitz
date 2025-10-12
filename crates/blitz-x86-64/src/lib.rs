@@ -8,6 +8,7 @@ use core::{
 use alloc::vec::Vec;
 use portal_solutions_blitz_common::{
     MemorySize,
+    asm::Reg,
     ops::{FnData, MachOperator},
     wasmparser::Operator,
 };
@@ -32,22 +33,23 @@ pub struct RegFormatOpts {
 }
 impl RegFormatOpts {
     pub fn default_with_arch(arch: X64Arch) -> Self {
-       Self::default_with_arch_and_size(arch, Default::default())
+        Self::default_with_arch_and_size(arch, Default::default())
     }
     pub fn default_with_arch_and_size(arch: X64Arch, size: MemorySize) -> Self {
         Self { arch, size }
     }
 }
-impl Default for RegFormatOpts{
+impl Default for RegFormatOpts {
     fn default() -> Self {
         Self::default_with_arch(Default::default())
     }
 }
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct Reg(pub u8);
-impl Reg {
-    pub const CTX: Reg = Reg(255);
-    pub fn format(&self, f: &mut Formatter<'_>, opts: &RegFormatOpts) -> core::fmt::Result {
+pub trait X64Reg {
+    fn format(&self, f: &mut Formatter<'_>, opts: &RegFormatOpts) -> core::fmt::Result;
+    fn display<'a>(&'a self, opts: RegFormatOpts) -> RegDisplay;
+}
+impl X64Reg for Reg {
+    fn format(&self, f: &mut Formatter<'_>, opts: &RegFormatOpts) -> core::fmt::Result {
         let idx = (self.0 as usize) % (if opts.arch.apx { 32 } else { 16 });
         if idx < 8 {
             write!(
@@ -73,15 +75,11 @@ impl Reg {
             )
         }
     }
-    pub fn display<'a>(&'a self, opts: RegFormatOpts) -> RegDisplay {
+    fn display<'a>(&'a self, opts: RegFormatOpts) -> RegDisplay {
         RegDisplay { reg: *self, opts }
     }
 }
-impl Display for Reg {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        self.format(f, &Default::default())
-    }
-}
+
 pub struct RegDisplay {
     reg: Reg,
     opts: RegFormatOpts,

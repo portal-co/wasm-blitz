@@ -35,6 +35,8 @@ impl<'a> Display for DisplayFn<'a> {
 }
 pub mod ops;
 pub mod passes;
+#[cfg(feature = "asm")]
+pub mod asm;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug,Default)]
 pub enum MemorySize {
     _8,
