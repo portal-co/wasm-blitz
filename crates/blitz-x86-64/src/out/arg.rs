@@ -1,3 +1,5 @@
+use crate::reg::{RegDisplay, X64Reg};
+
 use super::*;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[non_exhaustive]
