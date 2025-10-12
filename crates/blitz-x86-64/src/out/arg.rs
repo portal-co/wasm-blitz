@@ -69,4 +69,7 @@ impl Arg for u64 {
     fn display(&self, opts: X64Arch) -> ArgKindDisplay {
         ArgKindDisplay::Lit(*self)
     }
+    fn format(&self, f: &mut Formatter<'_>, opts: X64Arch) -> core::fmt::Result {
+        write!(f,"{self}")
+    }
 }
