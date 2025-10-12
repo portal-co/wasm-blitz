@@ -86,7 +86,7 @@ pub struct RegDisplay {
 }
 impl Display for RegDisplay {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        self.reg.format(f, &self.opts)
+        X64Reg::format(&self.reg, f, &self.opts)
     }
 }
 
