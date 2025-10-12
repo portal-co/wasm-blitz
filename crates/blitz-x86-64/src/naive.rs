@@ -50,7 +50,7 @@ pub trait WriterExt: Writer {
         //Stack Frame: r&Reg::CTX[&Reg(0)] => local variable frame
         match op {
             MachOperator::StartFn {
-                id: f,
+                id,
                 data:
                     FnData {
                         num_params: params,
@@ -65,10 +65,10 @@ pub trait WriterExt: Writer {
                 self.pop(&Reg(1))?;
                 self.lea(&Reg(0), &Reg(1), -(*params as isize), None)?;
                 self.xchg(&Reg(0), &Reg::CTX, Some(0))?;
-                self.set_label(&X64Label::Func { r#fn: *f })?;
+                self.set_label(&X64Label::Func { r#fn: *id })?;
             }
-            MachOperator::Local { count: a, ty: b } => {
-                for _ in 0..*a {
+            MachOperator::Local { count, ty } => {
+                for _ in 0..*count {
                     state.local_count += 1;
                     self.push(&Reg(0))?;
                 }

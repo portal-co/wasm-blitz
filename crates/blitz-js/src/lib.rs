@@ -83,12 +83,12 @@ pub trait JsWrite: Write {
                     data.num_params, data.num_returns
                 )
             }
-            MachOperator::Local { count: a, ty: b } => {
-                for _ in 0..*a {
+            MachOperator::Local { count, ty } => {
+                for _ in 0..*count {
                     write!(
                         self,
                         "locals=[...locals,{}];",
-                        match b {
+                        match ty {
                             ValType::F32 | ValType::F64 => "0",
                             _ => "0n",
                         }
@@ -98,11 +98,11 @@ pub trait JsWrite: Write {
             }
             MachOperator::StartBody => Ok(()),
 
-            MachOperator::Operator { op: o, annot } => {
-                let Some(o) = o.as_ref() else{
+            MachOperator::Operator { op, annot } => {
+                let Some(op) = op.as_ref() else{
                     return Ok(());
                 };
-                match o {
+                match op {
                     Operator::I64Const { value } => push(self, &format_args!("{}n", *value as u64)),
                     Operator::I32Const { value } => {
                         push(self, &format_args!("{}n", *value as u32 as u64))
