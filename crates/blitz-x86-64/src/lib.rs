@@ -6,10 +6,19 @@ use core::{
 };
 
 use alloc::vec::Vec;
-use portal_solutions_blitz_common::{ops::FnData, ops::MachOperator, wasmparser::Operator};
+use portal_solutions_blitz_common::{
+    MemorySize,
+    ops::{FnData, MachOperator},
+    wasmparser::Operator,
+};
 extern crate alloc;
 static REG_NAMES: &'static [&'static str; 8] =
     &["rax", "rbx", "rcx", "rsp", "rbp", "rsi", "rdi", "rdx"];
+static REG_NAMES_32: &'static [&'static str; 8] =
+    &["eax", "ebx", "ecx", "esp", "ebp", "esi", "edi", "edx"];
+static REG_NAMES_16: &'static [&'static str; 8] = &["ax", "bx", "cx", "sp", "bp", "si", "di", "dx"];
+static REG_NAMES_8: &'static [&'static str; 8] =
+    &["al", "bl", "cl", "spl", "bpl", "sil", "dil", "dl"];
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct X64Arch {
@@ -19,10 +28,14 @@ pub struct X64Arch {
 #[non_exhaustive]
 pub struct RegFormatOpts {
     pub arch: X64Arch,
+    pub size: MemorySize,
 }
 impl RegFormatOpts {
     pub fn default_with_arch(arch: X64Arch) -> Self {
-        Self { arch }
+        Self {
+            arch,
+            size: Default::default(),
+        }
     }
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -32,9 +45,27 @@ impl Reg {
     pub fn format(&self, f: &mut Formatter<'_>, opts: &RegFormatOpts) -> core::fmt::Result {
         let idx = (self.0 as usize) % (if opts.arch.apx { 32 } else { 16 });
         if idx < 8 {
-            write!(f, "{}", &REG_NAMES[idx])
+            write!(
+                f,
+                "{}",
+                &(match &opts.size {
+                    MemorySize::_8 => REG_NAMES_8,
+                    MemorySize::_16 => REG_NAMES_16,
+                    MemorySize::_32 => REG_NAMES_32,
+                    MemorySize::_64 => REG_NAMES,
+                })[idx]
+            )
         } else {
-            write!(f, "r{idx}")
+            write!(
+                f,
+                "r{idx}{}",
+                match &opts.size {
+                    MemorySize::_8 => "b",
+                    MemorySize::_16 => "w",
+                    MemorySize::_32 => "d",
+                    MemorySize::_64 => "",
+                }
+            )
         }
     }
     pub fn display<'a>(&'a self, opts: RegFormatOpts) -> RegDisplay {

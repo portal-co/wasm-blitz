@@ -35,10 +35,11 @@ impl<'a> Display for DisplayFn<'a> {
 }
 pub mod ops;
 pub mod passes;
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug,Default)]
 pub enum MemorySize {
     _8,
     _16,
     _32,
+    #[default]
     _64,
 }
