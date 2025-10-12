@@ -8,25 +8,16 @@ macro_rules! dce_pass {
             a => $crate::IteratorExt::scan_mach(
                 a,
                 |_, _, o, dce_stack| match o {
-                    $crate::MachOperator::Operator { op, annot }
-                        if $crate::dce::dce(
-                            dce_stack,
-                            match $crate::core::option::Option::as_ref(op) {
-                                $crate::core::option::Option::Some(o) => o,
-                                $crate::core::option::Option::None => {
-                                    return $crate::core::option::Option::None
-                                }
-                            },
-                        ) =>
-                    {
-                        $crate::core::option::Option::None
-                    }
+                    $crate::MachOperator::Operator {
+                        op: $crate::__::core::option::Option::Some(op),
+                        annot,
+                    } if $crate::dce::dce(dce_stack, op) => $crate::__::core::option::Option::None,
 
                     o => {
                         if let $crate::MachOperator::EndBody = &o {
                             *dce_stack = $crate::dce::DceStack::new();
                         }
-                        $crate::core::option::Option::Some(o)
+                        $crate::__::core::option::Option::Some(o)
                     }
                 },
                 $crate::dce::DceStack::new(),
