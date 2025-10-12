@@ -13,11 +13,12 @@ use portal_solutions_blitz_common::{
     wasmparser::{Operator, ValType},
 };
 extern crate alloc;
+const STACK_WEAVE: &'static str = "($$stack_restore_symbol_iterator ?? (a=>a))";
 pub fn push(w: &mut (impl Write + ?Sized), a: &(dyn Display + '_)) -> core::fmt::Result {
-    write!(w, "(tmp={a},stack=[...stack,tmp],tmp)")
+    write!(w, "(tmp={a},stack=[...{STACK_WEAVE}(stack),tmp],tmp)")
 }
 pub fn pop(w: &mut (impl Write + ?Sized)) -> core::fmt::Result {
-    write!(w, "(([...stack,tmp]=stack),tmp)")
+    write!(w, "(([...stack,tmp]={STACK_WEAVE}(stack)),tmp)")
 }
 #[macro_export]
 macro_rules! pop {
@@ -38,7 +39,10 @@ pub trait JsWrite: Write {
     fn call(&mut self, function_index: &(dyn Display + '_)) -> core::fmt::Result {
         write!(
             self,
-            "args=[];for(let i = 0;i < {function_index}.__sig.params;i++)args=[...args,{}];tmp_locals=[...{function_index}(...args)];if(tmp_locals.length==={function_index}.__sig.rets){{stack=[...stack,...tmp_locals];}}else{{for(let i = 0;i < {function_index}.__sig.rets;i++)stack=[...stack,tmp_locals[i]];}};",
+            "args=[];
+            for(let i = 0;i < {function_index}.__sig.params;i++)args=[...{STACK_WEAVE}(args),{}];
+            tmp_locals=[...{STACK_WEAVE}({function_index}(...args))];
+            if(tmp_locals.length==={function_index}.__sig.rets){{stack=[...{STACK_WEAVE}(stack),...{STACK_WEAVE}(tmp_locals)];}}else{{for(let i = 0;i < {function_index}.__sig.rets;i++)stack=[...{STACK_WEAVE}(stack),tmp_locals[i]];}};",
             pop!()
         )
     }
@@ -79,7 +83,7 @@ pub trait JsWrite: Write {
                         configurable:false,
                         writable:false
                     }});
-                    function ${id}(...locals){{let stack=[],tmp,mask32=0xffff_ffffn,mask64=(mask32<<32n)|mask32,{{params,rets}}=${id}.__sig,tmp_locals=[],args=[];if(locals.length!==params){{for(let i = 0; i < params;i++)tmp_locals=[...tmp_locals,locals[locals.length - params + i]];locals=tmp_locals;}};const toInt=(a,b)=>BigInt.asIntN(b,a);const toUint=(a,b)=>BigInt.asUintN(b,a)",
+                    function ${id}(...locals){{let stack=[],tmp,mask32=0xffff_ffffn,mask64=(mask32<<32n)|mask32,{{params,rets}}=${id}.__sig,tmp_locals=[],args=[];if(locals.length!==params){{for(let i = 0; i < params;i++)tmp_locals=[...{STACK_WEAVE}(tmp_locals),locals[locals.length - params + i]];locals=tmp_locals;}};const toInt=(a,b)=>BigInt.asIntN(b,a);const toUint=(a,b)=>BigInt.asUintN(b,a)",
                     data.num_params, data.num_returns
                 )
             }
@@ -87,7 +91,7 @@ pub trait JsWrite: Write {
                 for _ in 0..*count {
                     write!(
                         self,
-                        "locals=[...locals,{}];",
+                        "locals=[...{STACK_WEAVE}(locals),{}];",
                         match ty {
                             ValType::F32 | ValType::F64 => "0",
                             _ => "0n",
@@ -230,7 +234,7 @@ pub trait JsWrite: Write {
                     Operator::Return => {
                         write!(
                             self,
-                            "if(stack.length===rets)return stack;tmp_locals=[];for(let i = 0; i < rets;i++)tmp_locals=[...tmp_locals,stack[stack.length-rets+i]];return tmp_locals;"
+                            "if(stack.length===rets)return stack;tmp_locals=[];for(let i = 0; i < rets;i++)tmp_locals=[...{STACK_WEAVE}(tmp_locals),stack[stack.length-rets+i]];return tmp_locals;"
                         )
                     }
                     Operator::Call { function_index } => {
