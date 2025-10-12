@@ -20,6 +20,11 @@ pub struct X64Arch {
 pub struct RegFormatOpts {
     pub arch: X64Arch,
 }
+impl RegFormatOpts {
+    pub fn default_with_arch(arch: X64Arch) -> Self {
+        Self { arch }
+    }
+}
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Reg(pub u8);
 impl Reg {

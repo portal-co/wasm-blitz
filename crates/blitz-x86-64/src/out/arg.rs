@@ -6,9 +6,9 @@ pub enum ArgKind {
     Lit(u64),
 }
 impl ArgKind {
-    pub fn display(&self, opts: RegFormatOpts) -> ArgKindDisplay {
+    pub fn display(&self, opts: X64Arch) -> ArgKindDisplay {
         match self {
-            ArgKind::Reg(reg) => ArgKindDisplay::Reg(reg.display(opts)),
+            ArgKind::Reg(reg) => ArgKindDisplay::Reg(reg.display(RegFormatOpts::default_with_arch(opts))),
             ArgKind::Lit(i) => ArgKindDisplay::Lit(*i),
         }
     }
@@ -34,7 +34,7 @@ impl Display for ArgKind {
 
 pub trait Arg: Display {
     fn reg(&self) -> ArgKind;
-    fn display(&self, opts: RegFormatOpts) -> ArgKindDisplay {
+    fn display(&self, opts: X64Arch) -> ArgKindDisplay {
         return self.reg().display(opts);
     }
 }
@@ -42,8 +42,8 @@ impl Arg for Reg {
     fn reg(&self) -> ArgKind {
         ArgKind::Reg(self.clone())
     }
-    fn display(&self, opts: RegFormatOpts) -> ArgKindDisplay {
-        ArgKindDisplay::Reg(self.display(opts))
+    fn display(&self, opts: X64Arch) -> ArgKindDisplay {
+        ArgKindDisplay::Reg(self.display(RegFormatOpts::default_with_arch(opts)))
     }
 }
 impl Arg for ArgKind {
@@ -55,7 +55,7 @@ impl Arg for u64 {
     fn reg(&self) -> ArgKind {
         ArgKind::Lit(*self)
     }
-    fn display(&self, opts: RegFormatOpts) -> ArgKindDisplay {
+    fn display(&self, opts: X64Arch) -> ArgKindDisplay {
         ArgKindDisplay::Lit(*self)
     }
 }
