@@ -9,7 +9,7 @@ pub mod __ {
 }
 use alloc::vec::Vec;
 use portal_solutions_blitz_common::{
-    DisplayFn, MachOperator,
+    DisplayFn, ops::MachOperator,
     wasmparser::{Operator, ValType},
 };
 extern crate alloc;

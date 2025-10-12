@@ -1,11 +1,11 @@
 use alloc::vec::Vec;
 
-use crate::*;
+use crate::{*,ops::*};
 #[macro_export]
 macro_rules! dce_pass {
     ($a:expr) => {
         match match $a {
-            a => $crate::IteratorExt::scan_mach(
+            a => $crate::ops::IteratorExt::scan_mach(
                 a,
                 |_, _, o, dce_stack| match o {
                     $crate::MachOperator::Operator {

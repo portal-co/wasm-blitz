@@ -1,7 +1,7 @@
 #![no_std]
 extern crate alloc;
 use alloc::vec::Vec;
-use portal_solutions_blitz_common::{MachOperator, wasmparser::Operator};
+use portal_solutions_blitz_common::{ops::MachOperator, wasmparser::Operator};
 pub use wasm_encoder;
 use wasm_encoder::{CodeSection, reencode::Reencode};
 

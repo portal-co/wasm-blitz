@@ -6,7 +6,7 @@ use core::{
 };
 
 use alloc::vec::Vec;
-use portal_solutions_blitz_common::{FnData, MachOperator, wasmparser::Operator};
+use portal_solutions_blitz_common::{ops::FnData, ops::MachOperator, wasmparser::Operator};
 extern crate alloc;
 static REG_NAMES: &'static [&'static str; 8] =
     &["rax", "rbx", "rcx", "rsp", "rbp", "rsi", "rdi", "rdx"];
