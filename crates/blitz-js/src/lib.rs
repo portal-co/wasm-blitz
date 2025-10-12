@@ -69,7 +69,17 @@ pub trait JsWrite: Write {
                 let id = *id + func_imports.len() as u32;
                 write!(
                     self,
-                    "Object.defineProperty(${id},'__sig',{{value:Object.freeze({{params:{},rets:{}}}),enumerable:false,configurable:false,writable:false}});function ${id}(...locals){{let stack=[],tmp,mask32=0xffff_ffffn,mask64=(mask32<<32n)|mask32,{{params,rets}}=${id}.__sig,tmp_locals=[],args=[];if(locals.length!==params){{for(let i = 0; i < params;i++)tmp_locals=[...tmp_locals,locals[locals.length - params + i]];locals=tmp_locals;}};const toInt=(a,b)=>BigInt.asIntN(b,a);const toUint=(a,b)=>BigInt.asUintN(b,a)",
+                    "
+                    Object.defineProperty(${id},'__sig',{{
+                        value:Object.freeze({{
+                            params:{},
+                            rets:{}
+                        }}),
+                        enumerable:false,
+                        configurable:false,
+                        writable:false
+                    }});
+                    function ${id}(...locals){{let stack=[],tmp,mask32=0xffff_ffffn,mask64=(mask32<<32n)|mask32,{{params,rets}}=${id}.__sig,tmp_locals=[],args=[];if(locals.length!==params){{for(let i = 0; i < params;i++)tmp_locals=[...tmp_locals,locals[locals.length - params + i]];locals=tmp_locals;}};const toInt=(a,b)=>BigInt.asIntN(b,a);const toUint=(a,b)=>BigInt.asUintN(b,a)",
                     data.num_params, data.num_returns
                 )
             }
