@@ -1,34 +1,34 @@
 use super::*;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[non_exhaustive]
-pub enum ArgKind{
+pub enum ArgKind {
     Reg(Reg),
-    Lit(u64)
+    Lit(u64),
 }
-impl ArgKind{
-    pub fn display(&self, opts: RegFormatOpts) -> ArgKindDisplay{
-        match self{
+impl ArgKind {
+    pub fn display(&self, opts: RegFormatOpts) -> ArgKindDisplay {
+        match self {
             ArgKind::Reg(reg) => ArgKindDisplay::Reg(reg.display(opts)),
             ArgKind::Lit(i) => ArgKindDisplay::Lit(*i),
         }
     }
 }
 #[non_exhaustive]
-pub enum ArgKindDisplay{
+pub enum ArgKindDisplay {
     Reg(RegDisplay),
-    Lit(u64)
+    Lit(u64),
 }
-impl Display for ArgKindDisplay{
+impl Display for ArgKindDisplay {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        match self{
-            ArgKindDisplay::Reg(reg_display) => write!(f,"{reg_display}"),
-            ArgKindDisplay::Lit(i) => write!(f,"{i}"),
+        match self {
+            ArgKindDisplay::Reg(reg_display) => write!(f, "{reg_display}"),
+            ArgKindDisplay::Lit(i) => write!(f, "{i}"),
         }
     }
 }
-impl Display for ArgKind{
+impl Display for ArgKind {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        write!(f,"{}",self.display(Default::default()))
+        write!(f, "{}", self.display(Default::default()))
     }
 }
 
@@ -46,8 +46,16 @@ impl Arg for Reg {
         ArgKindDisplay::Reg(self.display(opts))
     }
 }
-impl Arg for ArgKind{
+impl Arg for ArgKind {
     fn reg(&self) -> ArgKind {
         self.clone()
+    }
+}
+impl Arg for u64 {
+    fn reg(&self) -> ArgKind {
+        ArgKind::Lit(*self)
+    }
+    fn display(&self, opts: RegFormatOpts) -> ArgKindDisplay {
+        ArgKindDisplay::Lit(*self)
     }
 }
