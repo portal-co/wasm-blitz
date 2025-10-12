@@ -24,7 +24,7 @@ static REG_NAMES_8: &'static [&'static str; 8] =
 pub struct X64Arch {
     pub apx: bool,
 }
-#[derive(Default, Clone)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct RegFormatOpts {
     pub arch: X64Arch,
@@ -32,10 +32,15 @@ pub struct RegFormatOpts {
 }
 impl RegFormatOpts {
     pub fn default_with_arch(arch: X64Arch) -> Self {
-        Self {
-            arch,
-            size: Default::default(),
-        }
+       Self::default_with_arch_and_size(arch, Default::default())
+    }
+    pub fn default_with_arch_and_size(arch: X64Arch, size: MemorySize) -> Self {
+        Self { arch, size }
+    }
+}
+impl Default for RegFormatOpts{
+    fn default() -> Self {
+        Self::default_with_arch(Default::default())
     }
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
