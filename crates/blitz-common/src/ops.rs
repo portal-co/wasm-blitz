@@ -1,32 +1,32 @@
 use crate::*;
-#[derive(Clone, Copy,PartialEq, Eq, PartialOrd, Ord,Hash,Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[non_exhaustive]
-pub struct WasmInfo{
+pub struct WasmInfo {
     pub offset: usize,
 }
-pub trait FromWasmInfo{
+pub trait FromWasmInfo {
     fn from_wasm_info(info: WasmInfo) -> Self;
 }
-impl FromWasmInfo for (){
+impl FromWasmInfo for () {
     fn from_wasm_info(value: WasmInfo) -> Self {
         ()
     }
 }
-impl<T: FromWasmInfo> FromWasmInfo for Option<T>{
+impl<T: FromWasmInfo> FromWasmInfo for Option<T> {
     fn from_wasm_info(value: WasmInfo) -> Self {
         Some(T::from_wasm_info(value))
     }
 }
-impl FromWasmInfo for WasmInfo{
+impl FromWasmInfo for WasmInfo {
     fn from_wasm_info(info: WasmInfo) -> Self {
         info
     }
 }
-pub fn mach_operators<'a,Annot: FromWasmInfo>(
+pub fn mach_operators<'a, Annot: FromWasmInfo>(
     code: &[FunctionBody<'a>],
     sigs_per: &[u32],
     sigs: &[FuncType],
-) -> impl Iterator<Item = MachOperator<'a,Annot>> {
+) -> impl Iterator<Item = MachOperator<'a, Annot>> {
     return code
         .iter()
         .zip(sigs_per.iter().cloned().map(|a| &sigs[a as usize]))
@@ -51,7 +51,7 @@ pub fn mach_operators<'a,Annot: FromWasmInfo>(
                 )
                 .chain([MachOperator::StartBody].map(Ok))
                 .chain(v.into_iter_with_offsets().map(|v| {
-                    v.map(|(op,offset)| MachOperator::Operator {
+                    v.map(|(op, offset)| MachOperator::Operator {
                         op: Some(op),
                         annot: Annot::from_wasm_info(WasmInfo { offset }),
                     })
@@ -60,7 +60,9 @@ pub fn mach_operators<'a,Annot: FromWasmInfo>(
                     [
                         MachOperator::Operator {
                             op: Some(Operator::Return),
-                            annot: Annot::from_wasm_info(WasmInfo { offset: a.range().end }),
+                            annot: Annot::from_wasm_info(WasmInfo {
+                                offset: a.range().end,
+                            }),
                         },
                         MachOperator::EndBody,
                     ]
@@ -85,6 +87,10 @@ pub enum MachOperator<'a, Annot = ()> {
         op: Option<Operator<'a>>,
         annot: Annot,
     },
+    Trap {
+        conditional: bool,
+        annot: Annot,
+    },
     Local {
         count: u32,
         ty: ValType,
@@ -106,6 +112,10 @@ impl<'a, Annot> MachOperator<'a, Annot> {
                 op,
                 annot: f(annot)?,
             },
+            MachOperator::Trap { conditional, annot } => MachOperator::Trap {
+                conditional,
+                annot: f(annot)?,
+            },
             MachOperator::Local { count, ty } => MachOperator::Local { count, ty },
             MachOperator::StartFn { id, data } => MachOperator::StartFn { id, data },
             MachOperator::StartBody => MachOperator::StartBody,
@@ -116,6 +126,10 @@ impl<'a, Annot> MachOperator<'a, Annot> {
         match self {
             MachOperator::Operator { op, annot } => MachOperator::Operator {
                 op: op.clone(),
+                annot,
+            },
+            MachOperator::Trap { conditional, annot } => MachOperator::Trap {
+                conditional: *conditional,
                 annot,
             },
             MachOperator::Local { count, ty } => MachOperator::Local {
@@ -134,6 +148,10 @@ impl<'a, Annot> MachOperator<'a, Annot> {
         match self {
             MachOperator::Operator { op, annot } => MachOperator::Operator {
                 op: op.clone(),
+                annot,
+            },
+            MachOperator::Trap { conditional, annot } => MachOperator::Trap {
+                conditional: *conditional,
                 annot,
             },
             MachOperator::Local { count, ty } => MachOperator::Local {
@@ -205,7 +223,7 @@ impl<
     }
 }
 pub trait IteratorExt: Iterator {
-    fn scan_mach<'a,A, F: FnMut(&mut FnData, u32, MachOperator<'a,A>, &mut D) -> T, T, D>(
+    fn scan_mach<'a, A, F: FnMut(&mut FnData, u32, MachOperator<'a, A>, &mut D) -> T, T, D>(
         self,
         handler: F,
         userdata: D,
