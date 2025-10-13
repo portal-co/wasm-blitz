@@ -45,3 +45,5 @@ pub enum MemorySize {
     #[default]
     _64,
 }
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug,Default)]
+pub struct MemorySized<T> { pub value: T, pub size: MemorySize }

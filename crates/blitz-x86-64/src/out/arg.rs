@@ -1,5 +1,7 @@
 use core::mem::transmute;
 
+use portal_solutions_blitz_common::MemorySized;
+
 use crate::reg::{RegDisplay, X64Reg};
 
 use super::*;
@@ -65,9 +67,9 @@ impl Arg for Reg {
         X64Reg::format(self, f, &RegFormatOpts::default_with_arch(opts))
     }
 }
-impl<T: Arg> Arg for (T, MemorySize) {
+impl<T: Arg> Arg for MemorySized<T> {
     fn kind(&self) -> ArgKind {
-        let (reg, size) = self;
+        let MemorySized { value: reg, size } = self;
         if typeid::of::<T>() == typeid::of::<Reg>() {
             ArgKind::Reg {
                 reg: unsafe { transmute::<&T, &Reg>(reg) }.clone(),
@@ -81,7 +83,7 @@ impl<T: Arg> Arg for (T, MemorySize) {
         }
     }
     fn display(&self, opts: X64Arch) -> ArgKindDisplay {
-        let (reg, size) = self;
+        let MemorySized { value: reg, size } = self;
         if typeid::of::<T>() == typeid::of::<Reg>() {
             ArgKindDisplay::Reg(X64Reg::display(
                 unsafe { transmute::<&T, &Reg>(reg) },
@@ -92,7 +94,7 @@ impl<T: Arg> Arg for (T, MemorySize) {
         }
     }
     fn format(&self, f: &mut Formatter<'_>, opts: X64Arch) -> core::fmt::Result {
-        let (reg, size) = self;
+        let MemorySized { value: reg, size } = self;
         if typeid::of::<T>() == typeid::of::<Reg>() {
             X64Reg::format(
                 unsafe { transmute::<&T, &Reg>(reg) },
