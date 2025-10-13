@@ -65,22 +65,25 @@ impl Arg for Reg {
 }
 impl Arg for (Reg, MemorySize) {
     fn kind(&self) -> ArgKind {
+        let (reg, size) = self;
         ArgKind::Reg {
-            reg: self.0.clone(),
-            size: self.1.clone(),
+            reg: reg.clone(),
+            size: size.clone(),
         }
     }
     fn display(&self, opts: X64Arch) -> ArgKindDisplay {
+        let (reg, size) = self;
         ArgKindDisplay::Reg(X64Reg::display(
-            &self.0,
-            RegFormatOpts::default_with_arch_and_size(opts, self.1),
+            reg,
+            RegFormatOpts::default_with_arch_and_size(opts, *size),
         ))
     }
     fn format(&self, f: &mut Formatter<'_>, opts: X64Arch) -> core::fmt::Result {
+        let (reg, size) = self;
         X64Reg::format(
-            &self.0,
+            reg,
             f,
-            &RegFormatOpts::default_with_arch_and_size(opts, self.1),
+            &RegFormatOpts::default_with_arch_and_size(opts, *size),
         )
     }
 }
