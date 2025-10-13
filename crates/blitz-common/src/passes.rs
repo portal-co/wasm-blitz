@@ -41,7 +41,7 @@ macro_rules! load_coalescing {
         }
     };
 }
-pub fn load_calescing_pass<'a, Annot: Clone>(
+pub fn load_coalescing_pass<'a, Annot: Clone>(
     d: &mut FnData,
     l: u32,
     o: MachOperator<'a, Annot>,
@@ -252,5 +252,5 @@ pub fn load_calescing_pass<'a, Annot: Clone>(
 pub fn load_coalescing<'a, Annot: Clone>(
     a: impl Iterator<Item = MachOperator<'a, Annot>>,
 ) -> impl Iterator<Item = MachOperator<'a, Annot>> {
-    return a.scan_mach(load_calescing_pass, ()).flatten();
+    return a.scan_mach(load_coalescing_pass, ()).flatten();
 }
