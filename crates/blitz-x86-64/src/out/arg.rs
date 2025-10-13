@@ -69,24 +69,24 @@ impl Arg for Reg {
 }
 impl<T: Arg> Arg for MemorySized<T> {
     fn kind(&self) -> ArgKind {
-        let MemorySized { value: reg, size } = self;
+        let MemorySized { value, size } = self;
         if typeid::of::<T>() == typeid::of::<Reg>() {
             ArgKind::Reg {
-                reg: unsafe { transmute::<&T, &Reg>(reg) }.clone(),
+                reg: unsafe { transmute::<&T, &Reg>(value) }.clone(),
                 size: size.clone(),
             }
         } else {
-            match reg.kind() {
+            match value.kind() {
                 ArgKind::Reg { reg, size: _ } => ArgKind::Reg { reg, size: *size },
                 a => a,
             }
         }
     }
     fn display(&self, opts: X64Arch) -> ArgKindDisplay {
-        let MemorySized { value: reg, size } = self;
+        let MemorySized { value, size } = self;
         if typeid::of::<T>() == typeid::of::<Reg>() {
             ArgKindDisplay::Reg(X64Reg::display(
-                unsafe { transmute::<&T, &Reg>(reg) },
+                unsafe { transmute::<&T, &Reg>(value) },
                 RegFormatOpts::default_with_arch_and_size(opts, *size),
             ))
         } else {
@@ -94,10 +94,10 @@ impl<T: Arg> Arg for MemorySized<T> {
         }
     }
     fn format(&self, f: &mut Formatter<'_>, opts: X64Arch) -> core::fmt::Result {
-        let MemorySized { value: reg, size } = self;
+        let MemorySized { value, size } = self;
         if typeid::of::<T>() == typeid::of::<Reg>() {
             X64Reg::format(
-                unsafe { transmute::<&T, &Reg>(reg) },
+                unsafe { transmute::<&T, &Reg>(value) },
                 f,
                 &RegFormatOpts::default_with_arch_and_size(opts, *size),
             )
