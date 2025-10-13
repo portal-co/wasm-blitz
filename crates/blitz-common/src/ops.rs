@@ -1,9 +1,32 @@
 use crate::*;
-pub fn mach_operators<'a>(
+#[derive(Clone, Copy,PartialEq, Eq, PartialOrd, Ord,Hash,Debug)]
+#[non_exhaustive]
+pub struct WasmInfo{
+    pub offset: usize,
+}
+pub trait FromWasmInfo{
+    fn from_wasm_info(info: WasmInfo) -> Self;
+}
+impl FromWasmInfo for (){
+    fn from_wasm_info(value: WasmInfo) -> Self {
+        ()
+    }
+}
+impl<T: FromWasmInfo> FromWasmInfo for Option<T>{
+    fn from_wasm_info(value: WasmInfo) -> Self {
+        Some(T::from_wasm_info(value))
+    }
+}
+impl FromWasmInfo for WasmInfo{
+    fn from_wasm_info(info: WasmInfo) -> Self {
+        info
+    }
+}
+pub fn mach_operators<'a,Annot: FromWasmInfo>(
     code: &[FunctionBody<'a>],
     sigs_per: &[u32],
     sigs: &[FuncType],
-) -> impl Iterator<Item = MachOperator<'a>> {
+) -> impl Iterator<Item = MachOperator<'a,Annot>> {
     return code
         .iter()
         .zip(sigs_per.iter().cloned().map(|a| &sigs[a as usize]))
@@ -27,17 +50,17 @@ pub fn mach_operators<'a>(
                         .map(|a| a.map(|(a, b)| MachOperator::Local { count: a, ty: b })),
                 )
                 .chain([MachOperator::StartBody].map(Ok))
-                .chain(v.into_iter().map(|v| {
-                    v.map(|op| MachOperator::Operator {
+                .chain(v.into_iter_with_offsets().map(|v| {
+                    v.map(|(op,offset)| MachOperator::Operator {
                         op: Some(op),
-                        annot: (),
+                        annot: Annot::from_wasm_info(WasmInfo { offset }),
                     })
                 }))
                 .chain(
                     [
                         MachOperator::Operator {
                             op: Some(Operator::Return),
-                            annot: (),
+                            annot: Annot::from_wasm_info(WasmInfo { offset: a.range().end }),
                         },
                         MachOperator::EndBody,
                     ]
@@ -182,7 +205,7 @@ impl<
     }
 }
 pub trait IteratorExt: Iterator {
-    fn scan_mach<'a, F: FnMut(&mut FnData, u32, MachOperator<'a>, &mut D) -> T, T, D>(
+    fn scan_mach<'a,A, F: FnMut(&mut FnData, u32, MachOperator<'a,A>, &mut D) -> T, T, D>(
         self,
         handler: F,
         userdata: D,
