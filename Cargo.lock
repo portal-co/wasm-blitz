@@ -72,6 +72,7 @@ name = "portal-solutions-blitz-x86-64"
 version = "0.1.0"
 dependencies = [
  "portal-solutions-blitz-common",
+ "typeid",
 ]
 
 [[package]]
