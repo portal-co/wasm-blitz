@@ -1,8 +1,7 @@
-use alloc::boxed::Box;
-
 use crate::{out::arg::Arg, *};
-pub mod asm;
+use alloc::boxed::Box;
 pub mod arg;
+pub mod asm;
 pub trait Writer {
     type Error: Error;
     fn set_label(&mut self, s: &(dyn Label + '_)) -> Result<(), Self::Error>;
@@ -51,25 +50,20 @@ pub trait Writer {
     fn shl(&mut self, a: &(dyn Arg + '_), b: &(dyn Arg + '_)) -> Result<(), Self::Error>;
     fn shr(&mut self, a: &(dyn Arg + '_), b: &(dyn Arg + '_)) -> Result<(), Self::Error>;
 }
-
 macro_rules! writer_dispatch {
     ($( [ $($t:tt)* ] $ty:ty => $e:ty),*) => {
         const _: () = {
             $(impl<$($t)*> Writer for $ty{
                 type Error = $e;
-
                 fn set_label(&mut self, s: &(dyn Label + '_)) -> Result<(), Self::Error> {
                     Writer::set_label(&mut **self, s)
                 }
-
                 fn xchg(&mut self, dest: &(dyn Arg + '_), src: &(dyn Arg + '_), mem: Option<isize>) -> Result<(), Self::Error> {
                     Writer::xchg(&mut **self, dest, src, mem)
                 }
-
                 fn push(&mut self, op: &(dyn Arg + '_)) -> Result<(), Self::Error> {
                     Writer::push(&mut **self, op)
                 }
-
                 fn pop(&mut self, op: &(dyn Arg + '_)) -> Result<(), Self::Error> {
                     Writer::pop(&mut **self, op)
                 }
@@ -88,7 +82,6 @@ macro_rules! writer_dispatch {
                 fn jz(&mut self, op: &(dyn Arg + '_)) -> Result<(), Self::Error>{
                     Writer::jz(&mut **self,op)
                 }
-
                 fn lea(
                     &mut self,
                     dest: &(dyn Arg + '_),
@@ -98,7 +91,6 @@ macro_rules! writer_dispatch {
                 ) -> Result<(), Self::Error> {
                     Writer::lea(&mut **self, dest, src, offset, off_reg)
                 }
-
                 fn lea_label(&mut self, dest: &(dyn Arg + '_), label: &(dyn Label + '_)) -> Result<(), Self::Error> {
                     Writer::lea_label(&mut **self, dest, label)
                 }

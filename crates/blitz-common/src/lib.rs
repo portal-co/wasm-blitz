@@ -5,13 +5,12 @@ pub extern crate alloc;
 pub mod __ {
     pub use core;
 }
+use alloc::vec::Vec;
 use core::{
     fmt::{Display, Formatter},
     mem::{transmute, transmute_copy},
     str::MatchIndices,
 };
-
-use alloc::vec::Vec;
 pub use wasmparser;
 use wasmparser::{BinaryReaderError, FuncType, FunctionBody, Operator, ValType};
 pub mod dce;
@@ -33,11 +32,11 @@ impl<'a> Display for DisplayFn<'a> {
         (self.0)(f)
     }
 }
-pub mod ops;
-pub mod passes;
 #[cfg(feature = "asm")]
 pub mod asm;
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug,Default)]
+pub mod ops;
+pub mod passes;
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub enum MemorySize {
     _8,
     _16,
@@ -45,5 +44,8 @@ pub enum MemorySize {
     #[default]
     _64,
 }
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug,Default)]
-pub struct MemorySized<T> { pub value: T, pub size: MemorySize }
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct MemorySized<T> {
+    pub value: T,
+    pub size: MemorySize,
+}

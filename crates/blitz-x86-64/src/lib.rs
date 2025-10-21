@@ -1,11 +1,9 @@
 #![no_std]
-
+use alloc::vec::Vec;
 use core::{
     error::Error,
     fmt::{Display, Formatter, Write},
 };
-
-use alloc::vec::Vec;
 use portal_solutions_blitz_common::{
     MemorySize,
     asm::Reg,
@@ -44,10 +42,7 @@ impl Default for RegFormatOpts {
         Self::default_with_arch(Default::default())
     }
 }
-
-
 const RSP: Reg = Reg(3);
-
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum X64Label {
     Indexed { idx: usize },
@@ -61,10 +56,8 @@ impl Display for X64Label {
         }
     }
 }
-
 pub trait Label: portal_solutions_blitz_common::Label<X64Label> {}
 impl<T: portal_solutions_blitz_common::Label<X64Label> + ?Sized> Label for T {}
-
 pub mod naive;
 pub mod out;
 pub mod reg;

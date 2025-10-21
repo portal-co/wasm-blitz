@@ -1,10 +1,7 @@
-use core::mem::transmute;
-
-use portal_solutions_blitz_common::MemorySized;
-
-use crate::reg::{RegDisplay, X64Reg};
-
 use super::*;
+use crate::reg::{RegDisplay, X64Reg};
+use core::mem::transmute;
+use portal_solutions_blitz_common::MemorySized;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[non_exhaustive]
 pub enum ArgKind {
@@ -40,7 +37,6 @@ impl Display for ArgKind {
         write!(f, "{}", self.display(Default::default()))
     }
 }
-
 pub trait Arg {
     fn kind(&self) -> ArgKind;
     fn format(&self, f: &mut Formatter<'_>, opts: X64Arch) -> core::fmt::Result {

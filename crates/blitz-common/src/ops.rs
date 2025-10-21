@@ -202,7 +202,6 @@ impl<
 > Iterator for ScanMach<I, F, D>
 {
     type Item = T;
-
     fn next(&mut self) -> Option<Self::Item> {
         let o = self.wrapped.next()?;
         if let MachOperator::StartFn { id, data } = &o {

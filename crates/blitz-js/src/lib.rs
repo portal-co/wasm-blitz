@@ -9,7 +9,8 @@ pub mod __ {
 }
 use alloc::vec::Vec;
 use portal_solutions_blitz_common::{
-    DisplayFn, ops::MachOperator,
+    DisplayFn,
+    ops::MachOperator,
     wasmparser::{Operator, ValType},
 };
 extern crate alloc;
@@ -101,9 +102,8 @@ pub trait JsWrite: Write {
                 Ok(())
             }
             MachOperator::StartBody => Ok(()),
-
             MachOperator::Operator { op, annot } => {
-                let Some(op) = op.as_ref() else{
+                let Some(op) = op.as_ref() else {
                     return Ok(());
                 };
                 match op {
@@ -171,7 +171,6 @@ pub trait JsWrite: Write {
                         self,
                         &format_args!("((a={},b={0}%32n)=>((a>>b)|(a<<(32n-b)))&mask32)()", pop!()),
                     ),
-
                     // 64 bit
                     Operator::I64Add => push(
                         self,

@@ -1,8 +1,7 @@
 use crate::{
-    out::{arg::Arg, Writer},
+    out::{Writer, arg::Arg},
     *,
 };
-
 #[derive(Default)]
 pub struct State {
     local_count: usize,

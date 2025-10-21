@@ -1,6 +1,5 @@
-use alloc::vec::Vec;
-
 use crate::{ops::*, *};
+use alloc::vec::Vec;
 #[macro_export]
 macro_rules! dce_pass {
     ($a:expr) => {
@@ -12,7 +11,6 @@ macro_rules! dce_pass {
                         op: $crate::__::core::option::Option::Some(op),
                         annot,
                     } if $crate::dce::dce(dce_stack, op) => $crate::__::core::option::Option::None,
-
                     o => {
                         if let $crate::MachOperator::EndBody = &o {
                             *dce_stack = $crate::dce::DceStack::new();
@@ -31,11 +29,7 @@ macro_rules! dce_pass {
 macro_rules! load_coalescing {
     ($a:expr) => {
         match match $a {
-            a => $crate::ops::IteratorExt::scan_mach(
-                a,
-                $crate::passes::load_coalescing_pass,
-                (),
-            ),
+            a => $crate::ops::IteratorExt::scan_mach(a, $crate::passes::load_coalescing_pass, ()),
         } {
             a => $crate::__::core::iter::Iterator::flatten(a),
         }

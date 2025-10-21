@@ -1,6 +1,5 @@
-use portal_solutions_blitz_common::dce::{DceStack, dce};
-
 use crate::*;
+use portal_solutions_blitz_common::dce::{DceStack, dce};
 #[derive(Default)]
 pub struct MachTracker {
     funcs: Vec<wasm_encoder::Function>,

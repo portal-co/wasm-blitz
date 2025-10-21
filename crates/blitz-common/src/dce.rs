@@ -1,8 +1,8 @@
 use crate::*;
 #[derive(Default)]
 pub struct DceStack(Vec<bool>);
-impl DceStack{
-    pub fn new() -> Self{
+impl DceStack {
+    pub fn new() -> Self {
         return Default::default();
     }
 }

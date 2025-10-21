@@ -10,7 +10,7 @@ impl Reg {
             v => Self(v),
         }
     }
-    pub const fn r32(&self) -> Self{
+    pub const fn r32(&self) -> Self {
         return Self(self.0 % 32);
     }
 }

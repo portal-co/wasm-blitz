@@ -34,7 +34,6 @@ impl X64Reg for Reg {
         RegDisplay { reg: *self, opts }
     }
 }
-
 pub struct RegDisplay {
     reg: Reg,
     opts: RegFormatOpts,
