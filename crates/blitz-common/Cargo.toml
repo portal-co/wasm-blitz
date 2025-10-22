@@ -8,8 +8,8 @@ description.workspace = true
 [dependencies]
 typeid.workspace = true
 wasmparser.workspace = true
-portal-pc-asm-common = {workspace = true,features = ["alloc"]}
+portal-pc-asm-common = {workspace = true,features = ["alloc"],optional = true}
 
 [features]
-asm=[]
+asm=["dep:portal-pc-asm-common"]
 default=["asm"]
