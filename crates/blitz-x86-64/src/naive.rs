@@ -160,18 +160,18 @@ pub trait WriterExt: Writer {
                         self.pop(&Reg(1))?;
                         self.div(&Reg(0), &Reg(1))?;
                         if let Operator::I32RemU = op {
-                            self.u32(&Reg(7))?;
+                            self.u32(&Reg(3))?;
                         }
-                        self.push(&Reg(7))?;
+                        self.push(&Reg(3))?;
                     }
                     Operator::I32RemS | Operator::I64RemS => {
                         self.pop(&Reg(0))?;
                         self.pop(&Reg(1))?;
                         self.idiv(&Reg(0), &Reg(1))?;
                         if let Operator::I32RemS = op {
-                            self.u32(&Reg(7))?;
+                            self.u32(&Reg(3))?;
                         }
-                        self.push(&Reg(7))?;
+                        self.push(&Reg(3))?;
                     }
                     Operator::I32And | Operator::I64And => {
                         self.pop(&Reg(0))?;

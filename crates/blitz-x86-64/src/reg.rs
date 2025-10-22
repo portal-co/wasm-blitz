@@ -39,17 +39,7 @@ impl X64Reg for Reg {
             Reg(9),
             0x28,
             match (self.0) as u32 % (if arch.apx { 32 } else { 16 }) {
-                a => match a {
-                    0 => 0x78,
-                    1 => 0x90,
-                    2 => 0x80,
-                    3 => 0x98,
-                    4 => 0xa8,
-                    5 => 0xa8,
-                    6 => 0xb0,
-                    7 => 0x88,
-                    a => (a * 8) + 0xb8,
-                },
+                a =>a * 8 + 78,
             },
         )
     }

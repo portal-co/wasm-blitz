@@ -12,12 +12,12 @@ use portal_solutions_blitz_common::{
 };
 extern crate alloc;
 static REG_NAMES: &'static [&'static str; 8] =
-    &["rax", "rbx", "rcx", "rsp", "rbp", "rsi", "rdi", "rdx"];
+    &["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi"];
 static REG_NAMES_32: &'static [&'static str; 8] =
-    &["eax", "ebx", "ecx", "esp", "ebp", "esi", "edi", "edx"];
-static REG_NAMES_16: &'static [&'static str; 8] = &["ax", "bx", "cx", "sp", "bp", "si", "di", "dx"];
+    &["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"];
+static REG_NAMES_16: &'static [&'static str; 8] = &["ax", "cx", "dx", "bx", "sp", "bp", "si", "di"];
 static REG_NAMES_8: &'static [&'static str; 8] =
-    &["al", "bl", "cl", "spl", "bpl", "sil", "dil", "dl"];
+    &["al", "cl", "dl", "bl", "spl", "bpl", "sil", "dil"];
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct X64Arch {
@@ -42,7 +42,7 @@ impl Default for RegFormatOpts {
         Self::default_with_arch(Default::default())
     }
 }
-const RSP: Reg = Reg(3);
+const RSP: Reg = Reg(4);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum X64Label {
     Indexed { idx: usize },
