@@ -12,4 +12,5 @@ wasm-encoder = { version = "0.239.0", default-features = false,features = ["wasm
 portal-solutions-blitz-common = { version = "0.1.0", path = "crates/blitz-common", default-features = false }
 portal-solutions-blitz-i4 = { version = "0.1.0", path = "crates/blitz-i4" }
 portal-pc-asm-common = {version = "0.1.1",git = "https://github.com/portal-co/asm-common.git"}
+portal-solutions-asm-x86-64 = {version = "0.1.0",git = "https://github.com/portal-co/asm-arch.git"}
 typeid = "1.0.3"

@@ -104,7 +104,7 @@ dependencies = [
 [[package]]
 name = "portal-pc-asm-common"
 version = "0.1.1"
-source = "git+https://github.com/portal-co/asm-common.git#de5abb26e02f38cbb53dddab7bf9b3266e0eaaa3"
+source = "git+https://github.com/portal-co/asm-common.git#d3025d653a922b89edcc4496e377cce5d4330d4f"
 dependencies = [
  "array-init",
  "bitvec",
@@ -114,6 +114,15 @@ dependencies = [
  "itertools",
  "no-error-type",
  "serde",
+]
+
+[[package]]
+name = "portal-solutions-asm-x86-64"
+version = "0.1.0"
+source = "git+https://github.com/portal-co/asm-arch.git#1321dd1f6aadfb1336dc328a6d00115091ff0414"
+dependencies = [
+ "portal-pc-asm-common",
+ "typeid",
 ]
 
 [[package]]
@@ -174,6 +183,7 @@ dependencies = [
 name = "portal-solutions-blitz-x86-64"
 version = "0.1.0"
 dependencies = [
+ "portal-solutions-asm-x86-64",
  "portal-solutions-blitz-common",
  "typeid",
 ]

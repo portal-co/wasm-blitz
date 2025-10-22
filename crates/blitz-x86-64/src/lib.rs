@@ -5,43 +5,13 @@ use core::{
     fmt::{Display, Formatter, Write},
 };
 use portal_solutions_blitz_common::{
-    MemorySize,
+    asm::common::mem::MemorySize,
     asm::Reg,
     ops::{FnData, MachOperator},
     wasmparser::Operator,
 };
 extern crate alloc;
-static REG_NAMES: &'static [&'static str; 8] =
-    &["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi"];
-static REG_NAMES_32: &'static [&'static str; 8] =
-    &["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"];
-static REG_NAMES_16: &'static [&'static str; 8] = &["ax", "cx", "dx", "bx", "sp", "bp", "si", "di"];
-static REG_NAMES_8: &'static [&'static str; 8] =
-    &["al", "cl", "dl", "bl", "spl", "bpl", "sil", "dil"];
-#[non_exhaustive]
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
-pub struct X64Arch {
-    pub apx: bool,
-}
-#[derive(Clone)]
-#[non_exhaustive]
-pub struct RegFormatOpts {
-    pub arch: X64Arch,
-    pub size: MemorySize,
-}
-impl RegFormatOpts {
-    pub fn default_with_arch(arch: X64Arch) -> Self {
-        Self::default_with_arch_and_size(arch, Default::default())
-    }
-    pub fn default_with_arch_and_size(arch: X64Arch, size: MemorySize) -> Self {
-        Self { arch, size }
-    }
-}
-impl Default for RegFormatOpts {
-    fn default() -> Self {
-        Self::default_with_arch(Default::default())
-    }
-}
+pub use portal_solutions_asm_x86_64::*;
 const RSP: Reg = Reg(4);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum X64Label {
@@ -59,5 +29,3 @@ impl Display for X64Label {
 pub trait Label: portal_solutions_blitz_common::Label<X64Label> {}
 impl<T: portal_solutions_blitz_common::Label<X64Label> + ?Sized> Label for T {}
 pub mod naive;
-pub mod out;
-pub mod reg;
