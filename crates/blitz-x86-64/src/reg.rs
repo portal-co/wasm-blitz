@@ -2,6 +2,7 @@ use crate::*;
 pub trait X64Reg {
     fn format(&self, f: &mut Formatter<'_>, opts: &RegFormatOpts) -> core::fmt::Result;
     fn display<'a>(&'a self, opts: RegFormatOpts) -> RegDisplay;
+    fn context_handle(&self, arch: &X64Arch) -> (Reg, u32, u32);
 }
 impl X64Reg for Reg {
     fn format(&self, f: &mut Formatter<'_>, opts: &RegFormatOpts) -> core::fmt::Result {
@@ -32,6 +33,25 @@ impl X64Reg for Reg {
     }
     fn display<'a>(&'a self, opts: RegFormatOpts) -> RegDisplay {
         RegDisplay { reg: *self, opts }
+    }
+    fn context_handle(&self, arch: &X64Arch) -> (Reg, u32, u32) {
+        (
+            Reg(9),
+            0x28,
+            match (self.0) as u32 % (if arch.apx { 32 } else { 16 }) {
+                a => match a {
+                    0 => 0x78,
+                    1 => 0x90,
+                    2 => 0x80,
+                    3 => 0x98,
+                    4 => 0xa8,
+                    5 => 0xa8,
+                    6 => 0xb0,
+                    7 => 0x88,
+                    a => (a * 8) + 0xb8,
+                },
+            },
+        )
     }
 }
 pub struct RegDisplay {
