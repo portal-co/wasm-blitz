@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use portal_solutions_blitz_common::{
     DisplayFn,
     ops::MachOperator,
+    wasm_encoder::{Instruction, reencode::Reencode},
     wasmparser::{Operator, ValType},
 };
 extern crate alloc;
@@ -63,11 +64,202 @@ pub trait JsWrite: Write {
             _ => todo!(),
         }
     }
+    fn on_op(
+        &mut self,
+        func_imports: &[(&str, &str)],
+        state: &mut State,
+        op: &Instruction<'_>,
+    ) -> core::fmt::Result {
+        match op {
+            Instruction::I64Const ( value ) => push(self, &format_args!("{}n", *value as u64)),
+            Instruction::I32Const ( value ) => push(self, &format_args!("{}n", *value as u32 as u64)),
+            Instruction::I64Eqz | Instruction::I32Eqz => {
+                push(self, &format_args!("({}===0n?1n:0n)", pop!()))
+            }
+            Instruction::I32Add => push(
+                self,
+                &format_args!("((a={},b={0})=>(a+b)&mask32)()", pop!()),
+            ),
+            Instruction::I32Sub => push(
+                self,
+                &format_args!("((a={},b={0})=>toUint((a-b)&mask32,32))()", pop!()),
+            ),
+            Instruction::I32Mul => push(
+                self,
+                &format_args!("((a={},b={0})=>(a*b)&mask32)()", pop!()),
+            ),
+            Instruction::I32DivU => push(
+                self,
+                &format_args!("((a={},b={0})=>(a/b)&mask32)()", pop!()),
+            ),
+            Instruction::I32RemU => push(
+                self,
+                &format_args!("((a={},b={0})=>(a%b)&mask32)()", pop!()),
+            ),
+            Instruction::I32DivS => push(
+                self,
+                &format_args!(
+                    "((a=toInt({},32),b=toInt({0},32))=>toUint((a/b)&mask32))()",
+                    pop!()
+                ),
+            ),
+            Instruction::I32RemS => push(
+                self,
+                &format_args!(
+                    "((a=toInt({},32),b=toInt({0},32))=>toUint((a%b)&mask32))()",
+                    pop!()
+                ),
+            ),
+            Instruction::I32Shl => push(
+                self,
+                &format_args!("((a={},b={0}%32n)=>(a<<b)&mask32)()", pop!()),
+            ),
+            Instruction::I32ShrU => push(
+                self,
+                &format_args!("((a={},b={0}%32n)=>(a>>b)&mask32)()", pop!()),
+            ),
+            Instruction::I32ShrS => push(
+                self,
+                &format_args!(
+                    "((a=toInt({},32),b={0}%32n)=>toUint((a>>b)&mask32),32)()",
+                    pop!()
+                ),
+            ),
+            Instruction::I32Rotl => push(
+                self,
+                &format_args!("((a={},b={0}%32n)=>((a<<b)|(a>>(32n-b)))&mask32)()", pop!()),
+            ),
+            Instruction::I32Rotr => push(
+                self,
+                &format_args!("((a={},b={0}%32n)=>((a>>b)|(a<<(32n-b)))&mask32)()", pop!()),
+            ),
+            // 64 bit
+            Instruction::I64Add => push(
+                self,
+                &format_args!("((a={},b={0})=>(a+b)&mask64)()", pop!()),
+            ),
+            Instruction::I64Sub => push(
+                self,
+                &format_args!("((a={},b={0})=>toUint((a-b)&mask64,64))()", pop!()),
+            ),
+            Instruction::I64Mul => push(
+                self,
+                &format_args!("((a={},b={0})=>(a*b)&mask64)()", pop!()),
+            ),
+            Instruction::I64DivU => push(
+                self,
+                &format_args!("((a={},b={0})=>(a/b)&mask64)()", pop!()),
+            ),
+            Instruction::I64RemU => push(
+                self,
+                &format_args!("((a={},b={0})=>(a%b)&mask64)()", pop!()),
+            ),
+            Instruction::I64DivS => push(
+                self,
+                &format_args!(
+                    "((a=toInt({},64),b=toInt({0},64))=>toUint((a/b)&mask64))()",
+                    pop!()
+                ),
+            ),
+            Instruction::I64RemS => push(
+                self,
+                &format_args!(
+                    "((a=toInt({},64),b=toInt({0},64))=>toUint((a%b)&mask64))()",
+                    pop!()
+                ),
+            ),
+            Instruction::I64Shl => push(
+                self,
+                &format_args!("((a={},b={0}%64n)=>(a<<b)&mask64)()", pop!()),
+            ),
+            Instruction::I64ShrU => push(
+                self,
+                &format_args!("((a={},b={0}%64n)=>(a>>b)&mask64)()", pop!()),
+            ),
+            Instruction::I64ShrS => push(
+                self,
+                &format_args!(
+                    "((a=toInt({},64),b={0}%64n)=>toUint((a>>b)&mask64),64)()",
+                    pop!()
+                ),
+            ),
+            Instruction::I64Rotl => push(
+                self,
+                &format_args!("((a={},b={0}%64n)=>((a<<b)|(a>>(64n-b)))&mask64)()", pop!()),
+            ),
+            Instruction::I64Rotr => push(
+                self,
+                &format_args!("((a={},b={0}%64n)=>((a>>b)|(a<<(64n-b)))&mask64)()", pop!()),
+            ),
+            //
+            Instruction::Return => {
+                write!(
+                    self,
+                    "if(stack.length===rets)return stack;tmp_locals=[];for(let i = 0; i < rets;i++)tmp_locals=[...{STACK_WEAVE}(tmp_locals),stack[stack.length-rets+i]];return tmp_locals;"
+                )
+            }
+            Instruction::Call ( function_index ) => self.call(&format_args!("${function_index}")),
+            Instruction::LocalGet ( local_index ) => {
+                push(self, &format_args!("locals[{local_index}]"))
+            }
+            Instruction::LocalSet ( local_index ) => {
+                write!(self, "locals[{local_index}={}", pop!())
+            }
+            Instruction::LocalTee ( local_index ) => {
+                push(self, &format_args!("locals[{local_index}={}", pop!()))
+            }
+            Instruction::Block ( blockty)  => {
+                state.stack.push(Frame::Block);
+                write!(self, "l{}: for(;;){{", state.stack.len())
+            }
+            Instruction::Loop ( blockty ) => {
+                state.stack.push(Frame::Loop);
+                write!(self, "l{}: for(;;){{", state.stack.len())
+            }
+            Instruction::If ( blockty ) => {
+                state.stack.push(Frame::If);
+                write!(self, "if({}){{", pop!())
+            }
+            Instruction::Else => {
+                write!(self, "}}else{{")
+            }
+            Instruction::End => {
+                let s = state.stack.pop();
+                match s.unwrap() {
+                    Frame::Block | Frame::Loop => write!(self, "break;")?,
+                    _ => {}
+                }
+                write!(self, "}}")
+            }
+            Instruction::Br ( relative_depth ) => self.br(state, *relative_depth),
+            Instruction::BrIf ( relative_depth ) => write!(
+                self,
+                "if({}!==0n){}",
+                pop!(),
+                DisplayFn(&|f| f.br(state, *relative_depth))
+            ),
+            Instruction::BrTable (targets,default)=> {
+                write!(self, "{}", pop!())?;
+                for t in targets.iter().cloned() {
+                    write!(
+                        self,
+                        "if(tmp===0n){{{}}};tmp--;",
+                        DisplayFn(&|f| f.br(state, t))
+                    )?;
+                }
+                self.br(state, *default)?;
+                Ok(())
+            }
+            _ => todo!(),
+        }?;
+        Ok(())
+    }
     fn on_mach<Annot>(
         &mut self,
         func_imports: &[(&str, &str)],
         state: &mut State,
         m: &MachOperator<'_, Annot>,
+        r: &mut impl Reencode,
     ) -> core::fmt::Result {
         match m {
             MachOperator::StartFn { id, data } => {
@@ -102,196 +294,19 @@ pub trait JsWrite: Write {
                 Ok(())
             }
             MachOperator::StartBody => Ok(()),
+            MachOperator::Instruction { op, annot } => {
+                self.on_op(func_imports, state, op)?;
+                write!(self, ";")?;
+                Ok(())
+            }
             MachOperator::Operator { op, annot } => {
                 let Some(op) = op.as_ref() else {
                     return Ok(());
                 };
-                match op {
-                    Operator::I64Const { value } => push(self, &format_args!("{}n", *value as u64)),
-                    Operator::I32Const { value } => {
-                        push(self, &format_args!("{}n", *value as u32 as u64))
-                    }
-                    Operator::I64Eqz | Operator::I32Eqz => {
-                        push(self, &format_args!("({}===0n?1n:0n)", pop!()))
-                    }
-                    Operator::I32Add => push(
-                        self,
-                        &format_args!("((a={},b={0})=>(a+b)&mask32)()", pop!()),
-                    ),
-                    Operator::I32Sub => push(
-                        self,
-                        &format_args!("((a={},b={0})=>toUint((a-b)&mask32,32))()", pop!()),
-                    ),
-                    Operator::I32Mul => push(
-                        self,
-                        &format_args!("((a={},b={0})=>(a*b)&mask32)()", pop!()),
-                    ),
-                    Operator::I32DivU => push(
-                        self,
-                        &format_args!("((a={},b={0})=>(a/b)&mask32)()", pop!()),
-                    ),
-                    Operator::I32RemU => push(
-                        self,
-                        &format_args!("((a={},b={0})=>(a%b)&mask32)()", pop!()),
-                    ),
-                    Operator::I32DivS => push(
-                        self,
-                        &format_args!(
-                            "((a=toInt({},32),b=toInt({0},32))=>toUint((a/b)&mask32))()",
-                            pop!()
-                        ),
-                    ),
-                    Operator::I32RemS => push(
-                        self,
-                        &format_args!(
-                            "((a=toInt({},32),b=toInt({0},32))=>toUint((a%b)&mask32))()",
-                            pop!()
-                        ),
-                    ),
-                    Operator::I32Shl => push(
-                        self,
-                        &format_args!("((a={},b={0}%32n)=>(a<<b)&mask32)()", pop!()),
-                    ),
-                    Operator::I32ShrU => push(
-                        self,
-                        &format_args!("((a={},b={0}%32n)=>(a>>b)&mask32)()", pop!()),
-                    ),
-                    Operator::I32ShrS => push(
-                        self,
-                        &format_args!(
-                            "((a=toInt({},32),b={0}%32n)=>toUint((a>>b)&mask32),32)()",
-                            pop!()
-                        ),
-                    ),
-                    Operator::I32Rotl => push(
-                        self,
-                        &format_args!("((a={},b={0}%32n)=>((a<<b)|(a>>(32n-b)))&mask32)()", pop!()),
-                    ),
-                    Operator::I32Rotr => push(
-                        self,
-                        &format_args!("((a={},b={0}%32n)=>((a>>b)|(a<<(32n-b)))&mask32)()", pop!()),
-                    ),
-                    // 64 bit
-                    Operator::I64Add => push(
-                        self,
-                        &format_args!("((a={},b={0})=>(a+b)&mask64)()", pop!()),
-                    ),
-                    Operator::I64Sub => push(
-                        self,
-                        &format_args!("((a={},b={0})=>toUint((a-b)&mask64,64))()", pop!()),
-                    ),
-                    Operator::I64Mul => push(
-                        self,
-                        &format_args!("((a={},b={0})=>(a*b)&mask64)()", pop!()),
-                    ),
-                    Operator::I64DivU => push(
-                        self,
-                        &format_args!("((a={},b={0})=>(a/b)&mask64)()", pop!()),
-                    ),
-                    Operator::I64RemU => push(
-                        self,
-                        &format_args!("((a={},b={0})=>(a%b)&mask64)()", pop!()),
-                    ),
-                    Operator::I64DivS => push(
-                        self,
-                        &format_args!(
-                            "((a=toInt({},64),b=toInt({0},64))=>toUint((a/b)&mask64))()",
-                            pop!()
-                        ),
-                    ),
-                    Operator::I64RemS => push(
-                        self,
-                        &format_args!(
-                            "((a=toInt({},64),b=toInt({0},64))=>toUint((a%b)&mask64))()",
-                            pop!()
-                        ),
-                    ),
-                    Operator::I64Shl => push(
-                        self,
-                        &format_args!("((a={},b={0}%64n)=>(a<<b)&mask64)()", pop!()),
-                    ),
-                    Operator::I64ShrU => push(
-                        self,
-                        &format_args!("((a={},b={0}%64n)=>(a>>b)&mask64)()", pop!()),
-                    ),
-                    Operator::I64ShrS => push(
-                        self,
-                        &format_args!(
-                            "((a=toInt({},64),b={0}%64n)=>toUint((a>>b)&mask64),64)()",
-                            pop!()
-                        ),
-                    ),
-                    Operator::I64Rotl => push(
-                        self,
-                        &format_args!("((a={},b={0}%64n)=>((a<<b)|(a>>(64n-b)))&mask64)()", pop!()),
-                    ),
-                    Operator::I64Rotr => push(
-                        self,
-                        &format_args!("((a={},b={0}%64n)=>((a>>b)|(a<<(64n-b)))&mask64)()", pop!()),
-                    ),
-                    //
-                    Operator::Return => {
-                        write!(
-                            self,
-                            "if(stack.length===rets)return stack;tmp_locals=[];for(let i = 0; i < rets;i++)tmp_locals=[...{STACK_WEAVE}(tmp_locals),stack[stack.length-rets+i]];return tmp_locals;"
-                        )
-                    }
-                    Operator::Call { function_index } => {
-                        self.call(&format_args!("${function_index}"))
-                    }
-                    Operator::LocalGet { local_index } => {
-                        push(self, &format_args!("locals[{local_index}]"))
-                    }
-                    Operator::LocalSet { local_index } => {
-                        write!(self, "locals[{local_index}={}", pop!())
-                    }
-                    Operator::LocalTee { local_index } => {
-                        push(self, &format_args!("locals[{local_index}={}", pop!()))
-                    }
-                    Operator::Block { blockty } => {
-                        state.stack.push(Frame::Block);
-                        write!(self, "l{}: for(;;){{", state.stack.len())
-                    }
-                    Operator::Loop { blockty } => {
-                        state.stack.push(Frame::Loop);
-                        write!(self, "l{}: for(;;){{", state.stack.len())
-                    }
-                    Operator::If { blockty } => {
-                        state.stack.push(Frame::If);
-                        write!(self, "if({}){{", pop!())
-                    }
-                    Operator::Else => {
-                        write!(self, "}}else{{")
-                    }
-                    Operator::End => {
-                        let s = state.stack.pop();
-                        match s.unwrap() {
-                            Frame::Block | Frame::Loop => write!(self, "break;")?,
-                            _ => {}
-                        }
-                        write!(self, "}}")
-                    }
-                    Operator::Br { relative_depth } => self.br(state, *relative_depth),
-                    Operator::BrIf { relative_depth } => write!(
-                        self,
-                        "if({}!==0n){}",
-                        pop!(),
-                        DisplayFn(&|f| f.br(state, *relative_depth))
-                    ),
-                    Operator::BrTable { targets } => {
-                        write!(self, "{}", pop!())?;
-                        for t in targets.targets().flatten() {
-                            write!(
-                                self,
-                                "if(tmp===0n){{{}}};tmp--;",
-                                DisplayFn(&|f| f.br(state, t))
-                            )?;
-                        }
-                        self.br(state, targets.default())?;
-                        Ok(())
-                    }
-                    _ => todo!(),
-                }?;
+                let Ok(op) = r.instruction(op.clone()) else{
+                    return Ok(());
+                };
+                self.on_op(func_imports, state, &op)?;
                 write!(self, ";")?;
                 Ok(())
             }
