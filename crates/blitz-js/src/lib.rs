@@ -1,5 +1,6 @@
 #![no_std]
 use core::{
+    cell::OnceCell,
     error::Error,
     fmt::{Display, Formatter, Write},
 };
@@ -31,6 +32,17 @@ macro_rules! pop {
 #[derive(Default)]
 pub struct State {
     stack: Vec<Frame>,
+    opt_state: OnceCell<OptState>,
+}
+#[derive(Default)]
+pub struct OptState {}
+impl State {
+    pub fn enable_opt(&self) {
+        self.opt_state.get_or_init(|| Default::default());
+    }
+    fn opt(&mut self) -> Option<&mut OptState> {
+        self.opt_state.get_mut()
+    }
 }
 enum Frame {
     Block,
@@ -71,8 +83,8 @@ pub trait JsWrite: Write {
         op: &Instruction<'_>,
     ) -> core::fmt::Result {
         match op {
-            Instruction::I64Const ( value ) => push(self, &format_args!("{}n", *value as u64)),
-            Instruction::I32Const ( value ) => push(self, &format_args!("{}n", *value as u32 as u64)),
+            Instruction::I64Const(value) => push(self, &format_args!("{}n", *value as u64)),
+            Instruction::I32Const(value) => push(self, &format_args!("{}n", *value as u32 as u64)),
             Instruction::I64Eqz | Instruction::I32Eqz => {
                 push(self, &format_args!("({}===0n?1n:0n)", pop!()))
             }
@@ -198,25 +210,25 @@ pub trait JsWrite: Write {
                     "if(stack.length===rets)return stack;tmp_locals=[];for(let i = 0; i < rets;i++)tmp_locals=[...{STACK_WEAVE}(tmp_locals),stack[stack.length-rets+i]];return tmp_locals;"
                 )
             }
-            Instruction::Call ( function_index ) => self.call(&format_args!("${function_index}")),
-            Instruction::LocalGet ( local_index ) => {
+            Instruction::Call(function_index) => self.call(&format_args!("${function_index}")),
+            Instruction::LocalGet(local_index) => {
                 push(self, &format_args!("locals[{local_index}]"))
             }
-            Instruction::LocalSet ( local_index ) => {
+            Instruction::LocalSet(local_index) => {
                 write!(self, "locals[{local_index}={}", pop!())
             }
-            Instruction::LocalTee ( local_index ) => {
+            Instruction::LocalTee(local_index) => {
                 push(self, &format_args!("locals[{local_index}={}", pop!()))
             }
-            Instruction::Block ( blockty)  => {
+            Instruction::Block(blockty) => {
                 state.stack.push(Frame::Block);
                 write!(self, "l{}: for(;;){{", state.stack.len())
             }
-            Instruction::Loop ( blockty ) => {
+            Instruction::Loop(blockty) => {
                 state.stack.push(Frame::Loop);
                 write!(self, "l{}: for(;;){{", state.stack.len())
             }
-            Instruction::If ( blockty ) => {
+            Instruction::If(blockty) => {
                 state.stack.push(Frame::If);
                 write!(self, "if({}){{", pop!())
             }
@@ -231,14 +243,14 @@ pub trait JsWrite: Write {
                 }
                 write!(self, "}}")
             }
-            Instruction::Br ( relative_depth ) => self.br(state, *relative_depth),
-            Instruction::BrIf ( relative_depth ) => write!(
+            Instruction::Br(relative_depth) => self.br(state, *relative_depth),
+            Instruction::BrIf(relative_depth) => write!(
                 self,
                 "if({}!==0n){}",
                 pop!(),
                 DisplayFn(&|f| f.br(state, *relative_depth))
             ),
-            Instruction::BrTable (targets,default)=> {
+            Instruction::BrTable(targets, default) => {
                 write!(self, "{}", pop!())?;
                 for t in targets.iter().cloned() {
                     write!(
@@ -303,7 +315,7 @@ pub trait JsWrite: Write {
                 let Some(op) = op.as_ref() else {
                     return Ok(());
                 };
-                let Ok(op) = r.instruction(op.clone()) else{
+                let Ok(op) = r.instruction(op.clone()) else {
                     return Ok(());
                 };
                 self.on_op(func_imports, state, &op)?;
