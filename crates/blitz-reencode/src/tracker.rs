@@ -1,5 +1,5 @@
 use crate::*;
-use portal_solutions_blitz_common::dce::{DceStack, dce};
+use portal_solutions_blitz_common::dce::{DceStack, dce, dce_instr};
 #[derive(Default)]
 pub struct MachTracker {
     funcs: Vec<wasm_encoder::Function>,
@@ -45,7 +45,9 @@ pub fn do_mach_instruction<E, A>(
         }
         MachOperator::Instruction { op, .. } => {
             let mut f = state.funcs.last_mut().unwrap();
-            f.instruction(op);
+            if !dce_instr(&mut state.dce_stack, op) {
+                f.instruction(op);
+            }
         }
         _ => todo!(),
     };
