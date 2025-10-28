@@ -77,15 +77,58 @@ enum Frame {
     If,
 }
 pub trait JsWrite: Write {
-    fn call(&mut self, state: &State, function_index: &(dyn Display + '_)) -> core::fmt::Result {
+    fn call(
+        &mut self,
+        state: &State,
+        sig: &FuncType,
+        function_index: &(dyn Display + '_),
+    ) -> core::fmt::Result {
         write!(
             self,
-            "args=[];
-            for(let i = 0;i < {function_index}.__sig.params;i++)args=[...{STACK_WEAVE}(args),{}];
-            tmp_locals=[...{STACK_WEAVE}({function_index}(...args))];
-            if(tmp_locals.length==={function_index}.__sig.rets){{stack=[...{STACK_WEAVE}(stack),...{STACK_WEAVE}(tmp_locals)];}}else{{for(let i = 0;i < {function_index}.__sig.rets;i++)stack=[...{STACK_WEAVE}(stack),tmp_locals[i]];}};",
-            pop!(state)
-        )
+            "if({function_index}.__sig.params!={}||{function_index}.__sig.rets!={})throw new Error(`wasm sig mismatch`);",
+            sig.params().len(),
+            sig.results().len()
+        )?;
+        if let Some(opt) = state.opt() {
+            let mut o = opt.lock();
+            let s = o.depth - sig.params().len();
+            let od = o.depth;
+            o.depth -= sig.params().len();
+            let s2 = o.depth;
+            o.depth += sig.results().len();
+            write!(
+                self,
+                "args=[{}];stack.length -= {};
+                tmp_locals=({function_index}(...args));
+                stack.length += {};{}",
+                DisplayFn(&|f| {
+                    for n in s..od {
+                        write!(f, "stack[{n}]")?;
+                        if n + 1 != od {
+                            write!(f, ",")?;
+                        }
+                    }
+                    Ok(())
+                }),
+                sig.params().len(),
+                sig.results().len(),
+                DisplayFn(&|f| {
+                    for (i, n) in (s2..o.depth).enumerate() {
+                        write!(f, "stack[{n}]=tmp_locals[{i}]")?;
+                    }
+                    Ok(())
+                })
+            )
+        } else {
+            write!(
+                self,
+                "args=[];
+                for(let i = 0;i < {function_index}.__sig.params;i++)args=[...{STACK_WEAVE}(args),{}];
+                tmp_locals=[...{STACK_WEAVE}({function_index}(...args))];
+                if(tmp_locals.length==={function_index}.__sig.rets){{stack=[...{STACK_WEAVE}(stack),...{STACK_WEAVE}(tmp_locals)];}}else{{for(let i = 0;i < {function_index}.__sig.rets;i++)stack=[...{STACK_WEAVE}(stack),tmp_locals[i]];}};",
+                pop!(state)
+            )
+        }
     }
     fn br(&mut self, sigs: &[FuncType], state: &State, idx: u32) -> core::fmt::Result {
         let (idx, frame) = state
@@ -371,9 +414,11 @@ pub trait JsWrite: Write {
                     "if(stack.length===rets)return stack;tmp_locals=[];for(let i = 0; i < rets;i++)tmp_locals=[...{STACK_WEAVE}(tmp_locals),stack[stack.length-rets+i]];return tmp_locals;"
                 )
             }
-            Instruction::Call(function_index) => {
-                self.call(state, &format_args!("${function_index}"))
-            }
+            Instruction::Call(function_index) => self.call(
+                state,
+                &sigs[*function_index as usize],
+                &format_args!("${function_index}"),
+            ),
             Instruction::LocalGet(local_index) => {
                 push(state, self, &format_args!("locals[{local_index}]"))
             }
