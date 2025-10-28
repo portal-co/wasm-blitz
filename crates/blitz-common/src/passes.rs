@@ -11,10 +11,11 @@ macro_rules! dce_pass {
                         op: $crate::__::core::option::Option::Some(op),
                         annot,
                     } if $crate::dce::dce(dce_stack, op) => $crate::__::core::option::Option::None,
-                    $crate::MachOperator::Instruction {
-                        op,
-                        annot,
-                    } if $crate::dce::dce_instr(dce_stack, op) => $crate::__::core::option::Option::None,
+                    $crate::MachOperator::Instruction { op, annot }
+                        if $crate::dce::dce_instr(dce_stack, op) =>
+                    {
+                        $crate::__::core::option::Option::None
+                    }
                     o => {
                         if let $crate::MachOperator::EndBody = &o {
                             *dce_stack = $crate::dce::DceStack::new();

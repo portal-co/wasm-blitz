@@ -95,7 +95,11 @@ pub trait WriterExt: Writer<X64Label> {
                 None => return Ok(()),
                 Some(a) => a,
             } {
-                op => self._handle_op(state, func_imports, &rewriter.instruction(op.clone()).map_err(|e|e.into())?)?,
+                op => self._handle_op(
+                    state,
+                    func_imports,
+                    &rewriter.instruction(op.clone()).map_err(|e| e.into())?,
+                )?,
             },
             _ => todo!(),
         }
@@ -269,14 +273,14 @@ pub trait WriterExt: Writer<X64Label> {
                 self.cmovz64(&Reg(1), 0)?;
                 self.push(&Reg(1))?;
             }
-            Instruction::I64Load (memarg ) => {
+            Instruction::I64Load(memarg) => {
                 self.pop(&Reg(0))?;
                 self.mov64(&Reg(1), memarg.offset)?;
                 self.lea(&Reg(0), &Reg(0), 0, Some((&Reg(1), 1)))?;
                 self.mov(&Reg(0), &Reg(0), Some(0))?;
                 self.push(&Reg(0))?;
             }
-            Instruction::I64Store ( memarg ) => {
+            Instruction::I64Store(memarg) => {
                 self.pop(&Reg(2))?;
                 self.pop(&Reg(0))?;
                 self.mov64(&Reg(1), memarg.offset)?;
@@ -284,7 +288,7 @@ pub trait WriterExt: Writer<X64Label> {
                 self.xchg(&Reg(2), &Reg(0), Some(0))?;
                 // self.push(&Reg(0))?;
             }
-            Instruction::LocalGet ( local_index ) => {
+            Instruction::LocalGet(local_index) => {
                 self.xchg(&RSP, &Reg::CTX, Some(0))?;
                 self.lea(&RSP, &RSP, -((*local_index as i32 as isize) * 8), None)?;
                 self.pop(&Reg(0))?;
@@ -292,7 +296,7 @@ pub trait WriterExt: Writer<X64Label> {
                 self.xchg(&RSP, &Reg::CTX, Some(0))?;
                 self.push(&Reg(0))?;
             }
-            Instruction::LocalTee ( local_index ) => {
+            Instruction::LocalTee(local_index) => {
                 self.pop(&Reg(0))?;
                 self.xchg(&RSP, &Reg::CTX, Some(0))?;
                 self.lea(&RSP, &RSP, -((*local_index as i32 as isize) * 8), None)?;
@@ -301,7 +305,7 @@ pub trait WriterExt: Writer<X64Label> {
                 self.xchg(&RSP, &Reg::CTX, Some(0))?;
                 self.push(&Reg(0))?;
             }
-            Instruction::LocalSet ( local_index ) => {
+            Instruction::LocalSet(local_index) => {
                 self.pop(&Reg(0))?;
                 self.xchg(&RSP, &Reg::CTX, Some(0))?;
                 self.lea(&RSP, &RSP, -((*local_index as i32 as isize) * 8), None)?;
@@ -339,7 +343,7 @@ pub trait WriterExt: Writer<X64Label> {
                 self.br(state, *relative_depth)?;
                 self.set_label(X64Label::Indexed { idx: i })?;
             }
-            Instruction::BrTable(targets,default) => {
+            Instruction::BrTable(targets, default) => {
                 for relative_depth in targets.iter().cloned() {
                     let i = state.label_index;
                     state.label_index += 1;

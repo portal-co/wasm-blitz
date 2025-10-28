@@ -68,7 +68,7 @@ impl<
 > FuncRewriter<E> for T
 {
 }
-pub fn mach_operators<'a,'b, Annot: FromWasmInfo, E: From<BinaryReaderError>>(
+pub fn mach_operators<'a, 'b, Annot: FromWasmInfo, E: From<BinaryReaderError>>(
     code: &[FunctionBody<'a>],
     sigs_per: &[u32],
     sigs: &[FuncType],

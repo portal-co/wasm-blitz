@@ -11,8 +11,8 @@ use core::{
     mem::{transmute, transmute_copy},
     str::MatchIndices,
 };
-pub use wasmparser;
 pub use wasm_encoder;
+pub use wasmparser;
 use wasmparser::{BinaryReaderError, FuncType, FunctionBody, Operator, ValType};
 pub mod dce;
 pub trait Label<X: Clone + 'static>: Display {

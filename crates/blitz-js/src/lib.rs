@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use portal_solutions_blitz_common::{
     DisplayFn,
     ops::MachOperator,
-    wasm_encoder::{Instruction, reencode::Reencode},
+    wasm_encoder::{BlockType, FuncType, Instruction, reencode::Reencode},
     wasmparser::{Operator, ValType},
 };
 use spin::Mutex;
@@ -23,10 +23,20 @@ pub fn push(
     w: &mut (impl Write + ?Sized),
     a: &(dyn Display + '_),
 ) -> core::fmt::Result {
-    write!(w, "(tmp={a},stack=[...{STACK_WEAVE}(stack),tmp],tmp)")
+    write!(w, "(tmp={a},stack=[...{STACK_WEAVE}(stack),tmp],tmp)")?;
+    if let Some(o) = state.opt() {
+        let mut o = o.lock();
+        o.depth += 1;
+    }
+    Ok(())
 }
 pub fn pop(state: &State, w: &mut (impl Write + ?Sized)) -> core::fmt::Result {
-    write!(w, "(([...stack,tmp]={STACK_WEAVE}(stack)),tmp)")
+    write!(w, "(([...stack,tmp]={STACK_WEAVE}(stack)),tmp)")?;
+    if let Some(o) = state.opt() {
+        let mut o = o.lock();
+        o.depth -= 1;
+    }
+    Ok(())
 }
 #[macro_export]
 macro_rules! pop {
@@ -44,7 +54,9 @@ pub struct State {
 }
 #[derive(Default)]
 #[non_exhaustive]
-pub struct OptState {}
+pub struct OptState {
+    depth: usize,
+}
 impl State {
     pub fn enable_opt(&self, opt: impl FnOnce() -> OptState) {
         self.opt_state.get_or_init(|| Mutex::new(opt()));
@@ -54,8 +66,8 @@ impl State {
     }
 }
 enum Frame {
-    Block,
-    Loop,
+    Block(BlockType),
+    Loop(BlockType),
     If,
 }
 pub trait JsWrite: Write {
@@ -80,13 +92,14 @@ pub trait JsWrite: Write {
             .unwrap();
         let idx = idx + 1;
         match frame {
-            Frame::Block => write!(self, "{{stack=[];break l{idx};}}"),
-            Frame::Loop => write!(self, "{{stack=[];continue l{idx};}}"),
+            Frame::Block(_) => write!(self, "{{stack=[];break l{idx};}}"),
+            Frame::Loop(_) => write!(self, "{{stack=[];continue l{idx};}}"),
             _ => todo!(),
         }
     }
     fn on_op(
         &mut self,
+        sigs: &[FuncType],
         func_imports: &[(&str, &str)],
         state: &mut State,
         op: &Instruction<'_>,
@@ -308,11 +321,35 @@ pub trait JsWrite: Write {
                 &format_args!("locals[{local_index}={}", pop!(state)),
             ),
             Instruction::Block(blockty) => {
-                state.stack.push(Frame::Block);
+                state.stack.push(Frame::Block(blockty.clone()));
+                if let Some(o) = state.opt() {
+                    let mut o = o.lock();
+                    o.depth = match blockty {
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::Result(
+                            val_type,
+                        ) => 0,
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => {
+                            sigs[*f as usize].params().len()
+                        }
+                    };
+                }
                 write!(self, "l{}: for(;;){{", state.stack.len())
             }
             Instruction::Loop(blockty) => {
-                state.stack.push(Frame::Loop);
+                state.stack.push(Frame::Loop(blockty.clone()));
+                if let Some(o) = state.opt() {
+                    let mut o = o.lock();
+                    o.depth = match blockty {
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::Result(
+                            val_type,
+                        ) => 0,
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => {
+                            sigs[*f as usize].params().len()
+                        }
+                    };
+                }
                 write!(self, "l{}: for(;;){{", state.stack.len())
             }
             Instruction::If(blockty) => {
@@ -325,7 +362,28 @@ pub trait JsWrite: Write {
             Instruction::End => {
                 let s = state.stack.pop();
                 match s.unwrap() {
-                    Frame::Block | Frame::Loop => write!(self, "break;")?,
+                    Frame::Block(blockty) => {
+                        write!(self, "break;")?;
+                        if let Some(o) = state.opt() {
+                            let mut o = o.lock();
+                            o.depth = match blockty{
+                                portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
+                                portal_solutions_blitz_common::wasm_encoder::BlockType::Result(val_type) => 1,
+                                portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => sigs[f as usize].results().len(),
+                            };
+                        }
+                    }
+                    Frame::Loop(blockty) => {
+                        write!(self, "break;")?;
+                        if let Some(o) = state.opt() {
+                            let mut o = o.lock();
+                            o.depth = match blockty{
+                                portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
+                                portal_solutions_blitz_common::wasm_encoder::BlockType::Result(val_type) => 1,
+                                portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => sigs[f as usize].results().len(),
+                            };
+                        }
+                    }
                     _ => {}
                 }
                 write!(self, "}}")
@@ -355,6 +413,7 @@ pub trait JsWrite: Write {
     }
     fn on_mach<Annot>(
         &mut self,
+        sigs: &[FuncType],
         func_imports: &[(&str, &str)],
         state: &mut State,
         m: &MachOperator<'_, Annot>,
@@ -394,7 +453,7 @@ pub trait JsWrite: Write {
             }
             MachOperator::StartBody => Ok(()),
             MachOperator::Instruction { op, annot } => {
-                self.on_op(func_imports, state, op)?;
+                self.on_op(sigs, func_imports, state, op)?;
                 write!(self, ";")?;
                 Ok(())
             }
@@ -405,7 +464,7 @@ pub trait JsWrite: Write {
                 let Ok(op) = r.instruction(op.clone()) else {
                     return Ok(());
                 };
-                self.on_op(func_imports, state, &op)?;
+                self.on_op(sigs, func_imports, state, &op)?;
                 write!(self, ";")?;
                 Ok(())
             }

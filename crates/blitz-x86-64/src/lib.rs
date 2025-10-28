@@ -5,8 +5,8 @@ use core::{
     fmt::{Display, Formatter, Write},
 };
 use portal_solutions_blitz_common::{
-    asm::common::mem::MemorySize,
     asm::Reg,
+    asm::common::mem::MemorySize,
     ops::{FnData, MachOperator},
     wasmparser::Operator,
 };
