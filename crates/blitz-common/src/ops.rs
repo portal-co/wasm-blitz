@@ -1,6 +1,22 @@
 use wasm_encoder::Instruction;
 
 use crate::*;
+#[macro_export]
+macro_rules! simple_op_match {
+    ($a:expr => {$($i:ident $({$a2:ident => |$extra:pat_param|$ev:expr})? => |$annot:pat_param|$e:expr),*} |$b:pat_param| $c:expr) => {
+        match $a{
+            $(
+                $crate::MachOperator::Instruction{annot: $annot, op: $crate::wasm_encoder::Instruction::$i$(($a2))?} => $e,
+                $crate::MachOperator::Operator{annot: $annot, op: $crate::__::core::option::Option::Some($crate::wasmparser::Operator::$i $({$a2})?)} => match match ($($a2)?){
+                    ($($extra)?) => ($($ev)?)
+                }{
+                    ($($a2)?) => $e
+                }
+            ),*,
+            $b => $c
+        }
+    };
+}
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[non_exhaustive]
 pub struct WasmInfo {
