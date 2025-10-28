@@ -23,18 +23,24 @@ pub fn push(
     w: &mut (impl Write + ?Sized),
     a: &(dyn Display + '_),
 ) -> core::fmt::Result {
-    write!(w, "(tmp={a},stack=[...{STACK_WEAVE}(stack),tmp],tmp)")?;
     if let Some(o) = state.opt() {
+        write!(w, "(tmp={a}")?;
         let mut o = o.lock();
+
+        write!(w, ",stack.length++,stack[{}]=tmp,tmp)", o.depth + 1)?;
         o.depth += 1;
+    } else {
+        write!(w, "(tmp={a},stack=[...{STACK_WEAVE}(stack),tmp],tmp)")?;
     }
     Ok(())
 }
 pub fn pop(state: &State, w: &mut (impl Write + ?Sized)) -> core::fmt::Result {
-    write!(w, "(([...stack,tmp]={STACK_WEAVE}(stack)),tmp)")?;
     if let Some(o) = state.opt() {
         let mut o = o.lock();
         o.depth -= 1;
+        write!(w, "(tmp=stack[{}],stack.length--,tmp)", o.depth + 1)?;
+    } else {
+        write!(w, "(([...stack,tmp]={STACK_WEAVE}(stack)),tmp)")?;
     }
     Ok(())
 }
