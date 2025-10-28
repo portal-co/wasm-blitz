@@ -81,7 +81,7 @@ pub trait JsWrite: Write {
             pop!(state)
         )
     }
-    fn br(&mut self, state: &State, idx: u32) -> core::fmt::Result {
+    fn br(&mut self, sigs: &[FuncType], state: &State, idx: u32) -> core::fmt::Result {
         let (idx, frame) = state
             .stack
             .iter()
@@ -92,10 +92,69 @@ pub trait JsWrite: Write {
             .unwrap();
         let idx = idx + 1;
         match frame {
-            Frame::Block(_) => write!(self, "{{stack=[];break l{idx};}}"),
-            Frame::Loop(_) => write!(self, "{{stack=[];continue l{idx};}}"),
+            Frame::Block(blockty) => {
+                if let Some(o) = state.opt() {
+                    let mut o = o.lock();
+                    let d = match blockty {
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::Result(
+                            val_type,
+                        ) => 1,
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => {
+                            sigs[*f as usize].results().len()
+                        }
+                    };
+                    let s = o.depth - d;
+                    write!(
+                        self,
+                        "{{stack=[{}];break l{idx};}}",
+                        DisplayFn(&|f| {
+                            for n in s..o.depth {
+                                write!(f, "stack[{n}]")?;
+                                if n + 1 != o.depth {
+                                    write!(f, ",")?;
+                                }
+                            }
+                            Ok(())
+                        })
+                    )?;
+                } else {
+                    write!(self, "{{stack=[];break l{idx};}}")?;
+                }
+            }
+            Frame::Loop(blockty) => {
+                if let Some(o) = state.opt() {
+                    let mut o = o.lock();
+                    let d = match blockty {
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::Result(
+                            val_type,
+                        ) => 0,
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => {
+                            sigs[*f as usize].params().len()
+                        }
+                    };
+                    let s = o.depth - d;
+                    write!(
+                        self,
+                        "{{stack=[{}];break l{idx};}}",
+                        DisplayFn(&|f| {
+                            for n in s..o.depth {
+                                write!(f, "stack[{n}]")?;
+                                if n + 1 != o.depth {
+                                    write!(f, ",")?;
+                                }
+                            }
+                            Ok(())
+                        })
+                    )?;
+                } else {
+                    write!(self, "{{stack=[];continue l{idx};}}")?;
+                }
+            }
             _ => todo!(),
-        }
+        };
+        Ok(())
     }
     fn on_op(
         &mut self,
@@ -388,12 +447,12 @@ pub trait JsWrite: Write {
                 }
                 write!(self, "}}")
             }
-            Instruction::Br(relative_depth) => self.br(state, *relative_depth),
+            Instruction::Br(relative_depth) => self.br(sigs, state, *relative_depth),
             Instruction::BrIf(relative_depth) => write!(
                 self,
                 "if({}!==0n){}",
                 pop!(state),
-                DisplayFn(&|f| f.br(state, *relative_depth))
+                DisplayFn(&|f| f.br(sigs, state, *relative_depth))
             ),
             Instruction::BrTable(targets, default) => {
                 write!(self, "{}", pop!(state))?;
@@ -401,10 +460,10 @@ pub trait JsWrite: Write {
                     write!(
                         self,
                         "if(tmp===0n){{{}}};tmp--;",
-                        DisplayFn(&|f| f.br(state, t))
+                        DisplayFn(&|f| f.br(sigs, state, t))
                     )?;
                 }
-                self.br(state, *default)?;
+                self.br(sigs, state, *default)?;
                 Ok(())
             }
             _ => todo!(),
