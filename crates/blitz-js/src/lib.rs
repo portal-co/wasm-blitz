@@ -30,15 +30,17 @@ macro_rules! pop {
     };
 }
 #[derive(Default)]
+#[non_exhaustive]
 pub struct State {
     stack: Vec<Frame>,
     opt_state: OnceCell<OptState>,
 }
 #[derive(Default)]
+#[non_exhaustive]
 pub struct OptState {}
 impl State {
-    pub fn enable_opt(&self) {
-        self.opt_state.get_or_init(|| Default::default());
+    pub fn enable_opt(&self, opt: impl FnOnce() -> OptState) {
+        self.opt_state.get_or_init(opt);
     }
     fn opt(&mut self) -> Option<&mut OptState> {
         self.opt_state.get_mut()
