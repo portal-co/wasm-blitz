@@ -12,6 +12,7 @@ use core::{
     str::MatchIndices,
 };
 pub use wasmparser;
+pub use wasm_encoder;
 use wasmparser::{BinaryReaderError, FuncType, FunctionBody, Operator, ValType};
 pub mod dce;
 pub trait Label<X: Clone + 'static>: Display {

@@ -139,6 +139,7 @@ version = "0.1.0"
 dependencies = [
  "portal-pc-asm-common",
  "typeid",
+ "wasm-encoder",
  "wasmparser",
 ]
 

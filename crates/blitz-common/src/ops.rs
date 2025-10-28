@@ -1,3 +1,5 @@
+use wasm_encoder::Instruction;
+
 use crate::*;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[non_exhaustive]
@@ -80,11 +82,15 @@ pub struct FnData {
     pub num_returns: usize,
     pub control_depth: usize,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum MachOperator<'a, Annot = ()> {
     Operator {
         op: Option<Operator<'a>>,
+        annot: Annot,
+    },
+    Instruction {
+        op: Instruction<'a>,
         annot: Annot,
     },
     Trap {
@@ -112,6 +118,10 @@ impl<'a, Annot> MachOperator<'a, Annot> {
                 op,
                 annot: f(annot)?,
             },
+            MachOperator::Instruction { op, annot } => MachOperator::Instruction {
+                op,
+                annot: f(annot)?,
+            },
             MachOperator::Trap { conditional, annot } => MachOperator::Trap {
                 conditional,
                 annot: f(annot)?,
@@ -125,6 +135,10 @@ impl<'a, Annot> MachOperator<'a, Annot> {
     pub fn as_ref<'b>(&'b self) -> MachOperator<'a, &'b Annot> {
         match self {
             MachOperator::Operator { op, annot } => MachOperator::Operator {
+                op: op.clone(),
+                annot,
+            },
+            MachOperator::Instruction { op, annot } => MachOperator::Instruction {
                 op: op.clone(),
                 annot,
             },
@@ -147,6 +161,10 @@ impl<'a, Annot> MachOperator<'a, Annot> {
     pub fn as_mut<'b>(&'b mut self) -> MachOperator<'a, &'b mut Annot> {
         match self {
             MachOperator::Operator { op, annot } => MachOperator::Operator {
+                op: op.clone(),
+                annot,
+            },
+            MachOperator::Instruction { op, annot } => MachOperator::Instruction {
                 op: op.clone(),
                 annot,
             },

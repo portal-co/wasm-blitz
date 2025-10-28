@@ -43,6 +43,10 @@ pub fn do_mach_instruction<E, A>(
                 f.instruction(&r.instruction(o.clone())?);
             }
         }
+        MachOperator::Instruction { op, .. } => {
+            let mut f = state.funcs.last_mut().unwrap();
+            f.instruction(op);
+        }
         _ => todo!(),
     };
     Ok(())
