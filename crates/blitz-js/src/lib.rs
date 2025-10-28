@@ -114,7 +114,7 @@ pub trait JsWrite: Write {
                 sig.results().len(),
                 DisplayFn(&|f| {
                     for (i, n) in (s2..o.depth).enumerate() {
-                        write!(f, "stack[{n}]=tmp_locals[{i}]")?;
+                        write!(f, "stack[{n}]=tmp_locals[{i}];")?;
                     }
                     Ok(())
                 })
