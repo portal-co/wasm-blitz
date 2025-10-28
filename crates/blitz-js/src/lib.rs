@@ -208,6 +208,7 @@ pub trait JsWrite: Write {
     fn on_op(
         &mut self,
         sigs: &[FuncType],
+    fsigs: &[u32],
         func_imports: &[(&str, &str)],
         state: &mut State,
         op: &Instruction<'_>,
@@ -416,7 +417,7 @@ pub trait JsWrite: Write {
             }
             Instruction::Call(function_index) => self.call(
                 state,
-                &sigs[*function_index as usize],
+                &sigs[fsigs[*function_index as usize] as usize],
                 &format_args!("${function_index}"),
             ),
             Instruction::LocalGet(local_index) => {
@@ -524,6 +525,7 @@ pub trait JsWrite: Write {
     fn on_mach<Annot>(
         &mut self,
         sigs: &[FuncType],
+        fsigs: &[u32],
         func_imports: &[(&str, &str)],
         state: &mut State,
         m: &MachOperator<'_, Annot>,
@@ -563,7 +565,7 @@ pub trait JsWrite: Write {
             }
             MachOperator::StartBody => Ok(()),
             MachOperator::Instruction { op, annot } => {
-                self.on_op(sigs, func_imports, state, op)?;
+                self.on_op(sigs,fsigs, func_imports, state, op)?;
                 write!(self, ";")?;
                 Ok(())
             }
@@ -574,7 +576,7 @@ pub trait JsWrite: Write {
                 let Ok(op) = r.instruction(op.clone()) else {
                     return Ok(());
                 };
-                self.on_op(sigs, func_imports, state, &op)?;
+                self.on_op(sigs,fsigs, func_imports, state, &op)?;
                 write!(self, ";")?;
                 Ok(())
             }
