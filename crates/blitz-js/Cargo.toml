@@ -7,3 +7,4 @@ description.workspace = true
 
 [dependencies]
 portal-solutions-blitz-common.workspace = true
+spin = "0.10.0"

@@ -15,35 +15,42 @@ use portal_solutions_blitz_common::{
     wasm_encoder::{Instruction, reencode::Reencode},
     wasmparser::{Operator, ValType},
 };
+use spin::Mutex;
 extern crate alloc;
 const STACK_WEAVE: &'static str = "($$stack_restore_symbol_iterator ?? (a=>a))";
-pub fn push(w: &mut (impl Write + ?Sized), a: &(dyn Display + '_)) -> core::fmt::Result {
+pub fn push(
+    state: &State,
+    w: &mut (impl Write + ?Sized),
+    a: &(dyn Display + '_),
+) -> core::fmt::Result {
     write!(w, "(tmp={a},stack=[...{STACK_WEAVE}(stack),tmp],tmp)")
 }
-pub fn pop(w: &mut (impl Write + ?Sized)) -> core::fmt::Result {
+pub fn pop(state: &State, w: &mut (impl Write + ?Sized)) -> core::fmt::Result {
     write!(w, "(([...stack,tmp]={STACK_WEAVE}(stack)),tmp)")
 }
 #[macro_export]
 macro_rules! pop {
-    () => {
-        $crate::__::DisplayFn(&|f| $crate::pop(f))
+    ($state:ident) => {
+        $crate::__::DisplayFn(&|f| match $state {
+            ref state => $crate::pop(state, f),
+        })
     };
 }
 #[derive(Default)]
 #[non_exhaustive]
 pub struct State {
     stack: Vec<Frame>,
-    opt_state: OnceCell<OptState>,
+    opt_state: OnceCell<Mutex<OptState>>,
 }
 #[derive(Default)]
 #[non_exhaustive]
 pub struct OptState {}
 impl State {
     pub fn enable_opt(&self, opt: impl FnOnce() -> OptState) {
-        self.opt_state.get_or_init(opt);
+        self.opt_state.get_or_init(|| Mutex::new(opt()));
     }
-    fn opt(&mut self) -> Option<&mut OptState> {
-        self.opt_state.get_mut()
+    fn opt(&self) -> Option<&Mutex<OptState>> {
+        self.opt_state.get()
     }
 }
 enum Frame {
@@ -52,14 +59,14 @@ enum Frame {
     If,
 }
 pub trait JsWrite: Write {
-    fn call(&mut self, function_index: &(dyn Display + '_)) -> core::fmt::Result {
+    fn call(&mut self, state: &State, function_index: &(dyn Display + '_)) -> core::fmt::Result {
         write!(
             self,
             "args=[];
             for(let i = 0;i < {function_index}.__sig.params;i++)args=[...{STACK_WEAVE}(args),{}];
             tmp_locals=[...{STACK_WEAVE}({function_index}(...args))];
             if(tmp_locals.length==={function_index}.__sig.rets){{stack=[...{STACK_WEAVE}(stack),...{STACK_WEAVE}(tmp_locals)];}}else{{for(let i = 0;i < {function_index}.__sig.rets;i++)stack=[...{STACK_WEAVE}(stack),tmp_locals[i]];}};",
-            pop!()
+            pop!(state)
         )
     }
     fn br(&mut self, state: &State, idx: u32) -> core::fmt::Result {
@@ -85,125 +92,199 @@ pub trait JsWrite: Write {
         op: &Instruction<'_>,
     ) -> core::fmt::Result {
         match op {
-            Instruction::I64Const(value) => push(self, &format_args!("{}n", *value as u64)),
-            Instruction::I32Const(value) => push(self, &format_args!("{}n", *value as u32 as u64)),
+            Instruction::I64Const(value) => push(state, self, &format_args!("{}n", *value as u64)),
+            Instruction::I32Const(value) => {
+                push(state, self, &format_args!("{}n", *value as u32 as u64))
+            }
             Instruction::I64Eqz | Instruction::I32Eqz => {
-                push(self, &format_args!("({}===0n?1n:0n)", pop!()))
+                push(state, self, &format_args!("({}===0n?1n:0n)", pop!(state)))
             }
             Instruction::I32Add => push(
+                state,
                 self,
-                &format_args!("((a={},b={0})=>(a+b)&mask32)()", pop!()),
+                &format_args!("((a={},b={})=>(a+b)&mask32)()", pop!(state), pop!(state)),
             ),
             Instruction::I32Sub => push(
-                self,
-                &format_args!("((a={},b={0})=>toUint((a-b)&mask32,32))()", pop!()),
-            ),
-            Instruction::I32Mul => push(
-                self,
-                &format_args!("((a={},b={0})=>(a*b)&mask32)()", pop!()),
-            ),
-            Instruction::I32DivU => push(
-                self,
-                &format_args!("((a={},b={0})=>(a/b)&mask32)()", pop!()),
-            ),
-            Instruction::I32RemU => push(
-                self,
-                &format_args!("((a={},b={0})=>(a%b)&mask32)()", pop!()),
-            ),
-            Instruction::I32DivS => push(
+                state,
                 self,
                 &format_args!(
-                    "((a=toInt({},32),b=toInt({0},32))=>toUint((a/b)&mask32))()",
-                    pop!()
+                    "((a={},b={})=>toUint((a-b)&mask32,32))()",
+                    pop!(state),
+                    pop!(state)
+                ),
+            ),
+            Instruction::I32Mul => push(
+                state,
+                self,
+                &format_args!("((a={},b={})=>(a*b)&mask32)()", pop!(state), pop!(state)),
+            ),
+            Instruction::I32DivU => push(
+                state,
+                self,
+                &format_args!("((a={},b={})=>(a/b)&mask32)()", pop!(state), pop!(state)),
+            ),
+            Instruction::I32RemU => push(
+                state,
+                self,
+                &format_args!("((a={},b={})=>(a%b)&mask32)()", pop!(state), pop!(state)),
+            ),
+            Instruction::I32DivS => push(
+                state,
+                self,
+                &format_args!(
+                    "((a=toInt({},32),b=toInt({},32))=>toUint((a/b)&mask32))()",
+                    // pop!()
+                    pop!(state),
+                    pop!(state)
                 ),
             ),
             Instruction::I32RemS => push(
+                state,
                 self,
                 &format_args!(
-                    "((a=toInt({},32),b=toInt({0},32))=>toUint((a%b)&mask32))()",
-                    pop!()
+                    "((a=toInt({},32),b=toInt({},32))=>toUint((a%b)&mask32))()",
+                    // pop!()
+                    pop!(state),
+                    pop!(state)
                 ),
             ),
             Instruction::I32Shl => push(
-                self,
-                &format_args!("((a={},b={0}%32n)=>(a<<b)&mask32)()", pop!()),
-            ),
-            Instruction::I32ShrU => push(
-                self,
-                &format_args!("((a={},b={0}%32n)=>(a>>b)&mask32)()", pop!()),
-            ),
-            Instruction::I32ShrS => push(
+                state,
                 self,
                 &format_args!(
-                    "((a=toInt({},32),b={0}%32n)=>toUint((a>>b)&mask32),32)()",
-                    pop!()
+                    "((a={},b={}%32n)=>(a<<b)&mask32)()",
+                    pop!(state),
+                    pop!(state)
+                ),
+            ),
+            Instruction::I32ShrU => push(
+                state,
+                self,
+                &format_args!(
+                    "((a={},b={}%32n)=>(a>>b)&mask32)()",
+                    pop!(state),
+                    pop!(state)
+                ),
+            ),
+            Instruction::I32ShrS => push(
+                state,
+                self,
+                &format_args!(
+                    "((a=toInt({},32),b={}%32n)=>toUint((a>>b)&mask32),32)()",
+                    pop!(state),
+                    pop!(state)
                 ),
             ),
             Instruction::I32Rotl => push(
+                state,
                 self,
-                &format_args!("((a={},b={0}%32n)=>((a<<b)|(a>>(32n-b)))&mask32)()", pop!()),
+                &format_args!(
+                    "((a={},b={}%32n)=>((a<<b)|(a>>(32n-b)))&mask32)()",
+                    pop!(state),
+                    pop!(state)
+                ),
             ),
             Instruction::I32Rotr => push(
+                state,
                 self,
-                &format_args!("((a={},b={0}%32n)=>((a>>b)|(a<<(32n-b)))&mask32)()", pop!()),
+                &format_args!(
+                    "((a={},b={}%32n)=>((a>>b)|(a<<(32n-b)))&mask32)()",
+                    pop!(state),
+                    pop!(state)
+                ),
             ),
             // 64 bit
             Instruction::I64Add => push(
+                state,
                 self,
-                &format_args!("((a={},b={0})=>(a+b)&mask64)()", pop!()),
+                &format_args!("((a={},b={})=>(a+b)&mask64)()", pop!(state), pop!(state)),
             ),
             Instruction::I64Sub => push(
-                self,
-                &format_args!("((a={},b={0})=>toUint((a-b)&mask64,64))()", pop!()),
-            ),
-            Instruction::I64Mul => push(
-                self,
-                &format_args!("((a={},b={0})=>(a*b)&mask64)()", pop!()),
-            ),
-            Instruction::I64DivU => push(
-                self,
-                &format_args!("((a={},b={0})=>(a/b)&mask64)()", pop!()),
-            ),
-            Instruction::I64RemU => push(
-                self,
-                &format_args!("((a={},b={0})=>(a%b)&mask64)()", pop!()),
-            ),
-            Instruction::I64DivS => push(
+                state,
                 self,
                 &format_args!(
-                    "((a=toInt({},64),b=toInt({0},64))=>toUint((a/b)&mask64))()",
-                    pop!()
+                    "((a={},b={})=>toUint((a-b)&mask64,64))()",
+                    pop!(state),
+                    pop!(state)
+                ),
+            ),
+            Instruction::I64Mul => push(
+                state,
+                self,
+                &format_args!("((a={},b={})=>(a*b)&mask64)()", pop!(state), pop!(state)),
+            ),
+            Instruction::I64DivU => push(
+                state,
+                self,
+                &format_args!("((a={},b={})=>(a/b)&mask64)()", pop!(state), pop!(state)),
+            ),
+            Instruction::I64RemU => push(
+                state,
+                self,
+                &format_args!("((a={},b={})=>(a%b)&mask64)()", pop!(state), pop!(state)),
+            ),
+            Instruction::I64DivS => push(
+                state,
+                self,
+                &format_args!(
+                    "((a=toInt({},64),b=toInt({},64))=>toUint((a/b)&mask64))()",
+                    pop!(state),
+                    pop!(state)
                 ),
             ),
             Instruction::I64RemS => push(
+                state,
                 self,
                 &format_args!(
-                    "((a=toInt({},64),b=toInt({0},64))=>toUint((a%b)&mask64))()",
-                    pop!()
+                    "((a=toInt({},64),b=toInt({},64))=>toUint((a%b)&mask64))()",
+                    pop!(state),
+                    pop!(state)
                 ),
             ),
             Instruction::I64Shl => push(
-                self,
-                &format_args!("((a={},b={0}%64n)=>(a<<b)&mask64)()", pop!()),
-            ),
-            Instruction::I64ShrU => push(
-                self,
-                &format_args!("((a={},b={0}%64n)=>(a>>b)&mask64)()", pop!()),
-            ),
-            Instruction::I64ShrS => push(
+                state,
                 self,
                 &format_args!(
-                    "((a=toInt({},64),b={0}%64n)=>toUint((a>>b)&mask64),64)()",
-                    pop!()
+                    "((a={},b={}%64n)=>(a<<b)&mask64)()",
+                    pop!(state),
+                    pop!(state)
+                ),
+            ),
+            Instruction::I64ShrU => push(
+                state,
+                self,
+                &format_args!(
+                    "((a={},b={}%64n)=>(a>>b)&mask64)()",
+                    pop!(state),
+                    pop!(state)
+                ),
+            ),
+            Instruction::I64ShrS => push(
+                state,
+                self,
+                &format_args!(
+                    "((a=toInt({},64),b={}%64n)=>toUint((a>>b)&mask64),64)()",
+                    pop!(state),
+                    pop!(state)
                 ),
             ),
             Instruction::I64Rotl => push(
+                state,
                 self,
-                &format_args!("((a={},b={0}%64n)=>((a<<b)|(a>>(64n-b)))&mask64)()", pop!()),
+                &format_args!(
+                    "((a={},b={}%64n)=>((a<<b)|(a>>(64n-b)))&mask64)()",
+                    pop!(state),
+                    pop!(state)
+                ),
             ),
             Instruction::I64Rotr => push(
+                state,
                 self,
-                &format_args!("((a={},b={0}%64n)=>((a>>b)|(a<<(64n-b)))&mask64)()", pop!()),
+                &format_args!(
+                    "((a={},b={}%64n)=>((a>>b)|(a<<(64n-b)))&mask64)()",
+                    pop!(state),
+                    pop!(state)
+                ),
             ),
             //
             Instruction::Return => {
@@ -212,16 +293,20 @@ pub trait JsWrite: Write {
                     "if(stack.length===rets)return stack;tmp_locals=[];for(let i = 0; i < rets;i++)tmp_locals=[...{STACK_WEAVE}(tmp_locals),stack[stack.length-rets+i]];return tmp_locals;"
                 )
             }
-            Instruction::Call(function_index) => self.call(&format_args!("${function_index}")),
+            Instruction::Call(function_index) => {
+                self.call(state, &format_args!("${function_index}"))
+            }
             Instruction::LocalGet(local_index) => {
-                push(self, &format_args!("locals[{local_index}]"))
+                push(state, self, &format_args!("locals[{local_index}]"))
             }
             Instruction::LocalSet(local_index) => {
-                write!(self, "locals[{local_index}={}", pop!())
+                write!(self, "locals[{local_index}={}", pop!(state))
             }
-            Instruction::LocalTee(local_index) => {
-                push(self, &format_args!("locals[{local_index}={}", pop!()))
-            }
+            Instruction::LocalTee(local_index) => push(
+                state,
+                self,
+                &format_args!("locals[{local_index}={}", pop!(state)),
+            ),
             Instruction::Block(blockty) => {
                 state.stack.push(Frame::Block);
                 write!(self, "l{}: for(;;){{", state.stack.len())
@@ -232,7 +317,7 @@ pub trait JsWrite: Write {
             }
             Instruction::If(blockty) => {
                 state.stack.push(Frame::If);
-                write!(self, "if({}){{", pop!())
+                write!(self, "if({}){{", pop!(state))
             }
             Instruction::Else => {
                 write!(self, "}}else{{")
@@ -249,11 +334,11 @@ pub trait JsWrite: Write {
             Instruction::BrIf(relative_depth) => write!(
                 self,
                 "if({}!==0n){}",
-                pop!(),
+                pop!(state),
                 DisplayFn(&|f| f.br(state, *relative_depth))
             ),
             Instruction::BrTable(targets, default) => {
-                write!(self, "{}", pop!())?;
+                write!(self, "{}", pop!(state))?;
                 for t in targets.iter().cloned() {
                     write!(
                         self,
