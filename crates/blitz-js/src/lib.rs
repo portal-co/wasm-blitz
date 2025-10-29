@@ -208,7 +208,7 @@ pub trait JsWrite: Write {
     fn on_op(
         &mut self,
         sigs: &[FuncType],
-    fsigs: &[u32],
+        fsigs: &[u32],
         func_imports: &[(&str, &str)],
         state: &mut State,
         op: &Instruction<'_>,
@@ -572,7 +572,7 @@ pub trait JsWrite: Write {
             }
             MachOperator::StartBody => Ok(()),
             MachOperator::Instruction { op, annot } => {
-                self.on_op(sigs,fsigs, func_imports, state, op)?;
+                self.on_op(sigs, fsigs, func_imports, state, op)?;
                 write!(self, ";")?;
                 Ok(())
             }
@@ -583,7 +583,7 @@ pub trait JsWrite: Write {
                 let Ok(op) = r.instruction(op.clone()) else {
                     return Ok(());
                 };
-                self.on_op(sigs,fsigs, func_imports, state, &op)?;
+                self.on_op(sigs, fsigs, func_imports, state, &op)?;
                 write!(self, ";")?;
                 Ok(())
             }
