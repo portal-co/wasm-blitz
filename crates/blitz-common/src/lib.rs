@@ -6,6 +6,9 @@ pub mod __ {
     pub use core;
 }
 use alloc::vec::Vec;
+pub fn vecced<T>(a: impl Iterator<Item = T>) -> alloc::vec::IntoIter<T> {
+    a.collect::<Vec<T>>().into_iter()
+}
 use core::{
     fmt::{Display, Formatter},
     mem::{transmute, transmute_copy},
