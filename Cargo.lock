@@ -72,6 +72,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"
 
 [[package]]
+name = "impl-trait-for-tuples"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0eb5a3343abf848c0984fe4604b2b105da9539376e24fc0a3b0007411ae4fd9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "itertools"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -150,6 +161,7 @@ dependencies = [
  "typeid",
  "wasm-encoder",
  "wasmparser",
+ "wax-core",
 ]
 
 [[package]]
@@ -180,6 +192,7 @@ version = "0.1.0"
 dependencies = [
  "portal-solutions-blitz-common",
  "wasm-encoder",
+ "wax-core",
 ]
 
 [[package]]
@@ -314,6 +327,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b722dcf61e0ea47440b53ff83ccb5df8efec57a69d150e4f24882e4eba7e24a4"
 dependencies = [
  "bitflags",
+]
+
+[[package]]
+name = "wax-core"
+version = "0.1.0"
+source = "git+https://github.com/portal-co/wax.git?branch=main#633f4fcd7afa66233c7e7042fe2eb8174771bbe2"
+dependencies = [
+ "impl-trait-for-tuples",
+ "wasm-encoder",
+ "wasmparser",
 ]
 
 [[package]]

@@ -9,6 +9,7 @@ description.workspace = true
 typeid.workspace = true
 wasmparser.workspace = true
 wasm-encoder.workspace = true
+wax-core.workspace = true
 
 portal-pc-asm-common = {workspace = true,features = ["alloc"],optional = true}
 

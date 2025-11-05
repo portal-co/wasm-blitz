@@ -4,8 +4,10 @@ pub extern crate alloc;
 #[doc(hidden)]
 pub mod __ {
     pub use core;
+    pub use wax_core;
 }
 use alloc::vec::Vec;
+use wax_core::build::InstructionSink;
 pub fn vecced<T>(a: impl Iterator<Item = T>) -> alloc::vec::IntoIter<T> {
     a.collect::<Vec<T>>().into_iter()
 }
@@ -17,6 +19,8 @@ use core::{
 pub use wasm_encoder;
 pub use wasmparser;
 use wasmparser::{BinaryReaderError, FuncType, FunctionBody, Operator, ValType};
+
+use crate::ops::MachOperator;
 pub mod dce;
 pub trait Label<X: Clone + 'static>: Display {
     fn raw(&self) -> Option<X> {

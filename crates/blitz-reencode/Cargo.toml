@@ -9,3 +9,4 @@ description.workspace = true
 portal-solutions-blitz-common = { workspace = true }
 
 wasm-encoder.workspace = true
+wax-core.workspace = true
