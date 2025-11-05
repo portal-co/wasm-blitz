@@ -26,7 +26,10 @@ macro_rules! dce_pass {
                 $crate::dce::DceStack::new(),
             ),
         } {
-            a => $crate::__::core::iter::Iterator::flatten(a),
+            a => $crate::__::core::iter::Iterator::flatten($crate::__::core::iter::Iterator::map(
+                a,
+                |v| $crate::__::core::result::Result::transpose(v),
+            )),
         }
     };
 }

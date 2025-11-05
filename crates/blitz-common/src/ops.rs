@@ -300,33 +300,73 @@ pub struct ScanMach<T, F, D> {
     data: FnData,
     locals: u32,
 }
+// impl<
+//     'a,
+//     A,
+//     I: Iterator<Item = MachOperator<'a, A>>,
+//     T,
+//     F: FnMut(&mut FnData, u32, MachOperator<'a, A>, &mut D) -> T,
+//     D,
+// > Iterator for ScanMach<I, F, D>
+// {
+//     type Item = T;
+//     fn next(&mut self) -> Option<Self::Item> {
+//         let o = self.wrapped.next()?;
+//         if let MachOperator::StartFn { id, data } = &o {
+//             self.data = data.clone();
+//             self.locals = 0;
+//             return Some((self.handler)(
+//                 &mut self.data,
+//                 self.locals,
+//                 o,
+//                 &mut self.userdata,
+//             ));
+//         }
+//         if let MachOperator::Local { count: a, ty: b } = &o {
+//             self.locals += *a;
+//         }
+//         let mut tmp = self.data.clone();
+//         return Some((self.handler)(&mut tmp, self.locals, o, &mut self.userdata));
+//     }
+// }
 impl<
     'a,
     A,
-    I: Iterator<Item = MachOperator<'a, A>>,
+    E,
+    I: Iterator<Item = Result<MachOperator<'a, A>, E>>,
     T,
     F: FnMut(&mut FnData, u32, MachOperator<'a, A>, &mut D) -> T,
     D,
 > Iterator for ScanMach<I, F, D>
 {
-    type Item = T;
+    type Item = Result<T, E>;
     fn next(&mut self) -> Option<Self::Item> {
         let o = self.wrapped.next()?;
-        if let MachOperator::StartFn { id, data } = &o {
-            self.data = data.clone();
-            self.locals = 0;
-            return Some((self.handler)(
-                &mut self.data,
-                self.locals,
-                o,
-                &mut self.userdata,
-            ));
+        match o {
+            Ok(o) => {
+                if let MachOperator::StartFn { id, data } = &o {
+                    self.data = data.clone();
+                    self.locals = 0;
+                    return Some(Ok((self.handler)(
+                        &mut self.data,
+                        self.locals,
+                        o,
+                        &mut self.userdata,
+                    )));
+                }
+                if let MachOperator::Local { count: a, ty: b } = &o {
+                    self.locals += *a;
+                }
+                let mut tmp = self.data.clone();
+                return Some(Ok((self.handler)(
+                    &mut tmp,
+                    self.locals,
+                    o,
+                    &mut self.userdata,
+                )));
+            }
+            Err(e) => return Some(Err(e)),
         }
-        if let MachOperator::Local { count: a, ty: b } = &o {
-            self.locals += *a;
-        }
-        let mut tmp = self.data.clone();
-        return Some((self.handler)(&mut tmp, self.locals, o, &mut self.userdata));
     }
 }
 pub trait IteratorExt: Iterator {
