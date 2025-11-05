@@ -46,34 +46,34 @@ pub enum InstructionOrOperator<'a> {
     Instruction(Instruction<'a>),
     Operator(Operator<'a>),
 }
-pub trait FuncRewriter<E>:
-    for<'c, 'b> FnMut(
-    u32,
-    &'c [u32],
-    &'c [FuncType],
-    &'c Operator<'b>,
-) -> Box<dyn Iterator<Item = Result<InstructionOrOperator<'b>, E>> + 'c>
-{
-}
-impl<
-    E,
-    T: for<'c, 'b> FnMut(
-            u32,
-            &'c [u32],
-            &'c [FuncType],
-            &'c Operator<'b>,
-        )
-            -> Box<dyn Iterator<Item = Result<InstructionOrOperator<'b>, E>> + 'c>
-        + ?Sized,
-> FuncRewriter<E> for T
-{
-}
+// pub trait FuncRewriter<E>:
+//     for<'c, 'b> FnMut(
+//     u32,
+//     &'c [u32],
+//     &'c [FuncType],
+//     &'c Operator<'b>,
+// ) -> Box<dyn Iterator<Item = Result<InstructionOrOperator<'b>, E>> + 'c>
+// {
+// }
+// impl<
+//     E,
+//     T: for<'c, 'b> FnMut(
+//             u32,
+//             &'c [u32],
+//             &'c [FuncType],
+//             &'c Operator<'b>,
+//         )
+//             -> Box<dyn Iterator<Item = Result<InstructionOrOperator<'b>, E>> + 'c>
+//         + ?Sized,
+// > FuncRewriter<E> for T
+// {
+// }
 pub fn mach_operators<'a, 'b, Annot: FromWasmInfo, E: From<BinaryReaderError>>(
     code: &[FunctionBody<'a>],
     sigs_per: &[u32],
     sigs: &[FuncType],
     imports: u32,
-    mut func_rewriter: Option<&'b mut (dyn FuncRewriter<E> + '_)>,
+    // mut func_rewriter: Option<&'b mut (dyn FuncRewriter<E> + '_)>,
 ) -> impl Iterator<Item = Result<MachOperator<'a, Annot>, E>> {
     return code
         .iter()
@@ -86,12 +86,12 @@ pub fn mach_operators<'a, 'b, Annot: FromWasmInfo, E: From<BinaryReaderError>>(
         )
         .enumerate()
         .flat_map(move |(i, (a, sig))| {
-            let mut func_rewriter = match &mut func_rewriter {
-                None => None,
-                Some(a) => Some(match &mut **a {
-                    b => unsafe { transmute::<_, &'b mut (dyn FuncRewriter<E> + '_)>(b) },
-                }),
-            };
+            // let mut func_rewriter = match &mut func_rewriter {
+            //     None => None,
+            //     Some(a) => Some(match &mut **a {
+            //         b => unsafe { transmute::<_, &'b mut (dyn FuncRewriter<E> + '_)>(b) },
+            //     }),
+            // };
             let v = a.get_operators_reader()?;
             let l = a.get_locals_reader()?;
             Ok::<_, E>(
@@ -112,41 +112,13 @@ pub fn mach_operators<'a, 'b, Annot: FromWasmInfo, E: From<BinaryReaderError>>(
                 .chain([MachOperator::StartBody].map(Ok))
                 .chain(v.into_iter_with_offsets().flat_map(
                     move |v: Result<(Operator<'_>, usize), BinaryReaderError>| {
-                        match func_rewriter.as_deref_mut() {
-                            None => [v
-                                .map(|(op, offset)| MachOperator::Operator {
-                                    op: Some(op),
-                                    annot: Annot::from_wasm_info(WasmInfo { offset }),
-                                })
-                                .map_err(E::from)]
-                            .into_iter()
-                            .collect::<Vec<_>>(),
-                            Some(r) => {
-                                let (v, offset) = match v {
-                                    Ok(v) => v,
-                                    Err(e) => return [Err(e.into())].into_iter().collect(),
-                                };
-                                r(i as u32, sigs_per, sigs, &v)
-                                    .map(|i| {
-                                        let annot = Annot::from_wasm_info(WasmInfo { offset });
-                                        i.map(|i| match i {
-                                            InstructionOrOperator::Instruction(instruction) => {
-                                                MachOperator::Instruction {
-                                                    op: instruction,
-                                                    annot,
-                                                }
-                                            }
-                                            InstructionOrOperator::Operator(operator) => {
-                                                MachOperator::Operator {
-                                                    op: Some(operator),
-                                                    annot,
-                                                }
-                                            }
-                                        })
-                                    })
-                                    .collect()
-                            }
-                        }
+                        [v.map(|(op, offset)| MachOperator::Operator {
+                            op: Some(op),
+                            annot: Annot::from_wasm_info(WasmInfo { offset }),
+                        })
+                        .map_err(E::from)]
+                        .into_iter()
+                        .collect::<Vec<_>>()
                     },
                 ))
                 .chain(
