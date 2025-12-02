@@ -58,13 +58,20 @@ const STACK_WEAVE: &'static str = "($$stack_restore_symbol_iterator ?? (a=>a))";
 pub struct JsCodegen;
 
 impl OptCodegen for JsCodegen {
-    fn write_opt_push(
+    fn write_opt_push_start(
         &self,
         w: &mut (dyn Write + '_),
         value: &dyn Display,
+    ) -> core::fmt::Result {
+        write!(w, "(tmp={value}")
+    }
+
+    fn write_opt_push_end(
+        &self,
+        w: &mut (dyn Write + '_),
         index: usize,
     ) -> core::fmt::Result {
-        write!(w, "(tmp={value},stack.length++,stack[{index}]=tmp,tmp)")
+        write!(w, ",stack.length++,stack[{index}]=tmp,tmp)")
     }
 
     fn write_non_opt_push(

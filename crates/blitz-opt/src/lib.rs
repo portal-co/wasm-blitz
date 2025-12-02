@@ -38,17 +38,33 @@ use spin::Mutex;
 /// This trait is object-safe (dyn-compatible) to allow for runtime polymorphism
 /// and better composability.
 pub trait OptCodegen {
-    /// Generates code for an optimized push operation.
+    /// Generates the opening part of an optimized push operation.
+    ///
+    /// This is called before the depth is updated. For JavaScript, this writes
+    /// the opening expression like "(tmp={value}".
     ///
     /// # Arguments
     ///
     /// * `w` - The writer to output code to
     /// * `value` - The expression to push
-    /// * `index` - The stack index where the value will be stored
-    fn write_opt_push(
+    fn write_opt_push_start(
         &self,
         w: &mut (dyn Write + '_),
         value: &dyn Display,
+    ) -> core::fmt::Result;
+
+    /// Generates the closing part of an optimized push operation.
+    ///
+    /// This is called after the depth is updated. For JavaScript, this writes
+    /// the closing expression like ",stack.length++,stack[{index}]=tmp,tmp)".
+    ///
+    /// # Arguments
+    ///
+    /// * `w` - The writer to output code to
+    /// * `index` - The stack index where the value will be stored
+    fn write_opt_push_end(
+        &self,
+        w: &mut (dyn Write + '_),
         index: usize,
     ) -> core::fmt::Result;
 
@@ -96,6 +112,9 @@ pub struct OptState {
 /// Generates code to push the given expression onto the stack.
 /// The behavior depends on whether optimized stack tracking is enabled.
 ///
+/// This function matches the original implementation pattern with two write
+/// operations and lock held during the second write.
+///
 /// # Arguments
 ///
 /// * `codegen` - The code generator implementation
@@ -103,19 +122,19 @@ pub struct OptState {
 /// * `w` - The writer to output code to
 /// * `a` - The expression to push onto the stack
 pub fn push(
-    codegen: &dyn OptCodegen,
+    codegen: &(dyn OptCodegen + '_),
     opt_state: Option<&Mutex<OptState>>,
     w: &mut (dyn Write + '_),
     a: &dyn Display,
 ) -> core::fmt::Result {
     if let Some(o) = opt_state {
-        let index = {
-            let mut o = o.lock();
-            let index = o.depth + 1;
-            o.depth += 1;
-            index
-        };
-        codegen.write_opt_push(w, a, index)?;
+        // First write: opening part with the value
+        codegen.write_opt_push_start(w, a)?;
+        
+        // Lock operation: read depth, write closing part, update depth
+        let mut o = o.lock();
+        codegen.write_opt_push_end(w, o.depth + 1)?;
+        o.depth += 1;
     } else {
         codegen.write_non_opt_push(w, a)?;
     }
@@ -138,7 +157,7 @@ pub fn push(
 /// In debug builds, this function will panic if depth is 0 (stack underflow).
 /// The caller is responsible for ensuring pushes and pops are balanced.
 pub fn pop(
-    codegen: &dyn OptCodegen,
+    codegen: &(dyn OptCodegen + '_),
     opt_state: Option<&Mutex<OptState>>,
     w: &mut (dyn Write + '_),
 ) -> core::fmt::Result {
