@@ -45,11 +45,42 @@ use portal_solutions_blitz_common::{
     wasm_encoder::{BlockType, FuncType, Instruction, reencode::Reencode},
     wasmparser::{Operator, ValType},
 };
+use portal_solutions_blitz_opt::{self as blitz_opt, OptCodegen, OptState};
 use spin::Mutex;
 extern crate alloc;
 
 /// JavaScript code for stack restoration using optional symbol iterator.
 const STACK_WEAVE: &'static str = "($$stack_restore_symbol_iterator ?? (a=>a))";
+
+/// JavaScript implementation of the OptCodegen trait.
+///
+/// Provides JavaScript-specific code generation patterns for stack operations.
+pub struct JsCodegen;
+
+impl OptCodegen for JsCodegen {
+    fn write_opt_push(
+        w: &mut (impl Write + ?Sized),
+        value: &(dyn Display + '_),
+        index: usize,
+    ) -> core::fmt::Result {
+        write!(w, "(tmp={value},stack.length++,stack[{index}]=tmp,tmp)")
+    }
+
+    fn write_non_opt_push(
+        w: &mut (impl Write + ?Sized),
+        value: &(dyn Display + '_),
+    ) -> core::fmt::Result {
+        write!(w, "(tmp={value},stack=[...{STACK_WEAVE}(stack),tmp],tmp)")
+    }
+
+    fn write_opt_pop(w: &mut (impl Write + ?Sized), index: usize) -> core::fmt::Result {
+        write!(w, "(tmp=stack[{index}],stack.length--,tmp)")
+    }
+
+    fn write_non_opt_pop(w: &mut (impl Write + ?Sized)) -> core::fmt::Result {
+        write!(w, "(([...stack,tmp]={STACK_WEAVE}(stack)),tmp)")
+    }
+}
 
 /// Pushes a value onto the JavaScript execution stack.
 ///
@@ -66,16 +97,7 @@ pub fn push(
     w: &mut (impl Write + ?Sized),
     a: &(dyn Display + '_),
 ) -> core::fmt::Result {
-    if let Some(o) = state.opt() {
-        write!(w, "(tmp={a}")?;
-        let mut o = o.lock();
-
-        write!(w, ",stack.length++,stack[{}]=tmp,tmp)", o.depth + 1)?;
-        o.depth += 1;
-    } else {
-        write!(w, "(tmp={a},stack=[...{STACK_WEAVE}(stack),tmp],tmp)")?;
-    }
-    Ok(())
+    blitz_opt::push::<JsCodegen>(state.opt(), w, a)
 }
 
 /// Pops a value from the JavaScript execution stack.
@@ -88,14 +110,7 @@ pub fn push(
 /// * `state` - The current compilation state
 /// * `w` - The writer to output JavaScript code to
 pub fn pop(state: &State, w: &mut (impl Write + ?Sized)) -> core::fmt::Result {
-    if let Some(o) = state.opt() {
-        let mut o = o.lock();
-        o.depth -= 1;
-        write!(w, "(tmp=stack[{}],stack.length--,tmp)", o.depth + 1)?;
-    } else {
-        write!(w, "(([...stack,tmp]={STACK_WEAVE}(stack)),tmp)")?;
-    }
-    Ok(())
+    blitz_opt::pop::<JsCodegen>(state.opt(), w)
 }
 /// Macro to generate a pop operation as a DisplayFn.
 ///
@@ -119,16 +134,6 @@ macro_rules! pop {
 pub struct State {
     stack: Vec<Frame>,
     opt_state: OnceCell<Mutex<OptState>>,
-}
-
-/// Optimization state for stack depth tracking.
-///
-/// When enabled, allows for more efficient JavaScript code generation
-/// by tracking stack depth statically.
-#[derive(Default)]
-#[non_exhaustive]
-pub struct OptState {
-    depth: usize,
 }
 
 impl State {
