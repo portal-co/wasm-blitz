@@ -1,0 +1,9 @@
+[package]
+name = "portal-solutions-blitz-opt"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+
+[dependencies]
+spin = "0.10.0"

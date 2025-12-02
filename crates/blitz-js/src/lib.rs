@@ -45,11 +45,51 @@ use portal_solutions_blitz_common::{
     wasm_encoder::{BlockType, FuncType, Instruction, reencode::Reencode},
     wasmparser::{Operator, ValType},
 };
+use portal_solutions_blitz_opt::{self as blitz_opt, OptCodegen, OptState};
 use spin::Mutex;
 extern crate alloc;
 
 /// JavaScript code for stack restoration using optional symbol iterator.
 const STACK_WEAVE: &'static str = "($$stack_restore_symbol_iterator ?? (a=>a))";
+
+/// JavaScript implementation of the OptCodegen trait.
+///
+/// Provides JavaScript-specific code generation patterns for stack operations.
+pub struct JsCodegen;
+
+impl OptCodegen for JsCodegen {
+    fn write_opt_push_start(
+        &self,
+        w: &mut (dyn Write + '_),
+        value: &dyn Display,
+    ) -> core::fmt::Result {
+        write!(w, "(tmp={value}")
+    }
+
+    fn write_opt_push_end(
+        &self,
+        w: &mut (dyn Write + '_),
+        index: usize,
+    ) -> core::fmt::Result {
+        write!(w, ",stack.length++,stack[{index}]=tmp,tmp)")
+    }
+
+    fn write_non_opt_push(
+        &self,
+        w: &mut (dyn Write + '_),
+        value: &dyn Display,
+    ) -> core::fmt::Result {
+        write!(w, "(tmp={value},stack=[...{STACK_WEAVE}(stack),tmp],tmp)")
+    }
+
+    fn write_opt_pop(&self, w: &mut (dyn Write + '_), index: usize) -> core::fmt::Result {
+        write!(w, "(tmp=stack[{index}],stack.length--,tmp)")
+    }
+
+    fn write_non_opt_pop(&self, w: &mut (dyn Write + '_)) -> core::fmt::Result {
+        write!(w, "(([...stack,tmp]={STACK_WEAVE}(stack)),tmp)")
+    }
+}
 
 /// Pushes a value onto the JavaScript execution stack.
 ///
@@ -63,19 +103,10 @@ const STACK_WEAVE: &'static str = "($$stack_restore_symbol_iterator ?? (a=>a))";
 /// * `a` - The expression to push onto the stack
 pub fn push(
     state: &State,
-    w: &mut (impl Write + ?Sized),
-    a: &(dyn Display + '_),
+    w: &mut (dyn Write + '_),
+    a: &dyn Display,
 ) -> core::fmt::Result {
-    if let Some(o) = state.opt() {
-        write!(w, "(tmp={a}")?;
-        let mut o = o.lock();
-
-        write!(w, ",stack.length++,stack[{}]=tmp,tmp)", o.depth + 1)?;
-        o.depth += 1;
-    } else {
-        write!(w, "(tmp={a},stack=[...{STACK_WEAVE}(stack),tmp],tmp)")?;
-    }
-    Ok(())
+    blitz_opt::push(&JsCodegen, state.opt(), w, a)
 }
 
 /// Pops a value from the JavaScript execution stack.
@@ -87,15 +118,8 @@ pub fn push(
 ///
 /// * `state` - The current compilation state
 /// * `w` - The writer to output JavaScript code to
-pub fn pop(state: &State, w: &mut (impl Write + ?Sized)) -> core::fmt::Result {
-    if let Some(o) = state.opt() {
-        let mut o = o.lock();
-        o.depth -= 1;
-        write!(w, "(tmp=stack[{}],stack.length--,tmp)", o.depth + 1)?;
-    } else {
-        write!(w, "(([...stack,tmp]={STACK_WEAVE}(stack)),tmp)")?;
-    }
-    Ok(())
+pub fn pop(state: &State, w: &mut (dyn Write + '_)) -> core::fmt::Result {
+    blitz_opt::pop(&JsCodegen, state.opt(), w)
 }
 /// Macro to generate a pop operation as a DisplayFn.
 ///
@@ -110,6 +134,10 @@ macro_rules! pop {
     };
 }
 
+// Re-export the generic pop_display macro from blitz-opt for consistency
+#[doc(hidden)]
+pub use portal_solutions_blitz_opt::pop_display;
+
 /// State tracker for JavaScript code generation.
 ///
 /// Maintains the current state of the compilation including control flow
@@ -119,16 +147,6 @@ macro_rules! pop {
 pub struct State {
     stack: Vec<Frame>,
     opt_state: OnceCell<Mutex<OptState>>,
-}
-
-/// Optimization state for stack depth tracking.
-///
-/// When enabled, allows for more efficient JavaScript code generation
-/// by tracking stack depth statically.
-#[derive(Default)]
-#[non_exhaustive]
-pub struct OptState {
-    depth: usize,
 }
 
 impl State {
@@ -167,12 +185,16 @@ pub trait JsWrite: Write {
     /// * `state` - The current compilation state
     /// * `sig` - The function signature (parameter and return types)
     /// * `function_index` - The function index or reference to call
+    // TODO: Remove the Sized bound once push/pop can work with ?Sized types
     fn call(
         &mut self,
         state: &State,
         sig: &FuncType,
         function_index: &(dyn Display + '_),
-    ) -> core::fmt::Result {
+    ) -> core::fmt::Result
+    where
+        Self: Sized,
+    {
         write!(
             self,
             "if({function_index}.__sig.params!={}||{function_index}.__sig.rets!={})throw new Error(`wasm sig mismatch`);",
@@ -231,7 +253,11 @@ pub trait JsWrite: Write {
     /// * `sigs` - Array of function type signatures
     /// * `state` - The current compilation state
     /// * `idx` - The relative depth of the target label
-    fn br(&mut self, sigs: &[FuncType], state: &State, idx: u32) -> core::fmt::Result {
+    // TODO: Remove the Sized bound once push/pop can work with ?Sized types
+    fn br(&mut self, sigs: &[FuncType], state: &State, idx: u32) -> core::fmt::Result
+    where
+        Self: Sized,
+    {
         let (idx, frame) = state
             .stack
             .iter()
@@ -319,6 +345,7 @@ pub trait JsWrite: Write {
     /// * `func_imports` - Information about imported functions
     /// * `state` - The current compilation state
     /// * `op` - The instruction to convert
+    // TODO: Remove the Sized bound once push/pop can work with ?Sized types
     fn on_op(
         &mut self,
         sigs: &[FuncType],
@@ -326,7 +353,10 @@ pub trait JsWrite: Write {
         func_imports: &[(&str, &str)],
         state: &mut State,
         op: &Instruction<'_>,
-    ) -> core::fmt::Result {
+    ) -> core::fmt::Result
+    where
+        Self: Sized,
+    {
         match op {
             Instruction::I64Const(value) => push(state, self, &format_args!("{}n", *value as u64)),
             Instruction::I32Const(value) => {
@@ -650,6 +680,7 @@ pub trait JsWrite: Write {
     /// * `state` - The current compilation state
     /// * `m` - The machine operator to process
     /// * `r` - Re-encoder for converting between instruction formats
+    // TODO: Remove the Sized bound once push/pop can work with ?Sized types
     fn on_mach<Annot>(
         &mut self,
         sigs: &[FuncType],
@@ -658,7 +689,10 @@ pub trait JsWrite: Write {
         state: &mut State,
         m: &MachOperator<'_, Annot>,
         r: &mut impl Reencode,
-    ) -> core::fmt::Result {
+    ) -> core::fmt::Result
+    where
+        Self: Sized,
+    {
         match m {
             MachOperator::StartFn { id, data } => {
                 let id = *id + func_imports.len() as u32;

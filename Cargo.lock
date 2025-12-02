@@ -176,6 +176,14 @@ name = "portal-solutions-blitz-js"
 version = "0.1.0"
 dependencies = [
  "portal-solutions-blitz-common",
+ "portal-solutions-blitz-opt",
+ "spin",
+]
+
+[[package]]
+name = "portal-solutions-blitz-opt"
+version = "0.1.0"
+dependencies = [
  "spin",
 ]
 
