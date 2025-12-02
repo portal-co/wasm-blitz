@@ -1,5 +1,22 @@
+//! Compiler optimization passes.
+//!
+//! This module contains various optimization and transformation passes that
+//! can be applied to WASM code during compilation. Each pass transforms the
+//! stream of machine operators in some way.
+
 use crate::{ops::*, *};
 use alloc::vec::Vec;
+
+/// Macro to apply dead code elimination pass to a machine operator stream.
+///
+/// This macro wraps an iterator of machine operators with the DCE (dead code
+/// elimination) optimization. It removes unreachable code and unused operations.
+///
+/// # Example
+///
+/// ```ignore
+/// let optimized = dce_pass!(operators);
+/// ```
 #[macro_export]
 macro_rules! dce_pass {
     ($a:expr) => {
