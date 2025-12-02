@@ -121,12 +121,18 @@ pub fn push<C: OptCodegen>(
 ///
 /// * `opt_state` - Optional reference to the optimization state
 /// * `w` - The writer to output code to
+///
+/// # Panics
+///
+/// In debug builds, this function will panic if depth is 0 (stack underflow).
+/// The caller is responsible for ensuring pushes and pops are balanced.
 pub fn pop<C: OptCodegen>(
     opt_state: Option<&Mutex<OptState>>,
     w: &mut (impl Write + ?Sized),
 ) -> core::fmt::Result {
     if let Some(o) = opt_state {
         let mut o = o.lock();
+        debug_assert!(o.depth > 0, "Stack underflow: attempting to pop from empty stack");
         o.depth -= 1;
         let index = o.depth + 1;
         C::write_opt_pop(w, index)?;
