@@ -1,3 +1,8 @@
+//! Naive x86-64 code generation implementation.
+//!
+//! This module implements a straightforward, correctness-focused code generation
+//! strategy for x86-64. It prioritizes simplicity and correctness over performance.
+
 use portal_solutions_asm_x86_64::out::arg::{MemArg, MemArgKind};
 use portal_solutions_blitz_common::wasm_encoder::{self, Instruction, reencode::Reencode};
 
@@ -5,6 +10,11 @@ use crate::{
     out::{Writer, arg::Arg},
     *,
 };
+
+/// State tracker for x86-64 code generation.
+///
+/// Maintains information about the current function being compiled,
+/// including local variables, control flow, and labels.
 #[derive(Default)]
 pub struct State {
     local_count: usize,
@@ -13,12 +23,30 @@ pub struct State {
     label_index: usize,
     if_stack: Vec<Endable>,
 }
-// #[derive(Clone)]
+
+/// Represents a control flow structure that needs an end marker.
 enum Endable {
+    /// A branch target.
     Br,
+    /// An if statement with its label index.
     If { idx: usize },
 }
+
+/// Extension trait for x86-64 code writers.
+///
+/// Provides methods for generating x86-64 assembly code for WASM operations,
+/// including branches, calls, and instruction handling.
 pub trait WriterExt: Writer<X64Label> {
+    /// Generates code for a branch instruction.
+    ///
+    /// Emits x86-64 assembly to jump to the target label specified by the
+    /// relative depth in the control flow stack.
+    ///
+    /// # Arguments
+    ///
+    /// * `arch` - The x86-64 architecture variant
+    /// * `state` - Current compilation state
+    /// * `relative_depth` - Depth of the target label in control flow stack
     fn br(
         &mut self,
         arch: X64Arch,
@@ -35,6 +63,16 @@ pub trait WriterExt: Writer<X64Label> {
         self.jmp(arch, &Reg(0))?;
         Ok(())
     }
+
+    /// Generates code for a higher-order call (indirect call).
+    ///
+    /// Emits x86-64 assembly for calling a function through a function pointer,
+    /// managing the return address and stack properly.
+    ///
+    /// # Arguments
+    ///
+    /// * `arch` - The x86-64 architecture variant
+    /// * `state` - Current compilation state
     fn hcall(&mut self, arch: X64Arch, state: &mut State) -> Result<(), Self::Error> {
         self.pop(arch, &Reg(1))?;
         let i = state.label_index;
@@ -48,6 +86,20 @@ pub trait WriterExt: Writer<X64Label> {
         self.set_label(arch, X64Label::Indexed { idx: i })?;
         Ok(())
     }
+
+    /// Generates x86-64 assembly code for a machine operator.
+    ///
+    /// Main entry point for translating WASM machine operators into x86-64
+    /// assembly. Handles all WASM operations including arithmetic, memory access,
+    /// control flow, and function calls.
+    ///
+    /// # Arguments
+    ///
+    /// * `arch` - The x86-64 architecture variant
+    /// * `state` - Current compilation state
+    /// * `func_imports` - Information about imported functions
+    /// * `op` - The machine operator to translate
+    /// * `rewriter` - Re-encoder for instruction format conversion
     fn handle_op<E>(
         &mut self,
         arch: X64Arch,

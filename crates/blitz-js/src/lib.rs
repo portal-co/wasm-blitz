@@ -306,6 +306,19 @@ pub trait JsWrite: Write {
         };
         Ok(())
     }
+
+    /// Generates JavaScript code for a single WASM instruction.
+    ///
+    /// Translates individual WASM operations into their JavaScript equivalents.
+    /// Handles arithmetic, control flow, memory operations, and more.
+    ///
+    /// # Arguments
+    ///
+    /// * `sigs` - Array of function type signatures
+    /// * `fsigs` - Function signature indices
+    /// * `func_imports` - Information about imported functions
+    /// * `state` - The current compilation state
+    /// * `op` - The instruction to convert
     fn on_op(
         &mut self,
         sigs: &[FuncType],
@@ -623,6 +636,20 @@ pub trait JsWrite: Write {
         }?;
         Ok(())
     }
+
+    /// Generates JavaScript code for a machine operator.
+    ///
+    /// Handles high-level machine operations including function start/end markers,
+    /// local variable declarations, and instruction execution.
+    ///
+    /// # Arguments
+    ///
+    /// * `sigs` - Array of function type signatures
+    /// * `fsigs` - Function signature indices
+    /// * `func_imports` - Information about imported functions
+    /// * `state` - The current compilation state
+    /// * `m` - The machine operator to process
+    /// * `r` - Re-encoder for converting between instruction formats
     fn on_mach<Annot>(
         &mut self,
         sigs: &[FuncType],
@@ -693,4 +720,6 @@ pub trait JsWrite: Write {
         }
     }
 }
+
+/// Blanket implementation of JsWrite for all types that implement Write.
 impl<T: Write + ?Sized> JsWrite for T {}
