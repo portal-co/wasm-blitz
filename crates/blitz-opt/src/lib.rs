@@ -47,7 +47,7 @@ pub trait OptCodegen {
     /// * `index` - The stack index where the value will be stored
     fn write_opt_push(
         &self,
-        w: &mut dyn Write,
+        w: &mut (dyn Write + '_),
         value: &dyn Display,
         index: usize,
     ) -> core::fmt::Result;
@@ -60,7 +60,7 @@ pub trait OptCodegen {
     /// * `value` - The expression to push
     fn write_non_opt_push(
         &self,
-        w: &mut dyn Write,
+        w: &mut (dyn Write + '_),
         value: &dyn Display,
     ) -> core::fmt::Result;
 
@@ -70,14 +70,14 @@ pub trait OptCodegen {
     ///
     /// * `w` - The writer to output code to
     /// * `index` - The stack index to pop from
-    fn write_opt_pop(&self, w: &mut dyn Write, index: usize) -> core::fmt::Result;
+    fn write_opt_pop(&self, w: &mut (dyn Write + '_), index: usize) -> core::fmt::Result;
 
     /// Generates code for a non-optimized pop operation.
     ///
     /// # Arguments
     ///
     /// * `w` - The writer to output code to
-    fn write_non_opt_pop(&self, w: &mut dyn Write) -> core::fmt::Result;
+    fn write_non_opt_pop(&self, w: &mut (dyn Write + '_)) -> core::fmt::Result;
 }
 
 /// Optimization state for stack depth tracking.

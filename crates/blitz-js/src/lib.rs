@@ -60,7 +60,7 @@ pub struct JsCodegen;
 impl OptCodegen for JsCodegen {
     fn write_opt_push(
         &self,
-        w: &mut dyn Write,
+        w: &mut (dyn Write + '_),
         value: &dyn Display,
         index: usize,
     ) -> core::fmt::Result {
@@ -69,17 +69,17 @@ impl OptCodegen for JsCodegen {
 
     fn write_non_opt_push(
         &self,
-        w: &mut dyn Write,
+        w: &mut (dyn Write + '_),
         value: &dyn Display,
     ) -> core::fmt::Result {
         write!(w, "(tmp={value},stack=[...{STACK_WEAVE}(stack),tmp],tmp)")
     }
 
-    fn write_opt_pop(&self, w: &mut dyn Write, index: usize) -> core::fmt::Result {
+    fn write_opt_pop(&self, w: &mut (dyn Write + '_), index: usize) -> core::fmt::Result {
         write!(w, "(tmp=stack[{index}],stack.length--,tmp)")
     }
 
-    fn write_non_opt_pop(&self, w: &mut dyn Write) -> core::fmt::Result {
+    fn write_non_opt_pop(&self, w: &mut (dyn Write + '_)) -> core::fmt::Result {
         write!(w, "(([...stack,tmp]={STACK_WEAVE}(stack)),tmp)")
     }
 }
