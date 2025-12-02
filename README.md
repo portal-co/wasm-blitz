@@ -28,9 +28,10 @@ This project is organized as a Cargo workspace with the following crates:
   - Assembly abstractions
   - Common type definitions
 
-- **`blitz-reencode`**: WASM re-encoding utilities
-  - Instruction tracking
-  - Format conversion helpers
+- **`blitz-reencode`**: Re-encodes blitz IR back to WebAssembly
+  - Converts blitz machine operators back to WASM bytecode
+  - Applies optimizations before final WASM encoding
+  - Used for producing WASM output from blitz IR
 
 ### Target Backend Crates
 
@@ -43,17 +44,21 @@ This project is organized as a Cargo workspace with the following crates:
   - Naive code generation strategy
   - Direct machine code emission
 
-- **`blitz-aarch64`**: ARM AArch64 (ARM64) code generator
+- **`blitz-aarch64`**: ARM AArch64 (ARM64) code generator *(Work in Progress)*
   - Support for 64-bit ARM architecture
+  - ARMv8-A and later architectures
 
-- **`blitz-ppc64`**: PowerPC 64-bit code generator
+- **`blitz-ppc64`**: PowerPC 64-bit code generator *(Work in Progress)*
   - Support for PowerPC 64-bit architecture
+  - Power ISA v2.07 and later
 
-- **`blitz-riscv64`**: RISC-V 64-bit code generator
-  - Support for RISC-V 64-bit architecture
+- **`blitz-riscv64`**: RISC-V 64-bit code generator *(Work in Progress)*
+  - RV64IMAFD instruction set (I, M, A, F, D extensions)
+  - Compatible with [rv-utils](https://github.com/portal-co/rv-utils)
 
-- **`blitz-i4`**: Intermediate representation utilities
-  - Internal IR for optimization passes
+- **`blitz-i4`**: Common backend logic for 4-byte instruction architectures
+  - Shared infrastructure for AArch64 and RISC-V 64-bit
+  - Common optimizations for fixed 4-byte instruction architectures
 
 ## Building
 
