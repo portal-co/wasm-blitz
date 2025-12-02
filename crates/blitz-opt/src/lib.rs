@@ -34,6 +34,9 @@ use spin::Mutex;
 ///
 /// Different backends can implement this trait to specify their own
 /// code generation patterns for optimized and non-optimized push/pop operations.
+///
+/// This trait is object-safe (dyn-compatible) to allow for runtime polymorphism
+/// and better composability.
 pub trait OptCodegen {
     /// Generates code for an optimized push operation.
     ///
@@ -43,8 +46,9 @@ pub trait OptCodegen {
     /// * `value` - The expression to push
     /// * `index` - The stack index where the value will be stored
     fn write_opt_push(
-        w: &mut (impl Write + ?Sized),
-        value: &(dyn Display + '_),
+        &self,
+        w: &mut dyn Write,
+        value: &dyn Display,
         index: usize,
     ) -> core::fmt::Result;
 
@@ -55,8 +59,9 @@ pub trait OptCodegen {
     /// * `w` - The writer to output code to
     /// * `value` - The expression to push
     fn write_non_opt_push(
-        w: &mut (impl Write + ?Sized),
-        value: &(dyn Display + '_),
+        &self,
+        w: &mut dyn Write,
+        value: &dyn Display,
     ) -> core::fmt::Result;
 
     /// Generates code for an optimized pop operation.
@@ -65,14 +70,14 @@ pub trait OptCodegen {
     ///
     /// * `w` - The writer to output code to
     /// * `index` - The stack index to pop from
-    fn write_opt_pop(w: &mut (impl Write + ?Sized), index: usize) -> core::fmt::Result;
+    fn write_opt_pop(&self, w: &mut dyn Write, index: usize) -> core::fmt::Result;
 
     /// Generates code for a non-optimized pop operation.
     ///
     /// # Arguments
     ///
     /// * `w` - The writer to output code to
-    fn write_non_opt_pop(w: &mut (impl Write + ?Sized)) -> core::fmt::Result;
+    fn write_non_opt_pop(&self, w: &mut dyn Write) -> core::fmt::Result;
 }
 
 /// Optimization state for stack depth tracking.
@@ -93,21 +98,26 @@ pub struct OptState {
 ///
 /// # Arguments
 ///
+/// * `codegen` - The code generator implementation
 /// * `opt_state` - Optional reference to the optimization state
 /// * `w` - The writer to output code to
 /// * `a` - The expression to push onto the stack
-pub fn push<C: OptCodegen>(
+pub fn push(
+    codegen: &dyn OptCodegen,
     opt_state: Option<&Mutex<OptState>>,
-    w: &mut (impl Write + ?Sized),
-    a: &(dyn Display + '_),
+    w: &mut (dyn Write + '_),
+    a: &dyn Display,
 ) -> core::fmt::Result {
     if let Some(o) = opt_state {
-        let mut o = o.lock();
-        let index = o.depth + 1;
-        C::write_opt_push(w, a, index)?;
-        o.depth += 1;
+        let index = {
+            let mut o = o.lock();
+            let index = o.depth + 1;
+            o.depth += 1;
+            index
+        };
+        codegen.write_opt_push(w, a, index)?;
     } else {
-        C::write_non_opt_push(w, a)?;
+        codegen.write_non_opt_push(w, a)?;
     }
     Ok(())
 }
@@ -119,6 +129,7 @@ pub fn push<C: OptCodegen>(
 ///
 /// # Arguments
 ///
+/// * `codegen` - The code generator implementation
 /// * `opt_state` - Optional reference to the optimization state
 /// * `w` - The writer to output code to
 ///
@@ -126,18 +137,47 @@ pub fn push<C: OptCodegen>(
 ///
 /// In debug builds, this function will panic if depth is 0 (stack underflow).
 /// The caller is responsible for ensuring pushes and pops are balanced.
-pub fn pop<C: OptCodegen>(
+pub fn pop(
+    codegen: &dyn OptCodegen,
     opt_state: Option<&Mutex<OptState>>,
-    w: &mut (impl Write + ?Sized),
+    w: &mut (dyn Write + '_),
 ) -> core::fmt::Result {
     if let Some(o) = opt_state {
-        let mut o = o.lock();
-        debug_assert!(o.depth > 0, "Stack underflow: attempting to pop from empty stack");
-        o.depth -= 1;
-        let index = o.depth + 1;
-        C::write_opt_pop(w, index)?;
+        let index = {
+            let mut o = o.lock();
+            debug_assert!(o.depth > 0, "Stack underflow: attempting to pop from empty stack");
+            o.depth -= 1;
+            o.depth + 1
+        };
+        codegen.write_opt_pop(w, index)?;
     } else {
-        C::write_non_opt_pop(w)?;
+        codegen.write_non_opt_pop(w)?;
     }
     Ok(())
+}
+
+/// Macro to generate a pop operation as a Display-compatible closure.
+///
+/// This macro wraps the `pop` function to create a displayable value
+/// that can be interpolated into format strings.
+///
+/// # Arguments
+///
+/// * `$codegen` - The code generator implementation
+/// * `$opt_state` - The optimization state (optional reference)
+///
+/// # Example
+///
+/// ```ignore
+/// use portal_solutions_blitz_opt::{pop_display, OptCodegen, OptState};
+/// 
+/// let codegen = MyCodegen;
+/// let opt_state = Some(&mutex);
+/// write!(w, "result = {}", pop_display!(codegen, opt_state));
+/// ```
+#[macro_export]
+macro_rules! pop_display {
+    ($codegen:expr, $opt_state:expr) => {
+        &|f: &mut core::fmt::Formatter| $crate::pop($codegen, $opt_state, f)
+    };
 }
