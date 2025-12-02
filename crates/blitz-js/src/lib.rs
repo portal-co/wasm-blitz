@@ -1,3 +1,33 @@
+//! JavaScript code generation backend for wasm-blitz.
+//!
+//! This crate provides functionality to compile WebAssembly bytecode into JavaScript.
+//! The generated JavaScript code maintains WASM semantics while being executable in
+//! JavaScript runtime environments.
+//!
+//! # Features
+//!
+//! - Stack-based execution model matching WASM semantics
+//! - Optimized stack management with optional depth tracking
+//! - Type checking for function signatures at runtime
+//! - Support for all core WASM integer operations
+//! - Control flow constructs (blocks, loops, if/else, branches)
+//!
+//! # Example
+//!
+//! ```ignore
+//! use portal_solutions_blitz_js::{JsWrite, State};
+//!
+//! let mut state = State::default();
+//! // Use the JsWrite trait to generate JavaScript code
+//! ```
+//!
+//! # Stack Management
+//!
+//! The JavaScript backend uses a stack-based execution model. Two modes are available:
+//!
+//! - **Standard mode**: Uses JavaScript array operations for stack manipulation
+//! - **Optimized mode**: Tracks stack depth statically for better performance
+
 #![no_std]
 use core::{
     cell::OnceCell,
@@ -17,7 +47,20 @@ use portal_solutions_blitz_common::{
 };
 use spin::Mutex;
 extern crate alloc;
+
+/// JavaScript code for stack restoration using optional symbol iterator.
 const STACK_WEAVE: &'static str = "($$stack_restore_symbol_iterator ?? (a=>a))";
+
+/// Pushes a value onto the JavaScript execution stack.
+///
+/// Generates JavaScript code to push the given expression onto the stack.
+/// The behavior depends on whether optimized stack tracking is enabled in the state.
+///
+/// # Arguments
+///
+/// * `state` - The current compilation state
+/// * `w` - The writer to output JavaScript code to
+/// * `a` - The expression to push onto the stack
 pub fn push(
     state: &State,
     w: &mut (impl Write + ?Sized),
@@ -34,6 +77,16 @@ pub fn push(
     }
     Ok(())
 }
+
+/// Pops a value from the JavaScript execution stack.
+///
+/// Generates JavaScript code to pop a value from the stack.
+/// The behavior depends on whether optimized stack tracking is enabled in the state.
+///
+/// # Arguments
+///
+/// * `state` - The current compilation state
+/// * `w` - The writer to output JavaScript code to
 pub fn pop(state: &State, w: &mut (impl Write + ?Sized)) -> core::fmt::Result {
     if let Some(o) = state.opt() {
         let mut o = o.lock();
@@ -44,6 +97,10 @@ pub fn pop(state: &State, w: &mut (impl Write + ?Sized)) -> core::fmt::Result {
     }
     Ok(())
 }
+/// Macro to generate a pop operation as a DisplayFn.
+///
+/// This macro wraps the `pop` function to create a displayable value
+/// that can be interpolated into format strings.
 #[macro_export]
 macro_rules! pop {
     ($state:ident) => {
@@ -52,31 +109,64 @@ macro_rules! pop {
         })
     };
 }
+
+/// State tracker for JavaScript code generation.
+///
+/// Maintains the current state of the compilation including control flow
+/// stack and optional optimization state.
 #[derive(Default)]
 #[non_exhaustive]
 pub struct State {
     stack: Vec<Frame>,
     opt_state: OnceCell<Mutex<OptState>>,
 }
+
+/// Optimization state for stack depth tracking.
+///
+/// When enabled, allows for more efficient JavaScript code generation
+/// by tracking stack depth statically.
 #[derive(Default)]
 #[non_exhaustive]
 pub struct OptState {
     depth: usize,
 }
+
 impl State {
+    /// Enables optimization mode with the given initial state.
+    ///
+    /// This can be called once per State to enable optimized code generation.
     pub fn enable_opt(&self, opt: impl FnOnce() -> OptState) {
         self.opt_state.get_or_init(|| Mutex::new(opt()));
     }
+
     fn opt(&self) -> Option<&Mutex<OptState>> {
         self.opt_state.get()
     }
 }
+
+/// Represents a control flow frame in the compilation state.
 enum Frame {
     Block(BlockType),
     Loop(BlockType),
     If,
 }
+
+/// Trait for writing JavaScript code for WASM operations.
+///
+/// This trait extends the `Write` trait with methods for generating JavaScript
+/// code that implements WASM semantics. It handles function calls, branches,
+/// and conversion of WASM operators to JavaScript.
 pub trait JsWrite: Write {
+    /// Generates JavaScript code for a function call.
+    ///
+    /// Emits code that validates the function signature at runtime and performs
+    /// the call with proper argument handling and result management.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - The current compilation state
+    /// * `sig` - The function signature (parameter and return types)
+    /// * `function_index` - The function index or reference to call
     fn call(
         &mut self,
         state: &State,
@@ -130,6 +220,17 @@ pub trait JsWrite: Write {
             )
         }
     }
+
+    /// Generates JavaScript code for a branch (br) instruction.
+    ///
+    /// Creates a break or continue statement targeting the appropriate label
+    /// based on the relative depth in the control flow stack.
+    ///
+    /// # Arguments
+    ///
+    /// * `sigs` - Array of function type signatures
+    /// * `state` - The current compilation state
+    /// * `idx` - The relative depth of the target label
     fn br(&mut self, sigs: &[FuncType], state: &State, idx: u32) -> core::fmt::Result {
         let (idx, frame) = state
             .stack
