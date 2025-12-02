@@ -1,14 +1,16 @@
-//! WebAssembly re-encoding utilities for wasm-blitz.
+//! Re-encodes blitz-generated instruction streams back into WebAssembly.
 //!
-//! This crate provides functionality to transform and re-encode WebAssembly
-//! instructions. It acts as a bridge between the WASM parser and the various
-//! code generation backends.
+//! This crate provides functionality to convert the blitz-common machine operator
+//! representation back into standard WebAssembly binary format. While other backends
+//! (JavaScript, x86-64, etc.) use `blitz-common` directly to generate their target
+//! code, this crate is specifically for producing WASM output from the blitz IR.
 //!
-//! # Features
+//! # Purpose
 //!
-//! - Instruction tracking during compilation
-//! - Format conversion between different WASM representations
-//! - Integration with wasm-encoder for output generation
+//! This crate enables:
+//! - Converting blitz machine operators back to WASM bytecode
+//! - Applying optimizations before final WASM encoding
+//! - Integration with the wasm-encoder library for output generation
 //!
 //! # Example
 //!
@@ -16,7 +18,7 @@
 //! use portal_solutions_blitz_reencode::ReencodeExt;
 //! use wasm_encoder::reencode::Reencode;
 //!
-//! // Use ReencodeExt to transform WASM instructions
+//! // Re-encode machine operators back to WASM
 //! ```
 
 #![no_std]

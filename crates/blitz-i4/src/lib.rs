@@ -1,16 +1,15 @@
-//! Intermediate representation utilities for wasm-blitz.
+//! Common backend logic for 4-byte instruction architectures.
 //!
-//! This crate provides internal intermediate representation (IR) utilities
-//! that are used during the compilation process. The i4 IR serves as a
-//! bridge between the high-level WASM operations and the low-level
-//! machine-specific code generation.
+//! This crate provides shared backend infrastructure for architectures that use
+//! 4-byte fixed-length instructions, specifically AArch64 (ARM64) and RISC-V 64-bit.
+//! The name "i4" refers to the 4-byte instruction size these architectures have in common.
 //!
 //! # Purpose
 //!
-//! The i4 IR enables:
-//! - Platform-independent optimizations
-//! - Analysis passes before code generation
-//! - Transformation of WASM operations into a form suitable for various backends
+//! The i4 backend logic enables:
+//! - Shared code generation patterns between AArch64 and RISC-V 64
+//! - Common optimizations for fixed 4-byte instruction architectures
+//! - Reduced code duplication between similar backends
 
 #![no_std]
 extern crate alloc;

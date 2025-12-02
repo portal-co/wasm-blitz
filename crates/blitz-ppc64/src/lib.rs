@@ -3,6 +3,10 @@
 //! This crate provides functionality to compile WebAssembly bytecode into native
 //! PowerPC 64-bit machine code. The backend targets Power ISA v2.07 and later.
 //!
+//! # Status
+//!
+//! **Work in Progress**: This backend is currently under development.
+//!
 //! # Features
 //!
 //! - Native PowerPC 64-bit instruction generation
@@ -11,7 +15,7 @@
 //!
 //! # Architecture Support
 //!
-//! This backend supports:
+//! This backend targets:
 //! - IBM POWER8 and later processors
 //! - OpenPOWER systems
 //! - PowerPC 64-bit Linux systems

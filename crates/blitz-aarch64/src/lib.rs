@@ -4,6 +4,10 @@
 //! AArch64 (64-bit ARM) machine code. The backend targets modern ARM processors
 //! including Apple Silicon, AWS Graviton, and other ARM64 platforms.
 //!
+//! # Status
+//!
+//! **Work in Progress**: This backend is currently under development.
+//!
 //! # Features
 //!
 //! - Native AArch64 instruction generation
@@ -12,7 +16,7 @@
 //!
 //! # Architecture Support
 //!
-//! This backend supports ARMv8-A and later architectures, including:
+//! This backend targets ARMv8-A and later architectures, including:
 //! - Apple M1/M2/M3 processors
 //! - AWS Graviton processors
 //! - Qualcomm Snapdragon 8cx and later
