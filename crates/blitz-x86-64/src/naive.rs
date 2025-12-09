@@ -4,6 +4,7 @@
 //! strategy for x86-64. It prioritizes simplicity and correctness over performance.
 
 use portal_solutions_asm_x86_64::out::arg::{MemArg, MemArgKind};
+use portal_solutions_asm_x86_64::RegisterClass;
 use portal_solutions_blitz_common::wasm_encoder::{self, Instruction, reencode::Reencode};
 
 use crate::{
@@ -53,13 +54,13 @@ pub trait WriterExt: Writer<X64Label> {
         state: &mut State,
         relative_depth: u32,
     ) -> Result<(), Self::Error> {
-        self.xchg(arch, &RSP, &Reg::CTX, Some(8))?;
+        self.xchg(arch, &RSP, &Reg::CTX)?;
         for _ in 0..=relative_depth {
             self.pop(arch, &Reg(0))?;
             self.pop(arch, &Reg(1))?;
         }
-        self.xchg(arch, &RSP, &Reg::CTX, Some(8))?;
-        self.mov(arch, &RSP, &Reg(1), None)?;
+        self.xchg(arch, &RSP, &Reg::CTX)?;
+        self.mov(arch, &RSP, &Reg(1))?;
         self.jmp(arch, &Reg(0))?;
         Ok(())
     }
@@ -80,8 +81,8 @@ pub trait WriterExt: Writer<X64Label> {
         self.lea_label(arch, &Reg(0), X64Label::Indexed { idx: i })?;
         self.push(arch, &Reg(0))?;
         self.push(arch, &Reg(1))?;
-        self.mov(arch, &Reg(0), &Reg::CTX, Some(-8))?;
-        self.xchg(arch, &Reg(0), &RSP, Some(0))?;
+        self.mov(arch, &Reg(0), &Reg::CTX)?;
+        self.xchg(arch, &Reg(0), &RSP)?;
         self.ret(arch)?;
         self.set_label(arch, X64Label::Indexed { idx: i })?;
         Ok(())
@@ -135,9 +136,10 @@ pub trait WriterExt: Writer<X64Label> {
                         offset: None,
                         disp: 0u32.wrapping_sub(*params as u32),
                         size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.xchg(arch, &Reg(0), &Reg::CTX, Some(0))?;
+                self.xchg(arch, &Reg(0), &Reg::CTX)?;
                 self.set_label(arch, X64Label::Func { r#fn: *id })?;
             }
             MachOperator::Local { count, ty } => {
@@ -157,9 +159,10 @@ pub trait WriterExt: Writer<X64Label> {
                         offset: None,
                         disp: 0u32.wrapping_sub(state.control_depth as u32 * 16),
                         size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.xchg(arch, &Reg(0), &Reg::CTX, Some(8))?;
+                self.xchg(arch, &Reg(0), &Reg::CTX)?;
                 self.push(arch, &Reg(0))?;
                 for _ in 0..state.control_depth {
                     for _ in 0..2 {
@@ -224,6 +227,7 @@ pub trait WriterExt: Writer<X64Label> {
                         offset: Some((Reg(1), 0)),
                         disp: 0,
                         size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
                     },
                 )?;
                 if let Instruction::I32Add = op {
@@ -243,6 +247,7 @@ pub trait WriterExt: Writer<X64Label> {
                         offset: Some((Reg(1), 0)),
                         disp: 1,
                         size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
                     },
                 )?;
                 if let Instruction::I32Sub = op {
@@ -364,6 +369,7 @@ pub trait WriterExt: Writer<X64Label> {
                         offset: Some((Reg(1), 0)),
                         disp: 1,
                         size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
                     },
                 )?;
                 self.mov64(arch, &Reg(1), 0)?;
@@ -383,6 +389,7 @@ pub trait WriterExt: Writer<X64Label> {
                         offset: Some((Reg(1), 0)),
                         disp: 1,
                         size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
                     },
                 )?;
                 self.mov64(arch, &Reg(1), 1)?;
@@ -401,9 +408,10 @@ pub trait WriterExt: Writer<X64Label> {
                         offset: Some((Reg(1), 0)),
                         disp: 0,
                         size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.mov(arch, &Reg(0), &Reg(0), Some(0))?;
+                self.mov(arch, &Reg(0), &Reg(0))?;
                 self.push(arch, &Reg(0))?;
             }
             Instruction::I64Store(memarg) => {
@@ -418,13 +426,14 @@ pub trait WriterExt: Writer<X64Label> {
                         offset: Some((Reg(1), 0)),
                         disp: 0,
                         size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.xchg(arch, &Reg(2), &Reg(0), Some(0))?;
+                self.xchg(arch, &Reg(2), &Reg(0))?;
                 // self.push(arch,&Reg(0))?;
             }
             Instruction::LocalGet(local_index) => {
-                self.xchg(arch, &RSP, &Reg::CTX, Some(0))?;
+                self.xchg(arch, &RSP, &Reg::CTX)?;
                 self.lea(
                     arch,
                     &RSP,
@@ -433,6 +442,7 @@ pub trait WriterExt: Writer<X64Label> {
                         offset: None,
                         disp: 0u32.wrapping_sub(((*local_index as i32 as isize) * 8) as u32),
                         size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
                     },
                 )?;
                 self.pop(arch, &Reg(0))?;
@@ -444,14 +454,15 @@ pub trait WriterExt: Writer<X64Label> {
                         offset: None,
                         disp: 0u32.wrapping_sub(((*local_index as i32 as isize + 1) * 8) as u32),
                         size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.xchg(arch, &RSP, &Reg::CTX, Some(0))?;
+                self.xchg(arch, &RSP, &Reg::CTX)?;
                 self.push(arch, &Reg(0))?;
             }
             Instruction::LocalTee(local_index) => {
                 self.pop(arch, &Reg(0))?;
-                self.xchg(arch, &RSP, &Reg::CTX, Some(0))?;
+                self.xchg(arch, &RSP, &Reg::CTX)?;
                 self.lea(
                     arch,
                     &RSP,
@@ -460,6 +471,7 @@ pub trait WriterExt: Writer<X64Label> {
                         offset: None,
                         disp: 0u32.wrapping_sub(((*local_index as i32 as isize) * 8) as u32),
                         size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
                     },
                 )?;
                 self.push(arch, &Reg(0))?;
@@ -471,14 +483,15 @@ pub trait WriterExt: Writer<X64Label> {
                         offset: None,
                         disp: 0u32.wrapping_sub(((*local_index as i32 as isize + 1) * 8) as u32),
                         size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.xchg(arch, &RSP, &Reg::CTX, Some(0))?;
+                self.xchg(arch, &RSP, &Reg::CTX)?;
                 self.push(arch, &Reg(0))?;
             }
             Instruction::LocalSet(local_index) => {
                 self.pop(arch, &Reg(0))?;
-                self.xchg(arch, &RSP, &Reg::CTX, Some(0))?;
+                self.xchg(arch, &RSP, &Reg::CTX)?;
                 self.lea(
                     arch,
                     &RSP,
@@ -487,6 +500,7 @@ pub trait WriterExt: Writer<X64Label> {
                         offset: None,
                         disp: 0u32.wrapping_sub(((*local_index as i32 as isize) * 8) as u32),
                         size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
                     },
                 )?;
                 self.push(arch, &Reg(0))?;
@@ -498,13 +512,14 @@ pub trait WriterExt: Writer<X64Label> {
                         offset: None,
                         disp: 0u32.wrapping_sub(((*local_index as i32 as isize + 1) * 8) as u32),
                         size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.xchg(arch, &RSP, &Reg::CTX, Some(0))?;
+                self.xchg(arch, &RSP, &Reg::CTX)?;
             }
             Instruction::Return => {
-                self.mov(arch, &Reg(1), &RSP, None)?;
-                self.mov(arch, &Reg(0), &Reg::CTX, Some(0))?;
+                self.mov(arch, &Reg(1), &RSP)?;
+                self.mov(arch, &Reg(0), &Reg::CTX)?;
                 self.lea(
                     arch,
                     &Reg(0),
@@ -516,16 +531,17 @@ pub trait WriterExt: Writer<X64Label> {
                         offset: None,
                         disp: (state.local_count + 3 * 8) as u32,
                         size: MemorySize::_8,
+                        reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.mov(arch, &RSP, &Reg(0), None)?;
+                self.mov(arch, &RSP, &Reg(0))?;
                 self.pop(arch, &Reg(0))?;
-                self.xchg(arch, &Reg(0), &Reg::CTX, Some(8))?;
+                self.xchg(arch, &Reg(0), &Reg::CTX)?;
                 self.pop(arch, &Reg(0))?;
-                self.xchg(arch, &Reg(0), &Reg::CTX, Some(0))?;
+                self.xchg(arch, &Reg(0), &Reg::CTX)?;
                 self.pop(arch, &Reg(0))?;
                 for a in 0..state.num_returns {
-                    self.mov(arch, &Reg(2), &Reg(1), Some(-(a as isize * 8)))?;
+                    self.mov(arch, &Reg(2), &Reg(1))?;
                     self.push(arch, &Reg(2))?;
                 }
                 self.push(arch, &Reg(0))?;
@@ -562,6 +578,7 @@ pub trait WriterExt: Writer<X64Label> {
                             offset: None,
                             disp: 0xffff_ffff,
                             size: MemorySize::_64,
+                            reg_class: RegisterClass::Gpr,
                         },
                     )?;
                     self.push(arch, &Reg(0))?;
@@ -574,13 +591,13 @@ pub trait WriterExt: Writer<X64Label> {
                 let i = state.label_index;
                 state.label_index += 1;
                 self.lea_label(arch, &Reg(0), X64Label::Indexed { idx: i })?;
-                self.mov(arch, &Reg(1), &RSP, None)?;
-                self.xchg(arch, &RSP, &Reg::CTX, Some(8))?;
+                self.mov(arch, &Reg(1), &RSP)?;
+                self.xchg(arch, &RSP, &Reg::CTX)?;
                 // for _ in &Reg(0)..=(*relative_depth) {
                 self.push(arch, &Reg(1))?;
                 self.push(arch, &Reg(0))?;
                 // }
-                self.xchg(arch, &RSP, &Reg::CTX, Some(8))?;
+                self.xchg(arch, &RSP, &Reg::CTX)?;
                 self.set_label(arch, X64Label::Indexed { idx: i })?;
             }
             Instruction::If(blockty) => {
@@ -609,16 +626,16 @@ pub trait WriterExt: Writer<X64Label> {
                 state.label_index += 1;
                 self.set_label(arch, X64Label::Indexed { idx: i })?;
                 self.lea_label(arch, &Reg(0), X64Label::Indexed { idx: i })?;
-                self.mov(arch, &Reg(1), &RSP, None)?;
-                self.xchg(arch, &RSP, &Reg::CTX, Some(8))?;
+                self.mov(arch, &Reg(1), &RSP)?;
+                self.xchg(arch, &RSP, &Reg::CTX)?;
                 // for _ in &Reg(0)..=(*relative_depth) {
                 self.push(arch, &Reg(1))?;
                 self.push(arch, &Reg(0))?;
                 // }
-                self.xchg(arch, &RSP, &Reg::CTX, Some(8))?;
+                self.xchg(arch, &RSP, &Reg::CTX)?;
             }
             Instruction::End => {
-                self.xchg(arch, &RSP, &Reg::CTX, Some(8))?;
+                self.xchg(arch, &RSP, &Reg::CTX)?;
                 // for _ in &Reg(0)..=(*relative_depth) {
                 match state.if_stack.pop().unwrap() {
                     Endable::Br => {
@@ -630,7 +647,7 @@ pub trait WriterExt: Writer<X64Label> {
                     }
                 }
                 // }
-                self.xchg(arch, &RSP, &Reg::CTX, Some(8))?;
+                self.xchg(arch, &RSP, &Reg::CTX)?;
             }
             Instruction::Call(function_index) => match func_imports.get(*function_index as usize) {
                 Some(("blitz", h)) if h.starts_with("hypercall") => {

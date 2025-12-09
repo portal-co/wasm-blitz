@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/blitz-aarch64","crates/blitz-common", "crates/blitz-i4", "crates/blitz-js", "crates/blitz-opt", "crates/blitz-ppc64", "crates/blitz-reencode", "crates/blitz-riscv64", "crates/blitz-x86-64"]
+members = ["crates/blitz-aarch64","crates/blitz-common", "crates/blitz-i4", "crates/blitz-js", "crates/blitz-opt", "crates/blitz-ppc64", "crates/blitz-reencode", "crates/blitz-riscv64", "crates/blitz-x86-64", "crates/blitz-x86-64-fast"]
 resolver = "3"
 
 [workspace.package]
@@ -16,4 +16,5 @@ portal-solutions-blitz-common = { version = "0.1.0", path = "crates/blitz-common
 portal-solutions-blitz-i4 = { version = "0.1.0", path = "crates/blitz-i4" }
 portal-pc-asm-common = {version = "0.1.1",git = "https://github.com/portal-co/asm-common.git"}
 portal-solutions-asm-x86-64 = {version = "0.1.0",git = "https://github.com/portal-co/asm-arch.git"}
+portal-solutions-asm-regalloc = { git = "https://github.com/portal-co/asm-arch", package = "portal-solutions-asm-regalloc" }
 typeid = "1.0.3"

@@ -124,7 +124,7 @@ dependencies = [
 [[package]]
 name = "portal-pc-asm-common"
 version = "0.1.1"
-source = "git+https://github.com/portal-co/asm-common.git#f88d42cf6d9a16107e587edec87d5b9db736ad21"
+source = "git+https://github.com/portal-co/asm-common.git#1e8d56d424d807c1c3177ae5b674ec0dcbca021e"
 dependencies = [
  "array-init",
  "bitvec",
@@ -137,11 +137,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "portal-solutions-asm-x86-64"
+name = "portal-solutions-asm-regalloc"
 version = "0.1.0"
-source = "git+https://github.com/portal-co/asm-arch.git#3e21b62a50a7113b88b4138c992eeba0405e4180"
+source = "git+https://github.com/portal-co/asm-arch.git#cb92c5a5472ed3eb7723b6265da4e59ca802b0c5"
 dependencies = [
  "portal-pc-asm-common",
+ "typeid",
+]
+
+[[package]]
+name = "portal-solutions-asm-x86-64"
+version = "0.1.0"
+source = "git+https://github.com/portal-co/asm-arch.git#cb92c5a5472ed3eb7723b6265da4e59ca802b0c5"
+dependencies = [
+ "portal-pc-asm-common",
+ "portal-solutions-asm-regalloc",
  "typeid",
 ]
 
@@ -221,6 +231,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "portal-solutions-blitz-x86-64-fast"
+version = "0.1.0"
+dependencies = [
+ "portal-solutions-asm-regalloc",
+ "portal-solutions-asm-x86-64",
+ "portal-solutions-blitz-common",
+ "typeid",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -291,9 +311,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "2.0.109"
+version = "2.0.111"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f17c7e013e88258aa9543dcbe81aca68a667a9ac37cd69c9fbc07858bfe0e2f"
+checksum = "390cc9a294ab71bdb1aa2e99d13be9c753cd2d7bd6560c77118597410c4d2e87"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -340,7 +360,7 @@ dependencies = [
 [[package]]
 name = "wax-core"
 version = "0.1.0"
-source = "git+https://github.com/portal-co/wax.git?branch=main#546d5b4a2609e687d007b80f5c9bf9115c133983"
+source = "git+https://github.com/portal-co/wax.git?branch=main#404f437364821c1ab3662a92243cf2824043f3bd"
 dependencies = [
  "impl-trait-for-tuples",
  "wasm-encoder",

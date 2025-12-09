@@ -1,0 +1,16 @@
+[package]
+name = "portal-solutions-blitz-x86-64-fast"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+
+[dependencies]
+portal-solutions-asm-x86-64 = { workspace = true, features = ["regalloc-integration"] }
+portal-solutions-asm-regalloc.workspace = true
+portal-solutions-blitz-common = { workspace = true, features = ["asm"] }
+typeid.workspace = true
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
