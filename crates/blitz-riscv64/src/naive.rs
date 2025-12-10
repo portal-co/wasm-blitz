@@ -762,7 +762,7 @@ pub trait WriterExt: Writer<RiscvLabel> {
                              }
                              Endable::Loop { idx } => {
                                  // no-op; loop already has label at start
-                                 self.set_label(arch, RiscvLabel::Indexed { idx })?;
+                                //  self.set_label(arch, RiscvLabel::Indexed { idx })?;
                              }
                              Endable::If { idx } => {
                                  self.set_label(arch, RiscvLabel::Indexed { idx: idx + 2 })?;
