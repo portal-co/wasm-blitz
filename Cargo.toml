@@ -16,5 +16,6 @@ portal-solutions-blitz-common = { version = "0.1.0", path = "crates/blitz-common
 portal-solutions-blitz-i4 = { version = "0.1.0", path = "crates/blitz-i4" }
 portal-pc-asm-common = {version = "0.1.1",git = "https://github.com/portal-co/asm-common.git"}
 portal-solutions-asm-x86-64 = {version = "0.1.0",git = "https://github.com/portal-co/asm-arch.git"}
+portal-solutions-asm-riscv64 = {version = "0.1.0",git = "https://github.com/portal-co/asm-arch.git"}
 portal-solutions-asm-regalloc = { git = "https://github.com/portal-co/asm-arch", package = "portal-solutions-asm-regalloc" }
 typeid = "1.0.3"

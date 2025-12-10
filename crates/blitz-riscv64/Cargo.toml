@@ -7,5 +7,8 @@ description.workspace = true
 
 [dependencies]
 portal-solutions-blitz-common = { workspace = true, features = ["asm"] }
+portal-pc-asm-common = { workspace = true }
 
 portal-solutions-blitz-i4.workspace = true
+portal-solutions-asm-riscv64 = { workspace = true, features = ["regalloc-integration"] }
+portal-solutions-asm-regalloc.workspace = true

@@ -139,16 +139,26 @@ dependencies = [
 [[package]]
 name = "portal-solutions-asm-regalloc"
 version = "0.1.0"
-source = "git+https://github.com/portal-co/asm-arch.git#cb92c5a5472ed3eb7723b6265da4e59ca802b0c5"
+source = "git+https://github.com/portal-co/asm-arch#353003bbac74cfb38e37fa5d237c25898e0d9354"
 dependencies = [
  "portal-pc-asm-common",
  "typeid",
 ]
 
 [[package]]
+name = "portal-solutions-asm-riscv64"
+version = "0.1.0"
+source = "git+https://github.com/portal-co/asm-arch#353003bbac74cfb38e37fa5d237c25898e0d9354"
+dependencies = [
+ "portal-pc-asm-common",
+ "portal-solutions-asm-regalloc",
+ "typeid",
+]
+
+[[package]]
 name = "portal-solutions-asm-x86-64"
 version = "0.1.0"
-source = "git+https://github.com/portal-co/asm-arch.git#cb92c5a5472ed3eb7723b6265da4e59ca802b0c5"
+source = "git+https://github.com/portal-co/asm-arch#353003bbac74cfb38e37fa5d237c25898e0d9354"
 dependencies = [
  "portal-pc-asm-common",
  "portal-solutions-asm-regalloc",
@@ -217,6 +227,9 @@ dependencies = [
 name = "portal-solutions-blitz-riscv64"
 version = "0.1.0"
 dependencies = [
+ "portal-pc-asm-common",
+ "portal-solutions-asm-regalloc",
+ "portal-solutions-asm-riscv64",
  "portal-solutions-blitz-common",
  "portal-solutions-blitz-i4",
 ]
