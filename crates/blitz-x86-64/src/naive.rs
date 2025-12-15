@@ -37,7 +37,7 @@ enum Endable {
 ///
 /// Provides methods for generating x86-64 assembly code for WASM operations,
 /// including branches, calls, and instruction handling.
-pub trait WriterExt: Writer<X64Label> {
+pub trait WriterExt<Context>: Writer<X64Label, Context> {
     /// Generates code for a branch instruction.
     ///
     /// Emits x86-64 assembly to jump to the target label specified by the
@@ -50,18 +50,19 @@ pub trait WriterExt: Writer<X64Label> {
     /// * `relative_depth` - Depth of the target label in control flow stack
     fn br(
         &mut self,
+        ctx: &mut Context,
         arch: X64Arch,
         state: &mut State,
         relative_depth: u32,
     ) -> Result<(), Self::Error> {
-        self.xchg(arch, &RSP, &Reg::CTX)?;
+        self.xchg(ctx,arch, &RSP, &Reg::CTX)?;
         for _ in 0..=relative_depth {
-            self.pop(arch, &Reg(0))?;
-            self.pop(arch, &Reg(1))?;
+            self.pop(ctx,arch, &Reg(0))?;
+            self.pop(ctx,arch, &Reg(1))?;
         }
-        self.xchg(arch, &RSP, &Reg::CTX)?;
-        self.mov(arch, &RSP, &Reg(1))?;
-        self.jmp(arch, &Reg(0))?;
+        self.xchg(ctx,arch, &RSP, &Reg::CTX)?;
+        self.mov(ctx,arch, &RSP, &Reg(1))?;
+        self.jmp(ctx,arch, &Reg(0))?;
         Ok(())
     }
 
@@ -74,17 +75,17 @@ pub trait WriterExt: Writer<X64Label> {
     ///
     /// * `arch` - The x86-64 architecture variant
     /// * `state` - Current compilation state
-    fn hcall(&mut self, arch: X64Arch, state: &mut State) -> Result<(), Self::Error> {
-        self.pop(arch, &Reg(1))?;
+    fn hcall(&mut self,ctx: &mut Context, arch: X64Arch, state: &mut State) -> Result<(), Self::Error> {
+        self.pop(ctx,arch, &Reg(1))?;
         let i = state.label_index;
         state.label_index += 1;
-        self.lea_label(arch, &Reg(0), X64Label::Indexed { idx: i })?;
-        self.push(arch, &Reg(0))?;
-        self.push(arch, &Reg(1))?;
-        self.mov(arch, &Reg(0), &Reg::CTX)?;
-        self.xchg(arch, &Reg(0), &RSP)?;
-        self.ret(arch)?;
-        self.set_label(arch, X64Label::Indexed { idx: i })?;
+        self.lea_label(ctx,arch, &Reg(0), X64Label::Indexed { idx: i })?;
+        self.push(ctx,arch, &Reg(0))?;
+        self.push(ctx,arch, &Reg(1))?;
+        self.mov(ctx,arch, &Reg(0), &Reg::CTX)?;
+        self.xchg(ctx,arch, &Reg(0), &RSP)?;
+        self.ret(ctx,arch)?;
+        self.set_label(ctx,arch, X64Label::Indexed { idx: i })?;
         Ok(())
     }
 
@@ -103,6 +104,7 @@ pub trait WriterExt: Writer<X64Label> {
     /// * `rewriter` - Re-encoder for instruction format conversion
     fn handle_op<E>(
         &mut self,
+        ctx: &mut Context,
         arch: X64Arch,
         state: &mut State,
         func_imports: &[(&str, &str)],
@@ -127,8 +129,8 @@ pub trait WriterExt: Writer<X64Label> {
                 state.local_count = *params;
                 state.num_returns = *num_returns;
                 state.control_depth = *control_depth;
-                self.pop(arch, &Reg(1))?;
-                self.lea(
+                self.pop(ctx,arch, &Reg(1))?;
+                self.lea(ctx,
                     arch,
                     &Reg(0),
                     &MemArgKind::Mem {
@@ -139,19 +141,19 @@ pub trait WriterExt: Writer<X64Label> {
                         reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.xchg(arch, &Reg(0), &Reg::CTX)?;
-                self.set_label(arch, X64Label::Func { r#fn: *id })?;
+                self.xchg(ctx,arch, &Reg(0), &Reg::CTX)?;
+                self.set_label(ctx,arch, X64Label::Func { r#fn: *id })?;
             }
             MachOperator::Local { count, ty } => {
                 for _ in 0..*count {
                     state.local_count += 1;
-                    self.push(arch, &Reg(0))?;
+                    self.push(ctx,arch, &Reg(0))?;
                 }
             }
             MachOperator::StartBody => {
-                self.push(arch, &Reg(1))?;
-                self.push(arch, &Reg(0))?;
-                self.lea(
+                self.push(ctx,arch, &Reg(1))?;
+                self.push(ctx,arch, &Reg(0))?;
+                self.lea(ctx,
                     arch,
                     &Reg(0),
                     &MemArgKind::Mem {
@@ -162,22 +164,22 @@ pub trait WriterExt: Writer<X64Label> {
                         reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.xchg(arch, &Reg(0), &Reg::CTX)?;
-                self.push(arch, &Reg(0))?;
+                self.xchg(ctx,arch, &Reg(0), &Reg::CTX)?;
+                self.push(ctx,arch, &Reg(0))?;
                 for _ in 0..state.control_depth {
                     for _ in 0..2 {
-                        self.push(arch, &Reg(0))?;
+                        self.push(ctx,arch, &Reg(0))?;
                     }
                 }
             }
             MachOperator::Instruction { op, .. } => {
-                self._handle_op(arch, state, func_imports, op)?
+                self._handle_op(ctx,arch, state, func_imports, op)?
             }
             MachOperator::Operator { op, annot } => match match op.as_ref() {
                 None => return Ok(()),
                 Some(a) => a,
             } {
-                op => self._handle_op(
+                op => self._handle_op(ctx,
                     arch,
                     state,
                     func_imports,
@@ -190,6 +192,7 @@ pub trait WriterExt: Writer<X64Label> {
     }
     fn _handle_op(
         &mut self,
+        ctx: &mut Context,
         arch: X64Arch,
         state: &mut State,
         func_imports: &[(&str, &str)],
@@ -197,29 +200,29 @@ pub trait WriterExt: Writer<X64Label> {
     ) -> Result<(), Self::Error> {
         match op {
             Instruction::I32Const(value) => {
-                self.mov64(arch, &Reg(0), *value as u32 as u64)?;
-                self.push(arch, &Reg(0))?;
+                self.mov64(ctx,arch, &Reg(0), *value as u32 as u64)?;
+                self.push(ctx,arch, &Reg(0))?;
             }
             Instruction::I64Const(value) => {
-                self.mov64(arch, &Reg(0), *value as u64)?;
-                self.push(arch, &Reg(0))?;
+                self.mov64(ctx,arch, &Reg(0), *value as u64)?;
+                self.push(ctx,arch, &Reg(0))?;
             }
             Instruction::F32Const(value) => {
-                self.mov64(arch, &Reg(0), value.bits() as u64)?;
-                self.push(arch, &Reg(0))?;
+                self.mov64(ctx,arch, &Reg(0), value.bits() as u64)?;
+                self.push(ctx,arch, &Reg(0))?;
             }
             Instruction::F64Const(value) => {
-                self.mov64(arch, &Reg(0), value.bits())?;
-                self.push(arch, &Reg(0))?;
+                self.mov64(ctx,arch, &Reg(0), value.bits())?;
+                self.push(ctx,arch, &Reg(0))?;
             }
             Instruction::I64ReinterpretF64
             | Instruction::F64ReinterpretI64
             | Instruction::I32ReinterpretF32
             | Instruction::F32ReinterpretI32 => {}
             Instruction::I32Add | Instruction::I64Add => {
-                self.pop(arch, &Reg(0))?;
-                self.pop(arch, &Reg(1))?;
-                self.lea(
+                self.pop(ctx,arch, &Reg(0))?;
+                self.pop(ctx,arch, &Reg(1))?;
+                self.lea(ctx,
                     arch,
                     &Reg(0),
                     &MemArgKind::Mem {
@@ -231,15 +234,15 @@ pub trait WriterExt: Writer<X64Label> {
                     },
                 )?;
                 if let Instruction::I32Add = op {
-                    self.u32(arch, &Reg(0))?;
+                    self.u32(ctx,arch, &Reg(0))?;
                 }
-                self.push(arch, &Reg(0))?;
+                self.push(ctx,arch, &Reg(0))?;
             }
             Instruction::I32Sub | Instruction::I64Sub => {
-                self.pop(arch, &Reg(0))?;
-                self.pop(arch, &Reg(1))?;
-                self.not(arch, &Reg(1))?;
-                self.lea(
+                self.pop(ctx,arch, &Reg(0))?;
+                self.pop(ctx,arch, &Reg(1))?;
+                self.not(ctx,arch, &Reg(1))?;
+                self.lea(ctx,
                     arch,
                     &Reg(0),
                     &MemArgKind::Mem {
@@ -251,117 +254,117 @@ pub trait WriterExt: Writer<X64Label> {
                     },
                 )?;
                 if let Instruction::I32Sub = op {
-                    self.u32(arch, &Reg(0))?;
+                    self.u32(ctx,arch, &Reg(0))?;
                 }
-                self.push(arch, &Reg(0))?;
+                self.push(ctx,arch, &Reg(0))?;
             }
             Instruction::I32Mul | Instruction::I64Mul => {
-                self.pop(arch, &Reg(0))?;
-                self.pop(arch, &Reg(1))?;
-                self.mul(arch, &Reg(0), &Reg(1))?;
+                self.pop(ctx,arch, &Reg(0))?;
+                self.pop(ctx,arch, &Reg(1))?;
+                self.mul(ctx,arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32Mul = op {
-                    self.u32(arch, &Reg(0))?;
+                    self.u32(ctx,arch, &Reg(0))?;
                 }
-                self.push(arch, &Reg(0))?;
+                self.push(ctx,arch, &Reg(0))?;
             }
             Instruction::I32DivU | Instruction::I64DivU => {
-                self.pop(arch, &Reg(0))?;
-                self.pop(arch, &Reg(1))?;
-                self.div(arch, &Reg(0), &Reg(1))?;
+                self.pop(ctx,arch, &Reg(0))?;
+                self.pop(ctx,arch, &Reg(1))?;
+                self.div(ctx,arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32DivU = op {
-                    self.u32(arch, &Reg(0))?;
+                    self.u32(ctx,arch, &Reg(0))?;
                 }
-                self.push(arch, &Reg(0))?;
+                self.push(ctx,arch, &Reg(0))?;
             }
             Instruction::I32DivS | Instruction::I64DivS => {
-                self.pop(arch, &Reg(0))?;
-                self.pop(arch, &Reg(1))?;
-                self.idiv(arch, &Reg(0), &Reg(1))?;
+                self.pop(ctx,arch, &Reg(0))?;
+                self.pop(ctx,arch, &Reg(1))?;
+                self.idiv(ctx,arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32DivS = op {
-                    self.u32(arch, &Reg(0))?;
+                    self.u32(ctx,arch, &Reg(0))?;
                 }
-                self.push(arch, &Reg(0))?;
+                self.push(ctx,arch, &Reg(0))?;
             }
             Instruction::I32RemU | Instruction::I64RemU => {
-                self.pop(arch, &Reg(0))?;
-                self.pop(arch, &Reg(1))?;
-                self.div(arch, &Reg(0), &Reg(1))?;
+                self.pop(ctx,arch, &Reg(0))?;
+                self.pop(ctx,arch, &Reg(1))?;
+                self.div(ctx,arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32RemU = op {
-                    self.u32(arch, &Reg(3))?;
+                    self.u32(ctx,arch, &Reg(3))?;
                 }
-                self.push(arch, &Reg(3))?;
+                self.push(ctx,arch, &Reg(3))?;
             }
             Instruction::I32RemS | Instruction::I64RemS => {
-                self.pop(arch, &Reg(0))?;
-                self.pop(arch, &Reg(1))?;
-                self.idiv(arch, &Reg(0), &Reg(1))?;
+                self.pop(ctx,arch, &Reg(0))?;
+                self.pop(ctx,arch, &Reg(1))?;
+                self.idiv(ctx,arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32RemS = op {
-                    self.u32(arch, &Reg(3))?;
+                    self.u32(ctx,arch, &Reg(3))?;
                 }
-                self.push(arch, &Reg(3))?;
+                self.push(ctx,arch, &Reg(3))?;
             }
             Instruction::I32And | Instruction::I64And => {
-                self.pop(arch, &Reg(0))?;
-                self.pop(arch, &Reg(1))?;
-                self.and(arch, &Reg(0), &Reg(1))?;
+                self.pop(ctx,arch, &Reg(0))?;
+                self.pop(ctx,arch, &Reg(1))?;
+                self.and(ctx,arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32And = op {
-                    self.u32(arch, &Reg(0))?;
+                    self.u32(ctx,arch, &Reg(0))?;
                 }
-                self.push(arch, &Reg(0))?;
+                self.push(ctx,arch, &Reg(0))?;
             }
             Instruction::I32Or | Instruction::I64Or => {
-                self.pop(arch, &Reg(0))?;
-                self.pop(arch, &Reg(1))?;
-                self.or(arch, &Reg(0), &Reg(1))?;
+                self.pop(ctx,arch, &Reg(0))?;
+                self.pop(ctx,arch, &Reg(1))?;
+                self.or(ctx,arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32Or = op {
-                    self.u32(arch, &Reg(0))?;
+                    self.u32(ctx,arch, &Reg(0))?;
                 }
-                self.push(arch, &Reg(0))?;
+                self.push(ctx,arch, &Reg(0))?;
             }
             Instruction::I32Xor | Instruction::I64Xor => {
-                self.pop(arch, &Reg(0))?;
-                self.pop(arch, &Reg(1))?;
-                self.eor(arch, &Reg(0), &Reg(1))?;
+                self.pop(ctx,arch, &Reg(0))?;
+                self.pop(ctx,arch, &Reg(1))?;
+                self.eor(ctx,arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32Xor = op {
-                    self.u32(arch, &Reg(0))?;
+                    self.u32(ctx,arch, &Reg(0))?;
                 }
-                self.push(arch, &Reg(0))?;
+                self.push(ctx,arch, &Reg(0))?;
             }
             Instruction::I32Shl | Instruction::I64Shl => {
-                self.pop(arch, &Reg(0))?;
-                self.pop(arch, &Reg(1))?;
-                self.shl(arch, &Reg(0), &Reg(1))?;
+                self.pop(ctx,arch, &Reg(0))?;
+                self.pop(ctx,arch, &Reg(1))?;
+                self.shl(ctx,arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32Shl = op {
-                    self.u32(arch, &Reg(0))?;
+                    self.u32(ctx,arch, &Reg(0))?;
                 }
-                self.push(arch, &Reg(0))?;
+                self.push(ctx,arch, &Reg(0))?;
             }
             Instruction::I32ShrU | Instruction::I64ShrU => {
-                self.pop(arch, &Reg(0))?;
-                self.pop(arch, &Reg(1))?;
-                self.shr(arch, &Reg(0), &Reg(1))?;
+                self.pop(ctx,arch, &Reg(0))?;
+                self.pop(ctx,arch, &Reg(1))?;
+                self.shr(ctx,arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32ShrU = op {
-                    self.u32(arch, &Reg(0))?;
+                    self.u32(ctx,arch, &Reg(0))?;
                 }
-                self.push(arch, &Reg(0))?;
+                self.push(ctx,arch, &Reg(0))?;
             }
             Instruction::I32WrapI64 => {
-                self.pop(arch, &Reg(0))?;
-                self.u32(arch, &Reg(0))?;
-                self.push(arch, &Reg(0))?;
+                self.pop(ctx,arch, &Reg(0))?;
+                self.u32(ctx,arch, &Reg(0))?;
+                self.push(ctx,arch, &Reg(0))?;
             }
             Instruction::I32Eqz | Instruction::I64Eqz => {
-                self.pop(arch, &Reg(0))?;
-                self.mov64(arch, &Reg(1), 0)?;
-                self.cmp0(arch, &Reg(0))?;
-                self.cmovcc64(arch, ConditionCode::E, &Reg(1), &1u64)?;
-                self.push(arch, &Reg(1))?;
+                self.pop(ctx,arch, &Reg(0))?;
+                self.mov64(ctx,arch, &Reg(1), 0)?;
+                self.cmp0(ctx,arch, &Reg(0))?;
+                self.cmovcc64(ctx,arch, ConditionCode::E, &Reg(1), &1u64)?;
+                self.push(ctx,arch, &Reg(1))?;
             }
             Instruction::I32Eq | Instruction::I64Eq => {
-                self.pop(arch, &Reg(0))?;
-                self.pop(arch, &Reg(1))?;
-                self.not(arch, &Reg(1))?;
-                self.lea(
+                self.pop(ctx,arch, &Reg(0))?;
+                self.pop(ctx,arch, &Reg(1))?;
+                self.not(ctx,arch, &Reg(1))?;
+                self.lea(ctx,
                     arch,
                     &Reg(0),
                     &MemArgKind::Mem {
@@ -372,16 +375,16 @@ pub trait WriterExt: Writer<X64Label> {
                         reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.mov64(arch, &Reg(1), 0)?;
-                self.cmp0(arch, &Reg(0))?;
-                self.cmovcc64(arch, ConditionCode::E, &Reg(1), &1u64)?;
-                self.push(arch, &Reg(1))?;
+                self.mov64(ctx,arch, &Reg(1), 0)?;
+                self.cmp0(ctx,arch, &Reg(0))?;
+                self.cmovcc64(ctx,arch, ConditionCode::E, &Reg(1), &1u64)?;
+                self.push(ctx,arch, &Reg(1))?;
             }
             Instruction::I32Ne | Instruction::I64Ne => {
-                self.pop(arch, &Reg(0))?;
-                self.pop(arch, &Reg(1))?;
-                self.not(arch, &Reg(1))?;
-                self.lea(
+                self.pop(ctx,arch, &Reg(0))?;
+                self.pop(ctx,arch, &Reg(1))?;
+                self.not(ctx,arch, &Reg(1))?;
+                self.lea(ctx,
                     arch,
                     &Reg(0),
                     &MemArgKind::Mem {
@@ -392,15 +395,15 @@ pub trait WriterExt: Writer<X64Label> {
                         reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.mov64(arch, &Reg(1), 1)?;
-                self.cmp0(arch, &Reg(0))?;
-                self.cmovcc64(arch, ConditionCode::E, &Reg(1), &0u64)?;
-                self.push(arch, &Reg(1))?;
+                self.mov64(ctx,arch, &Reg(1), 1)?;
+                self.cmp0(ctx,arch, &Reg(0))?;
+                self.cmovcc64(ctx,arch, ConditionCode::E, &Reg(1), &0u64)?;
+                self.push(ctx,arch, &Reg(1))?;
             }
             Instruction::I64Load(memarg) => {
-                self.pop(arch, &Reg(0))?;
-                self.mov64(arch, &Reg(1), memarg.offset)?;
-                self.lea(
+                self.pop(ctx,arch, &Reg(0))?;
+                self.mov64(ctx,arch, &Reg(1), memarg.offset)?;
+                self.lea(ctx,
                     arch,
                     &Reg(0),
                     &MemArgKind::Mem {
@@ -411,14 +414,14 @@ pub trait WriterExt: Writer<X64Label> {
                         reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.mov(arch, &Reg(0), &Reg(0))?;
-                self.push(arch, &Reg(0))?;
+                self.mov(ctx,arch, &Reg(0), &Reg(0))?;
+                self.push(ctx,arch, &Reg(0))?;
             }
             Instruction::I64Store(memarg) => {
-                self.pop(arch, &Reg(2))?;
-                self.pop(arch, &Reg(0))?;
-                self.mov64(arch, &Reg(1), memarg.offset)?;
-                self.lea(
+                self.pop(ctx,arch, &Reg(2))?;
+                self.pop(ctx,arch, &Reg(0))?;
+                self.mov64(ctx,arch, &Reg(1), memarg.offset)?;
+                self.lea(ctx,
                     arch,
                     &Reg(0),
                     &MemArgKind::Mem {
@@ -429,12 +432,12 @@ pub trait WriterExt: Writer<X64Label> {
                         reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.xchg(arch, &Reg(2), &Reg(0))?;
-                // self.push(arch,&Reg(0))?;
+                self.xchg(ctx,arch, &Reg(2), &Reg(0))?;
+                // self.push(ctx,arch,&Reg(0))?;
             }
             Instruction::LocalGet(local_index) => {
-                self.xchg(arch, &RSP, &Reg::CTX)?;
-                self.lea(
+                self.xchg(ctx,arch, &RSP, &Reg::CTX)?;
+                self.lea(ctx,
                     arch,
                     &RSP,
                     &MemArgKind::Mem {
@@ -445,8 +448,8 @@ pub trait WriterExt: Writer<X64Label> {
                         reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.pop(arch, &Reg(0))?;
-                self.lea(
+                self.pop(ctx,arch, &Reg(0))?;
+                self.lea(ctx,
                     arch,
                     &RSP,
                     &MemArgKind::Mem {
@@ -457,13 +460,13 @@ pub trait WriterExt: Writer<X64Label> {
                         reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.xchg(arch, &RSP, &Reg::CTX)?;
-                self.push(arch, &Reg(0))?;
+                self.xchg(ctx,arch, &RSP, &Reg::CTX)?;
+                self.push(ctx,arch, &Reg(0))?;
             }
             Instruction::LocalTee(local_index) => {
-                self.pop(arch, &Reg(0))?;
-                self.xchg(arch, &RSP, &Reg::CTX)?;
-                self.lea(
+                self.pop(ctx,arch, &Reg(0))?;
+                self.xchg(ctx,arch, &RSP, &Reg::CTX)?;
+                self.lea(ctx,
                     arch,
                     &RSP,
                     &MemArgKind::Mem {
@@ -474,8 +477,8 @@ pub trait WriterExt: Writer<X64Label> {
                         reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.push(arch, &Reg(0))?;
-                self.lea(
+                self.push(ctx,arch, &Reg(0))?;
+                self.lea(ctx,
                     arch,
                     &RSP,
                     &MemArgKind::Mem {
@@ -486,13 +489,13 @@ pub trait WriterExt: Writer<X64Label> {
                         reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.xchg(arch, &RSP, &Reg::CTX)?;
-                self.push(arch, &Reg(0))?;
+                self.xchg(ctx,arch, &RSP, &Reg::CTX)?;
+                self.push(ctx,arch, &Reg(0))?;
             }
             Instruction::LocalSet(local_index) => {
-                self.pop(arch, &Reg(0))?;
-                self.xchg(arch, &RSP, &Reg::CTX)?;
-                self.lea(
+                self.pop(ctx,arch, &Reg(0))?;
+                self.xchg(ctx,arch, &RSP, &Reg::CTX)?;
+                self.lea(ctx,
                     arch,
                     &RSP,
                     &MemArgKind::Mem {
@@ -503,8 +506,8 @@ pub trait WriterExt: Writer<X64Label> {
                         reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.push(arch, &Reg(0))?;
-                self.lea(
+                self.push(ctx,arch, &Reg(0))?;
+                self.lea(ctx,
                     arch,
                     &RSP,
                     &MemArgKind::Mem {
@@ -515,12 +518,12 @@ pub trait WriterExt: Writer<X64Label> {
                         reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.xchg(arch, &RSP, &Reg::CTX)?;
+                self.xchg(ctx,arch, &RSP, &Reg::CTX)?;
             }
             Instruction::Return => {
-                self.mov(arch, &Reg(1), &RSP)?;
-                self.mov(arch, &Reg(0), &Reg::CTX)?;
-                self.lea(
+                self.mov(ctx,arch, &Reg(1), &RSP)?;
+                self.mov(ctx,arch, &Reg(0), &Reg::CTX)?;
+                self.lea(ctx,
                     arch,
                     &Reg(0),
                     // &Reg(0),
@@ -534,43 +537,43 @@ pub trait WriterExt: Writer<X64Label> {
                         reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.mov(arch, &RSP, &Reg(0))?;
-                self.pop(arch, &Reg(0))?;
-                self.xchg(arch, &Reg(0), &Reg::CTX)?;
-                self.pop(arch, &Reg(0))?;
-                self.xchg(arch, &Reg(0), &Reg::CTX)?;
-                self.pop(arch, &Reg(0))?;
+                self.mov(ctx,arch, &RSP, &Reg(0))?;
+                self.pop(ctx,arch, &Reg(0))?;
+                self.xchg(ctx,arch, &Reg(0), &Reg::CTX)?;
+                self.pop(ctx,arch, &Reg(0))?;
+                self.xchg(ctx,arch, &Reg(0), &Reg::CTX)?;
+                self.pop(ctx,arch, &Reg(0))?;
                 for a in 0..state.num_returns {
-                    self.mov(arch, &Reg(2), &Reg(1))?;
-                    self.push(arch, &Reg(2))?;
+                    self.mov(ctx,arch, &Reg(2), &Reg(1))?;
+                    self.push(ctx,arch, &Reg(2))?;
                 }
-                self.push(arch, &Reg(0))?;
-                self.ret(arch)?;
+                self.push(ctx,arch, &Reg(0))?;
+                self.ret(ctx,arch)?;
             }
             Instruction::Br(relative_depth) => {
-                self.br(arch, state, *relative_depth)?;
+                self.br(ctx,arch, state, *relative_depth)?;
             }
             Instruction::BrIf(relative_depth) => {
                 let i = state.label_index;
                 state.label_index += 1;
-                self.lea_label(arch, &Reg(1), X64Label::Indexed { idx: i })?;
-                self.pop(arch, &Reg(0))?;
-                self.cmp0(arch, &Reg(0))?;
-                self.jcc(arch, ConditionCode::E, &Reg(1))?;
-                self.br(arch, state, *relative_depth)?;
-                self.set_label(arch, X64Label::Indexed { idx: i })?;
+                self.lea_label(ctx,arch, &Reg(1), X64Label::Indexed { idx: i })?;
+                self.pop(ctx,arch, &Reg(0))?;
+                self.cmp0(ctx,arch, &Reg(0))?;
+                self.jcc(ctx,arch, ConditionCode::E, &Reg(1))?;
+                self.br(ctx,arch, state, *relative_depth)?;
+                self.set_label(ctx,arch, X64Label::Indexed { idx: i })?;
             }
             Instruction::BrTable(targets, default) => {
                 for relative_depth in targets.iter().cloned() {
                     let i = state.label_index;
                     state.label_index += 1;
-                    self.lea_label(arch, &Reg(1), X64Label::Indexed { idx: i })?;
-                    self.pop(arch, &Reg(0))?;
-                    self.cmp0(arch, &Reg(0))?;
-                    self.jcc(arch, ConditionCode::E, &Reg(1))?;
-                    self.br(arch, state, relative_depth)?;
-                    self.set_label(arch, X64Label::Indexed { idx: i })?;
-                    self.lea(
+                    self.lea_label(ctx,arch, &Reg(1), X64Label::Indexed { idx: i })?;
+                    self.pop(ctx,arch, &Reg(0))?;
+                    self.cmp0(ctx,arch, &Reg(0))?;
+                    self.jcc(ctx,arch, ConditionCode::E, &Reg(1))?;
+                    self.br(ctx,arch, state, relative_depth)?;
+                    self.set_label(ctx,arch, X64Label::Indexed { idx: i })?;
+                    self.lea(ctx,
                         arch,
                         &Reg(0),
                         &MemArgKind::Mem {
@@ -581,88 +584,88 @@ pub trait WriterExt: Writer<X64Label> {
                             reg_class: RegisterClass::Gpr,
                         },
                     )?;
-                    self.push(arch, &Reg(0))?;
+                    self.push(ctx,arch, &Reg(0))?;
                 }
-                self.pop(arch, &Reg(0))?;
-                self.br(arch, state, *default)?;
+                self.pop(ctx,arch, &Reg(0))?;
+                self.br(ctx,arch, state, *default)?;
             }
             Instruction::Block(blockty) => {
                 state.if_stack.push(Endable::Br);
                 let i = state.label_index;
                 state.label_index += 1;
-                self.lea_label(arch, &Reg(0), X64Label::Indexed { idx: i })?;
-                self.mov(arch, &Reg(1), &RSP)?;
-                self.xchg(arch, &RSP, &Reg::CTX)?;
+                self.lea_label(ctx,arch, &Reg(0), X64Label::Indexed { idx: i })?;
+                self.mov(ctx,arch, &Reg(1), &RSP)?;
+                self.xchg(ctx,arch, &RSP, &Reg::CTX)?;
                 // for _ in &Reg(0)..=(*relative_depth) {
-                self.push(arch, &Reg(1))?;
-                self.push(arch, &Reg(0))?;
+                self.push(ctx,arch, &Reg(1))?;
+                self.push(ctx,arch, &Reg(0))?;
                 // }
-                self.xchg(arch, &RSP, &Reg::CTX)?;
-                self.set_label(arch, X64Label::Indexed { idx: i })?;
+                self.xchg(ctx,arch, &RSP, &Reg::CTX)?;
+                self.set_label(ctx,arch, X64Label::Indexed { idx: i })?;
             }
             Instruction::If(blockty) => {
                 let i = state.label_index;
                 state.label_index += 3;
                 state.if_stack.push(Endable::If { idx: i });
-                self.pop(arch, &Reg(2))?;
-                self.lea_label(arch, &Reg(0), X64Label::Indexed { idx: i })?;
-                self.lea_label(arch, &Reg(1), X64Label::Indexed { idx: i + 1 })?;
-                self.cmp0(arch, &Reg(2))?;
-                self.jcc(arch, ConditionCode::E, &Reg(1))?;
-                self.jmp(arch, &Reg(0))?;
-                self.set_label(arch, X64Label::Indexed { idx: i })?;
+                self.pop(ctx,arch, &Reg(2))?;
+                self.lea_label(ctx,arch, &Reg(0), X64Label::Indexed { idx: i })?;
+                self.lea_label(ctx,arch, &Reg(1), X64Label::Indexed { idx: i + 1 })?;
+                self.cmp0(ctx,arch, &Reg(2))?;
+                self.jcc(ctx,arch, ConditionCode::E, &Reg(1))?;
+                self.jmp(ctx,arch, &Reg(0))?;
+                self.set_label(ctx,arch, X64Label::Indexed { idx: i })?;
             }
             Instruction::Else => {
                 let Endable::If { idx: i } = state.if_stack.last().unwrap() else {
                     todo!()
                 };
-                self.lea_label(arch, &Reg(0), X64Label::Indexed { idx: i + 2 })?;
-                self.jmp(arch, &Reg(0))?;
-                self.set_label(arch, X64Label::Indexed { idx: i + 1 })?;
+                self.lea_label(ctx,arch, &Reg(0), X64Label::Indexed { idx: i + 2 })?;
+                self.jmp(ctx,arch, &Reg(0))?;
+                self.set_label(ctx,arch, X64Label::Indexed { idx: i + 1 })?;
             }
             Instruction::Loop(blockty) => {
                 state.if_stack.push(Endable::Br);
                 let i = state.label_index;
                 state.label_index += 1;
-                self.set_label(arch, X64Label::Indexed { idx: i })?;
-                self.lea_label(arch, &Reg(0), X64Label::Indexed { idx: i })?;
-                self.mov(arch, &Reg(1), &RSP)?;
-                self.xchg(arch, &RSP, &Reg::CTX)?;
+                self.set_label(ctx,arch, X64Label::Indexed { idx: i })?;
+                self.lea_label(ctx,arch, &Reg(0), X64Label::Indexed { idx: i })?;
+                self.mov(ctx,arch, &Reg(1), &RSP)?;
+                self.xchg(ctx,arch, &RSP, &Reg::CTX)?;
                 // for _ in &Reg(0)..=(*relative_depth) {
-                self.push(arch, &Reg(1))?;
-                self.push(arch, &Reg(0))?;
+                self.push(ctx,arch, &Reg(1))?;
+                self.push(ctx,arch, &Reg(0))?;
                 // }
-                self.xchg(arch, &RSP, &Reg::CTX)?;
+                self.xchg(ctx,arch, &RSP, &Reg::CTX)?;
             }
             Instruction::End => {
-                self.xchg(arch, &RSP, &Reg::CTX)?;
+                self.xchg(ctx,arch, &RSP, &Reg::CTX)?;
                 // for _ in &Reg(0)..=(*relative_depth) {
                 match state.if_stack.pop().unwrap() {
                     Endable::Br => {
-                        self.pop(arch, &Reg(0))?;
-                        self.pop(arch, &Reg(1))?;
+                        self.pop(ctx,arch, &Reg(0))?;
+                        self.pop(ctx,arch, &Reg(1))?;
                     }
                     Endable::If { idx: i } => {
-                        self.set_label(arch, X64Label::Indexed { idx: i + 2 })?;
+                        self.set_label(ctx,arch, X64Label::Indexed { idx: i + 2 })?;
                     }
                 }
                 // }
-                self.xchg(arch, &RSP, &Reg::CTX)?;
+                self.xchg(ctx,arch, &RSP, &Reg::CTX)?;
             }
             Instruction::Call(function_index) => match func_imports.get(*function_index as usize) {
                 Some(("blitz", h)) if h.starts_with("hypercall") => {
-                    self.hcall(arch, state)?;
+                    self.hcall(ctx,arch, state)?;
                 }
                 _ => {
                     let function_index = *function_index - func_imports.len() as u32;
-                    self.lea_label(
+                    self.lea_label(ctx,
                         arch,
                         &Reg(0),
                         X64Label::Func {
                             r#fn: function_index,
                         },
                     )?;
-                    self.call(arch, &Reg(0))?;
+                    self.call(ctx,arch, &Reg(0))?;
                 }
             },
             _ => {}
@@ -670,4 +673,4 @@ pub trait WriterExt: Writer<X64Label> {
         Ok(())
     }
 }
-impl<T: Writer<X64Label> + ?Sized> WriterExt for T {}
+impl<T: Writer<X64Label, Context> + ?Sized, Context> WriterExt<Context> for T {}

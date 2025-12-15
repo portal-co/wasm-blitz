@@ -116,21 +116,27 @@ pub mod fast {
         }
     }
 
-    fn emit_cmds<E: core::error::Error, W: asm_x86::out::Writer<X64FastLabel, Error = E>>(
+    fn emit_cmds<
+        E: core::error::Error,
+        Context,
+        W: asm_x86::out::Writer<X64FastLabel, Context, Error = E>,
+    >(
         writer: &mut W,
+        ctx: &mut Context,
         arch: asm_x86::X64Arch,
         mut it: impl Iterator<Item = regalloc::Cmd<x86_regalloc::RegKind>>,
         stack: &mut StackManager,
     ) -> Result<(), E> {
         while let Some(cmd) = it.next() {
-            x86_regalloc::process_cmd(writer, arch, &cmd, Some(stack))?;
+            x86_regalloc::process_cmd(writer, ctx, arch, &cmd, Some(stack))?;
         }
         Ok(())
     }
 
-    pub trait WriterExt: asm_x86::out::Writer<X64FastLabel> {
+    pub trait WriterExt<Context>: asm_x86::out::Writer<X64FastLabel, Context> {
         fn br(
             &mut self,
+            ctx: &mut Context,
             arch: asm_x86::X64Arch,
             _state: &mut State,
             relative_depth: u32,
@@ -146,10 +152,10 @@ pub mod fast {
                 size: MemorySize::_64,
                 reg_class: asm_x86::RegisterClass::Gpr,
             };
-            self.xchg(arch, &rsp_mem, &Reg::CTX)?;
+            self.xchg(ctx, arch, &rsp_mem, &Reg::CTX)?;
             for _ in 0..=relative_depth {
-                self.pop(arch, &Reg(0))?;
-                self.pop(arch, &Reg(1))?;
+                self.pop(ctx, arch, &Reg(0))?;
+                self.pop(ctx, arch, &Reg(1))?;
             }
             let rsp_mem = asm_x86::out::arg::MemArgKind::Mem {
                 base: RSP,
@@ -158,14 +164,15 @@ pub mod fast {
                 size: MemorySize::_64,
                 reg_class: asm_x86::RegisterClass::Gpr,
             };
-            self.xchg(arch, &rsp_mem, &Reg::CTX)?;
-            self.mov(arch, &RSP, &Reg(1))?;
-            self.jmp(arch, &Reg(0))?;
+            self.xchg(ctx, arch, &rsp_mem, &Reg::CTX)?;
+            self.mov(ctx, arch, &RSP, &Reg(1))?;
+            self.jmp(ctx, arch, &Reg(0))?;
             Ok(())
         }
 
         fn handle_op(
             &mut self,
+            ctx: &mut Context,
             arch: asm_x86::X64Arch,
             state: &mut State,
             func_imports: &[(&str, &str)],
@@ -197,9 +204,9 @@ pub mod fast {
                                 // convert error
                                 core::fmt::Error
                             })?;
-                        emit_cmds(self, arch, cmds, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, cmds, &mut state.stack_manager)?;
                         let phys = Reg(r as u8);
-                        self.mov64(arch, &phys, *value as u32 as u64)?;
+                        self.mov64(ctx, arch, &phys, *value as u32 as u64)?;
                     }
                 }
                 Instruction::I64Const(value) => {
@@ -209,9 +216,9 @@ pub mod fast {
                         .unwrap()
                         .push(x86_regalloc::RegKind::Int)
                         .map_err(|_| core::fmt::Error)?;
-                    emit_cmds(self, arch, cmds, &mut state.stack_manager)?;
+                    emit_cmds(self, ctx, arch, cmds, &mut state.stack_manager)?;
                     let phys = Reg(r as u8);
-                    self.mov64(arch, &phys, *value as u64)?;
+                    self.mov64(ctx, arch, &phys, *value as u64)?;
                 }
                 Instruction::F32Const(value) => {
                     let (r, cmds) = state
@@ -220,9 +227,9 @@ pub mod fast {
                         .unwrap()
                         .push(x86_regalloc::RegKind::Float)
                         .map_err(|_| core::fmt::Error)?;
-                    emit_cmds(self, arch, cmds, &mut state.stack_manager)?;
+                    emit_cmds(self, ctx, arch, cmds, &mut state.stack_manager)?;
                     let phys = Reg(r as u8);
-                    self.mov64(arch, &phys, value.bits() as u64)?;
+                    self.mov64(ctx, arch, &phys, value.bits() as u64)?;
                 }
                 Instruction::F64Const(value) => {
                     let (r, cmds) = state
@@ -231,9 +238,9 @@ pub mod fast {
                         .unwrap()
                         .push(x86_regalloc::RegKind::Float)
                         .map_err(|_| core::fmt::Error)?;
-                    emit_cmds(self, arch, cmds, &mut state.stack_manager)?;
+                    emit_cmds(self, ctx, arch, cmds, &mut state.stack_manager)?;
                     let phys = Reg(r as u8);
-                    self.mov64(arch, &phys, value.bits())?;
+                    self.mov64(ctx, arch, &phys, value.bits())?;
                 }
                 Instruction::I32Add | Instruction::I64Add => {
                     let t1;
@@ -244,7 +251,7 @@ pub mod fast {
                             .as_mut()
                             .unwrap()
                             .pop(x86_regalloc::RegKind::Int);
-                        emit_cmds(self, arch, cmds1, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, cmds1, &mut state.stack_manager)?;
                         t1 = tt1;
                     }
                     {
@@ -253,12 +260,13 @@ pub mod fast {
                             .as_mut()
                             .unwrap()
                             .pop(x86_regalloc::RegKind::Int);
-                        emit_cmds(self, arch, cmds2, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, cmds2, &mut state.stack_manager)?;
                         t2 = tt2;
                     }
                     let r1 = Reg(t1.reg);
                     let r2 = Reg(t2.reg);
                     self.lea(
+                        ctx,
                         arch,
                         &r1,
                         &asm_x86::out::arg::MemArgKind::Mem {
@@ -280,7 +288,7 @@ pub mod fast {
                                     reg: t1.reg,
                                     kind: t1.kind,
                                 });
-                        emit_cmds(self, arch, iter, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, iter, &mut state.stack_manager)?;
                     }
                 }
                 Instruction::LocalGet(local_index) => {
@@ -292,7 +300,7 @@ pub mod fast {
                             .unwrap()
                             .push_local(x86_regalloc::RegKind::Int, *local_index)
                             .map_err(|_| core::fmt::Error)?;
-                        emit_cmds(self, arch, cmds, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, cmds, &mut state.stack_manager)?;
                     }
                 }
                 Instruction::LocalSet(local_index) => {
@@ -304,7 +312,7 @@ pub mod fast {
                             .as_mut()
                             .unwrap()
                             .pop(x86_regalloc::RegKind::Int);
-                        emit_cmds(self, arch, cmds, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, cmds, &mut state.stack_manager)?;
                         t = tt;
                     }
                     {
@@ -313,7 +321,7 @@ pub mod fast {
                             .as_mut()
                             .unwrap()
                             .pop_local(x86_regalloc::RegKind::Int, *local_index);
-                        emit_cmds(self, arch, it, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, it, &mut state.stack_manager)?;
                     }
                 }
                 Instruction::I64Load(memarg) => {
@@ -325,13 +333,14 @@ pub mod fast {
                             .as_mut()
                             .unwrap()
                             .pop(x86_regalloc::RegKind::Int);
-                        emit_cmds(self, arch, cmds, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, cmds, &mut state.stack_manager)?;
                         t = tt;
                     }
                     let addr = Reg(t.reg);
                     let imm = Reg(0); // temporary immediate reg
-                    self.mov64(arch, &imm, memarg.offset)?;
+                    self.mov64(ctx, arch, &imm, memarg.offset)?;
                     self.lea(
+                        ctx,
                         arch,
                         &addr,
                         &asm_x86::out::arg::MemArgKind::Mem {
@@ -342,7 +351,7 @@ pub mod fast {
                             reg_class: asm_x86::RegisterClass::Gpr,
                         },
                     )?;
-                    self.mov(arch, &addr, &addr)?;
+                    self.mov(ctx, arch, &addr, &addr)?;
                     // push existing
                     {
                         let mut it =
@@ -354,7 +363,7 @@ pub mod fast {
                                     reg: t.reg,
                                     kind: t.kind,
                                 });
-                        emit_cmds(self, arch, it, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, it, &mut state.stack_manager)?;
                     }
                 }
                 Instruction::I64Store(memarg) => {
@@ -367,7 +376,7 @@ pub mod fast {
                             .as_mut()
                             .unwrap()
                             .pop(x86_regalloc::RegKind::Int);
-                        emit_cmds(self, arch, cmds_val, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, cmds_val, &mut state.stack_manager)?;
                         val = vv;
                     }
                     {
@@ -376,13 +385,14 @@ pub mod fast {
                             .as_mut()
                             .unwrap()
                             .pop(x86_regalloc::RegKind::Int);
-                        emit_cmds(self, arch, cmds_addr, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, cmds_addr, &mut state.stack_manager)?;
                         addr = aa;
                     }
                     let imm = Reg(0);
-                    self.mov64(arch, &imm, memarg.offset)?;
+                    self.mov64(ctx, arch, &imm, memarg.offset)?;
                     let base = Reg(addr.reg);
                     self.lea(
+                        ctx,
                         arch,
                         &base,
                         &asm_x86::out::arg::MemArgKind::Mem {
@@ -393,21 +403,21 @@ pub mod fast {
                             reg_class: asm_x86::RegisterClass::Gpr,
                         },
                     )?;
-                    self.xchg(arch, &Reg(val.reg), &base)?;
+                    self.xchg(ctx, arch, &Reg(val.reg), &base)?;
                 }
                 Instruction::Br(relative_depth) => {
                     // flush regalloc before control transfer
                     {
                         let flush = state.regalloc.as_mut().unwrap().flush();
-                        emit_cmds(self, arch, flush, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, flush, &mut state.stack_manager)?;
                     }
-                    self.br(arch, state, *relative_depth)?;
+                    self.br(ctx, arch, state, *relative_depth)?;
                 }
                 Instruction::BrIf(relative_depth) => {
                     // create label
                     let i = state.label_index;
                     state.label_index += 1;
-                    self.lea_label(arch, &Reg(1), X64FastLabel::Indexed { idx: i })?;
+                    self.lea_label(ctx, arch, &Reg(1), X64FastLabel::Indexed { idx: i })?;
                     // pop cond
                     let t;
                     {
@@ -416,25 +426,30 @@ pub mod fast {
                             .as_mut()
                             .unwrap()
                             .pop(x86_regalloc::RegKind::Int);
-                        emit_cmds(self, arch, cmds, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, cmds, &mut state.stack_manager)?;
                         t = tt;
                     }
                     let cond = Reg(t.reg);
-                    self.cmp0(arch, &cond)?;
-                    self.jcc(arch, portal_solutions_asm_x86_64::ConditionCode::E, &Reg(1))?;
+                    self.cmp0(ctx, arch, &cond)?;
+                    self.jcc(
+                        ctx,
+                        arch,
+                        portal_solutions_asm_x86_64::ConditionCode::E,
+                        &Reg(1),
+                    )?;
                     // flush and branch
                     {
                         let flush = state.regalloc.as_mut().unwrap().flush();
-                        emit_cmds(self, arch, flush, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, flush, &mut state.stack_manager)?;
                     }
-                    self.br(arch, state, *relative_depth)?;
-                    self.set_label(arch, X64FastLabel::Indexed { idx: i })?;
+                    self.br(ctx, arch, state, *relative_depth)?;
+                    self.set_label(ctx, arch, X64FastLabel::Indexed { idx: i })?;
                 }
                 Instruction::BrTable(targets, default) => {
                     for relative_depth in targets.iter().cloned() {
                         let i = state.label_index;
                         state.label_index += 1;
-                        self.lea_label(arch, &Reg(1), X64FastLabel::Indexed { idx: i })?;
+                        self.lea_label(ctx, arch, &Reg(1), X64FastLabel::Indexed { idx: i })?;
                         let t;
                         {
                             let (tt, cmds) = state
@@ -442,20 +457,26 @@ pub mod fast {
                                 .as_mut()
                                 .unwrap()
                                 .pop(x86_regalloc::RegKind::Int);
-                            emit_cmds(self, arch, cmds, &mut state.stack_manager)?;
+                            emit_cmds(self, ctx, arch, cmds, &mut state.stack_manager)?;
                             t = tt;
                         }
                         let cond = Reg(t.reg);
-                        self.cmp0(arch, &cond)?;
-                        self.jcc(arch, portal_solutions_asm_x86_64::ConditionCode::E, &Reg(1))?;
+                        self.cmp0(ctx, arch, &cond)?;
+                        self.jcc(
+                            ctx,
+                            arch,
+                            portal_solutions_asm_x86_64::ConditionCode::E,
+                            &Reg(1),
+                        )?;
                         {
                             let flush = state.regalloc.as_mut().unwrap().flush();
-                            emit_cmds(self, arch, flush, &mut state.stack_manager)?;
+                            emit_cmds(self, ctx, arch, flush, &mut state.stack_manager)?;
                         }
-                        self.br(arch, state, relative_depth)?;
-                        self.set_label(arch, X64FastLabel::Indexed { idx: i })?;
+                        self.br(ctx, arch, state, relative_depth)?;
+                        self.set_label(ctx, arch, X64FastLabel::Indexed { idx: i })?;
                         let mut tmp = Reg(0);
                         self.lea(
+                            ctx,
                             arch,
                             &tmp,
                             &asm_x86::out::arg::MemArgKind::Mem {
@@ -469,6 +490,7 @@ pub mod fast {
                         {
                             emit_cmds(
                                 self,
+                                ctx,
                                 arch,
                                 state
                                     .regalloc
@@ -489,12 +511,13 @@ pub mod fast {
                             .as_mut()
                             .unwrap()
                             .pop(x86_regalloc::RegKind::Int);
-                        emit_cmds(self, arch, cmds, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, cmds, &mut state.stack_manager)?;
                         t = tt;
                     }
                     {
                         emit_cmds(
                             self,
+                            ctx,
                             arch,
                             state
                                 .regalloc
@@ -509,23 +532,23 @@ pub mod fast {
                     }
                     {
                         let flush = state.regalloc.as_mut().unwrap().flush();
-                        emit_cmds(self, arch, flush, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, flush, &mut state.stack_manager)?;
                     }
-                    self.br(arch, state, *default)?;
+                    self.br(ctx, arch, state, *default)?;
                 }
                 Instruction::Block(_blockty) => {
                     state.if_stack.push(Endable::Br);
                     let i = state.label_index;
                     state.label_index += 1;
-                    self.lea_label(arch, &Reg(0), X64FastLabel::Indexed { idx: i })?;
+                    self.lea_label(ctx, arch, &Reg(0), X64FastLabel::Indexed { idx: i })?;
                     // flush to resume with current stack pointer saved
                     {
                         let flush = state.regalloc.as_mut().unwrap().flush();
-                        emit_cmds(self, arch, flush, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, flush, &mut state.stack_manager)?;
                     }
-                    self.push(arch, &Reg(1))?;
-                    self.push(arch, &Reg(0))?;
-                    self.set_label(arch, X64FastLabel::Indexed { idx: i })?;
+                    self.push(ctx, arch, &Reg(1))?;
+                    self.push(ctx, arch, &Reg(0))?;
+                    self.set_label(ctx, arch, X64FastLabel::Indexed { idx: i })?;
                 }
                 Instruction::If(_blockty) => {
                     let i = state.label_index;
@@ -538,50 +561,55 @@ pub mod fast {
                             .as_mut()
                             .unwrap()
                             .pop(x86_regalloc::RegKind::Int);
-                        emit_cmds(self, arch, cmds, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, cmds, &mut state.stack_manager)?;
                         t = tt;
                     }
                     let cond = Reg(t.reg);
-                    self.lea_label(arch, &Reg(0), X64FastLabel::Indexed { idx: i })?;
-                    self.lea_label(arch, &Reg(1), X64FastLabel::Indexed { idx: i + 1 })?;
-                    self.cmp0(arch, &cond)?;
-                    self.jcc(arch, portal_solutions_asm_x86_64::ConditionCode::E, &Reg(1))?;
-                    self.jmp(arch, &Reg(0))?;
-                    self.set_label(arch, X64FastLabel::Indexed { idx: i })?;
+                    self.lea_label(ctx, arch, &Reg(0), X64FastLabel::Indexed { idx: i })?;
+                    self.lea_label(ctx, arch, &Reg(1), X64FastLabel::Indexed { idx: i + 1 })?;
+                    self.cmp0(ctx, arch, &cond)?;
+                    self.jcc(
+                        ctx,
+                        arch,
+                        portal_solutions_asm_x86_64::ConditionCode::E,
+                        &Reg(1),
+                    )?;
+                    self.jmp(ctx, arch, &Reg(0))?;
+                    self.set_label(ctx, arch, X64FastLabel::Indexed { idx: i })?;
                 }
                 Instruction::Else => {
                     let Endable::If { idx: i } = state.if_stack.last().unwrap() else {
                         todo!()
                     };
-                    self.lea_label(arch, &Reg(0), X64FastLabel::Indexed { idx: i + 2 })?;
-                    self.jmp(arch, &Reg(0))?;
-                    self.set_label(arch, X64FastLabel::Indexed { idx: i + 1 })?;
+                    self.lea_label(ctx, arch, &Reg(0), X64FastLabel::Indexed { idx: i + 2 })?;
+                    self.jmp(ctx, arch, &Reg(0))?;
+                    self.set_label(ctx, arch, X64FastLabel::Indexed { idx: i + 1 })?;
                 }
                 Instruction::Loop(_blockty) => {
                     state.if_stack.push(Endable::Br);
                     let i = state.label_index;
                     state.label_index += 1;
-                    self.set_label(arch, X64FastLabel::Indexed { idx: i })?;
-                    self.lea_label(arch, &Reg(0), X64FastLabel::Indexed { idx: i })?;
+                    self.set_label(ctx, arch, X64FastLabel::Indexed { idx: i })?;
+                    self.lea_label(ctx, arch, &Reg(0), X64FastLabel::Indexed { idx: i })?;
                     {
                         let flush = state.regalloc.as_mut().unwrap().flush();
-                        emit_cmds(self, arch, flush, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, flush, &mut state.stack_manager)?;
                     }
-                    self.push(arch, &Reg(1))?;
-                    self.push(arch, &Reg(0))?;
+                    self.push(ctx, arch, &Reg(1))?;
+                    self.push(ctx, arch, &Reg(0))?;
                 }
                 Instruction::End => {
                     {
                         let flush = state.regalloc.as_mut().unwrap().flush();
-                        emit_cmds(self, arch, flush, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, flush, &mut state.stack_manager)?;
                     }
                     match state.if_stack.pop().unwrap() {
                         Endable::Br => {
-                            self.pop(arch, &Reg(0))?;
-                            self.pop(arch, &Reg(1))?;
+                            self.pop(ctx, arch, &Reg(0))?;
+                            self.pop(ctx, arch, &Reg(1))?;
                         }
                         Endable::If { idx: i } => {
-                            self.set_label(arch, X64FastLabel::Indexed { idx: i + 2 })?;
+                            self.set_label(ctx, arch, X64FastLabel::Indexed { idx: i + 2 })?;
                         }
                     }
                 }
@@ -597,53 +625,56 @@ pub mod fast {
                                     .as_mut()
                                     .unwrap()
                                     .pop(x86_regalloc::RegKind::Int);
-                                emit_cmds(self, arch, cmds, &mut state.stack_manager)?;
+                                emit_cmds(self, ctx, arch, cmds, &mut state.stack_manager)?;
                                 t = tt;
                             }
                             let fnptr = Reg(t.reg);
                             let i = state.label_index;
                             state.label_index += 1;
-                            self.lea_label(arch, &Reg(0), X64FastLabel::Indexed { idx: i })?;
-                            self.push(arch, &Reg(0))?;
-                            self.push(arch, &fnptr)?;
-                            self.mov(arch, &Reg(0), &Reg::CTX)?;
-                            self.xchg(arch, &Reg(0), &Reg(4))?;
-                            self.ret(arch)?;
-                            self.set_label(arch, X64FastLabel::Indexed { idx: i })?;
+                            self.lea_label(ctx, arch, &Reg(0), X64FastLabel::Indexed { idx: i })?;
+                            self.push(ctx, arch, &Reg(0))?;
+                            self.push(ctx, arch, &fnptr)?;
+                            self.mov(ctx, arch, &Reg(0), &Reg::CTX)?;
+                            self.xchg(ctx, arch, &Reg(0), &Reg(4))?;
+                            self.ret(ctx, arch)?;
+                            self.set_label(ctx, arch, X64FastLabel::Indexed { idx: i })?;
                         } else {
                             // normal call
                             let function_index = *function_index - func_imports.len() as u32;
                             self.lea_label(
+                                ctx,
                                 arch,
                                 &Reg(0),
                                 X64FastLabel::Func {
                                     r#fn: function_index,
                                 },
                             )?;
-                            self.call(arch, &Reg(0))?;
+                            self.call(ctx, arch, &Reg(0))?;
                         }
                     } else {
                         let function_index = *function_index - func_imports.len() as u32;
                         self.lea_label(
+                            ctx,
                             arch,
                             &Reg(0),
                             X64FastLabel::Func {
                                 r#fn: function_index,
                             },
                         )?;
-                        self.call(arch, &Reg(0))?;
+                        self.call(ctx, arch, &Reg(0))?;
                     }
                 }
                 Instruction::Return => {
                     // flush regalloc then perform return sequence similar to naive
                     {
                         let flush = state.regalloc.as_mut().unwrap().flush();
-                        emit_cmds(self, arch, flush, &mut state.stack_manager)?;
+                        emit_cmds(self, ctx, arch, flush, &mut state.stack_manager)?;
                     }
-                    self.mov(arch, &Reg(1), &Reg(4))?;
-                    self.mov(arch, &Reg(0), &Reg::CTX)?;
+                    self.mov(ctx, arch, &Reg(1), &Reg(4))?;
+                    self.mov(ctx, arch, &Reg(0), &Reg::CTX)?;
                     let mut tmp = Reg(0);
                     self.lea(
+                        ctx,
                         arch,
                         &tmp,
                         &asm_x86::out::arg::MemArgKind::Mem {
@@ -654,18 +685,18 @@ pub mod fast {
                             reg_class: asm_x86::RegisterClass::Gpr,
                         },
                     )?;
-                    self.mov(arch, &Reg(4), &tmp)?;
-                    self.pop(arch, &Reg(0))?;
-                    self.xchg(arch, &Reg(0), &Reg::CTX)?;
-                    self.pop(arch, &Reg(0))?;
-                    self.xchg(arch, &Reg(0), &Reg::CTX)?;
-                    self.pop(arch, &Reg(0))?;
+                    self.mov(ctx, arch, &Reg(4), &tmp)?;
+                    self.pop(ctx, arch, &Reg(0))?;
+                    self.xchg(ctx, arch, &Reg(0), &Reg::CTX)?;
+                    self.pop(ctx, arch, &Reg(0))?;
+                    self.xchg(ctx, arch, &Reg(0), &Reg::CTX)?;
+                    self.pop(ctx, arch, &Reg(0))?;
                     for a in 0..state.num_returns {
-                        self.mov(arch, &Reg(2), &Reg(1))?;
-                        self.push(arch, &Reg(2))?;
+                        self.mov(ctx, arch, &Reg(2), &Reg(1))?;
+                        self.push(ctx, arch, &Reg(2))?;
                     }
-                    self.push(arch, &Reg(0))?;
-                    self.ret(arch)?;
+                    self.push(ctx, arch, &Reg(0))?;
+                    self.ret(ctx, arch)?;
                 }
                 _ => {}
             }
@@ -673,5 +704,5 @@ pub mod fast {
         }
     }
 
-    impl<T: asm_x86::out::Writer<X64FastLabel> + ?Sized> WriterExt for T {}
+    impl<T: asm_x86::out::Writer<X64FastLabel, Context> + ?Sized, Context> WriterExt<Context> for T {}
 }
