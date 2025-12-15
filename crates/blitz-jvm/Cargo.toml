@@ -1,0 +1,11 @@
+[package]
+name = "portal-solutions-blitz-jvm"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+
+[dependencies]
+portal-solutions-blitz-common.workspace = true
+portal-solutions-blitz-opt = { version = "0.1.0", path = "../blitz-opt" }
+spin = "0.10.0"

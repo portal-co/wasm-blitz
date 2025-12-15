@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/blitz-aarch64","crates/blitz-common", "crates/blitz-i4", "crates/blitz-js", "crates/blitz-opt", "crates/blitz-ppc64", "crates/blitz-reencode", "crates/blitz-riscv64", "crates/blitz-x86-64", "crates/blitz-x86-64-fast"]
+members = ["crates/blitz-aarch64","crates/blitz-common", "crates/blitz-i4", "crates/blitz-js", "crates/blitz-jvm", "crates/blitz-opt", "crates/blitz-ppc64", "crates/blitz-reencode", "crates/blitz-riscv64", "crates/blitz-x86-64", "crates/blitz-x86-64-fast"]
 resolver = "3"
 
 [workspace.package]

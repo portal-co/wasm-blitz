@@ -201,6 +201,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "portal-solutions-blitz-jvm"
+version = "0.1.0"
+dependencies = [
+ "portal-solutions-blitz-common",
+ "portal-solutions-blitz-opt",
+ "spin",
+]
+
+[[package]]
 name = "portal-solutions-blitz-opt"
 version = "0.1.0"
 dependencies = [
