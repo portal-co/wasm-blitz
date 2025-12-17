@@ -199,16 +199,9 @@ pub mod fast {
                     },
                 )?;
                 state.body = target;
-                self.set_label(
-                    ctx,
-                    arch,
-                    X64FastLabel::Indexed {
-                        idx: *state.body_labels.entry(state.body).or_insert_with(|| {
-                            state.label_index += 1;
-                            return state.label_index - 1;
-                        }),
-                    },
-                )?;
+               if let Some(idx) = state.body_labels.remove(&state.body) {
+                self.set_label(ctx, arch, X64FastLabel::Indexed { idx })?;
+            }
             }
             // Ensure regalloc is initialized per function
             if state.regalloc.is_none() {

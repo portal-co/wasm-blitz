@@ -135,16 +135,9 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 },
             )?;
             state.body = target;
-            self.set_label(
-                ctx,
-                arch,
-                X64Label::Indexed {
-                    idx: *state.body_labels.entry(state.body).or_insert_with(|| {
-                        state.label_index += 1;
-                        return state.label_index - 1;
-                    }),
-                },
-            )?;
+            if let Some(idx) = state.body_labels.remove(&state.body) {
+                self.set_label(ctx, arch, X64Label::Indexed { idx })?;
+            }
         }
         //Stack Frame: r&Reg::CTX[&Reg(0)] => local variable frame
         match op {
@@ -247,16 +240,9 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 },
             )?;
             state.body = target;
-            self.set_label(
-                ctx,
-                arch,
-                X64Label::Indexed {
-                    idx: *state.body_labels.entry(state.body).or_insert_with(|| {
-                        state.label_index += 1;
-                        return state.label_index - 1;
-                    }),
-                },
-            )?;
+        if let Some(idx) = state.body_labels.remove(&state.body) {
+                self.set_label(ctx, arch, X64Label::Indexed { idx })?;
+            }
         }
         match op {
             Instruction::I32Const(value) => {

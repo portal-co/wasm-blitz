@@ -151,16 +151,9 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 },
             )?;
             state.body = target;
-            self.set_label(
-                ctx,
-                arch,
-                RiscvLabel::Indexed {
-                    idx: *state.body_labels.entry(state.body).or_insert_with(|| {
-                        state.label_index += 1;
-                        return state.label_index - 1;
-                    }),
-                },
-            )?;
+            if let Some(idx) = state.body_labels.remove(&state.body) {
+                self.set_label(ctx, arch, RiscvLabel::Indexed { idx })?;
+            }
         }
         use portal_solutions_blitz_common::wasm_encoder::Instruction;
         match op {
@@ -1333,16 +1326,9 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 },
             )?;
             state.body = target;
-            self.set_label(
-                ctx,
-                arch,
-                RiscvLabel::Indexed {
-                    idx: *state.body_labels.entry(state.body).or_insert_with(|| {
-                        state.label_index += 1;
-                        return state.label_index - 1;
-                    }),
-                },
-            )?;
+            if let Some(idx) = state.body_labels.remove(&state.body) {
+                self.set_label(ctx, arch, RiscvLabel::Indexed { idx })?;
+            }
         }
         match op {
             MachOperator::StartFn { id, data } => {
