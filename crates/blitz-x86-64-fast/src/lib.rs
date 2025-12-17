@@ -95,6 +95,8 @@ pub mod fast {
         pub if_stack: alloc::vec::Vec<Endable>,
         pub regalloc: Option<regalloc::RegAlloc<x86_regalloc::RegKind, 32, Frames>>,
         pub stack_manager: StackManager,
+        pub body: u32,
+        pub body_labels: alloc::collections::BTreeMap<u32, usize>,
     }
 
     enum Endable {
@@ -112,6 +114,8 @@ pub mod fast {
                 if_stack: alloc::vec::Vec::new(),
                 regalloc: None,
                 stack_manager: StackManager::new(),
+                body: 0,
+                body_labels: alloc::collections::BTreeMap::new(),
             }
         }
     }
@@ -177,11 +181,35 @@ pub mod fast {
             state: &mut State,
             func_imports: &[(&str, &str)],
             op: &portal_solutions_blitz_common::wasm_encoder::Instruction<'_>,
+            target: u32,
         ) -> Result<(), Self::Error>
         where
             Self: Sized,
             Self::Error: From<core::fmt::Error>,
         {
+            if target != state.body {
+                self.jmp_label(
+                    ctx,
+                    arch,
+                    X64FastLabel::Indexed {
+                        idx: *state.body_labels.entry(state.body).or_insert_with(|| {
+                            state.label_index += 1;
+                            return state.label_index - 1;
+                        }),
+                    },
+                )?;
+                state.body = target;
+                self.set_label(
+                    ctx,
+                    arch,
+                    X64FastLabel::Indexed {
+                        idx: *state.body_labels.entry(state.body).or_insert_with(|| {
+                            state.label_index += 1;
+                            return state.label_index - 1;
+                        }),
+                    },
+                )?;
+            }
             // Ensure regalloc is initialized per function
             if state.regalloc.is_none() {
                 let r = x86_regalloc::init_regalloc::<32>(arch);

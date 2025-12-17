@@ -30,6 +30,8 @@ pub struct State {
     pub control_depth: usize,
     pub if_stack: Vec<Endable>,
     pub regalloc: Option<regalloc::RegAlloc<riscv_regalloc::RegKind, 32, Frames>>,
+    pub body: u32,
+    pub body_labels: alloc::collections::BTreeMap<u32, usize>,
 }
 
 pub struct Frames(pub [[regalloc::RegAllocFrame<riscv_regalloc::RegKind>; 32]; 2]);
@@ -79,7 +81,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
         // flush regalloc before branching
         if let Some(ralloc) = state.regalloc.as_mut() {
             let it = ralloc.flush();
-            emit_cmds(self,ctx, arch, it)?;
+            emit_cmds(self, ctx, arch, it)?;
         }
         let mut depth = relative_depth as usize;
         for entry in state.if_stack.iter().rev() {
@@ -121,7 +123,1188 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
         }
         Ok(())
     }
-
+    fn handle_op_<E>(
+        &mut self,
+        ctx: &mut Context,
+        arch: RiscV64Arch,
+        state: &mut State,
+        func_imports: &[(&str, &str)],
+        op: &portal_solutions_blitz_common::wasm_encoder::Instruction<'_>,
+        _rewriter: &mut (dyn Reencode<Error = E> + '_),
+        target: u32,
+    ) -> Result<(), Self::Error>
+    where
+        wasm_encoder::reencode::Error<E>: Into<Self::Error>,
+        Self::Error: From<core::fmt::Error>,
+        Self: Sized,
+    {
+        if target != state.body {
+            self.jal_label(
+                ctx,
+                arch,
+                &Reg(0),
+                RiscvLabel::Indexed {
+                    idx: *state.body_labels.entry(state.body).or_insert_with(|| {
+                        state.label_index += 1;
+                        return state.label_index - 1;
+                    }),
+                },
+            )?;
+            state.body = target;
+            self.set_label(
+                ctx,
+                arch,
+                RiscvLabel::Indexed {
+                    idx: *state.body_labels.entry(state.body).or_insert_with(|| {
+                        state.label_index += 1;
+                        return state.label_index - 1;
+                    }),
+                },
+            )?;
+        }
+        use portal_solutions_blitz_common::wasm_encoder::Instruction;
+        match op {
+            Instruction::I32Const(v) => {
+                // Use regalloc to push an int value
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                let (ridx, cmds) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push(riscv_regalloc::RegKind::Int)
+                    .map_err(|_| core::fmt::Error)?;
+                emit_cmds(self, ctx, arch, cmds)?;
+                let phys = Reg(ridx as u8);
+                self.li(ctx, arch, &phys, *v as u64)?;
+            }
+            Instruction::I64Const(v) => {
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                let (ridx, cmds) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push(riscv_regalloc::RegKind::Int)
+                    .map_err(|_| core::fmt::Error)?;
+                emit_cmds(self, ctx, arch, cmds)?;
+                let phys = Reg(ridx as u8);
+                self.li(ctx, arch, &phys, *v as u64)?;
+            }
+            Instruction::LocalGet(local_index) => {
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                let cmds = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push_local(riscv_regalloc::RegKind::Int, *local_index)
+                    .map_err(|_| core::fmt::Error)?;
+                emit_cmds(self, ctx, arch, cmds)?;
+            }
+            Instruction::LocalSet(local_index) => {
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                let (tt, cmds) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds)?;
+                let it = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop_local(riscv_regalloc::RegKind::Int, *local_index);
+                emit_cmds(self, ctx, arch, it)?;
+            }
+            Instruction::LocalTee(local_index) => {
+                let fp = Reg(8);
+                let tmp = Reg(10);
+                let spmem = MemArgKind::Mem {
+                    base: ArgKind::Reg {
+                        reg: Reg(2),
+                        size: MemorySize::_64,
+                    },
+                    offset: None,
+                    disp: 0,
+                    size: MemorySize::_64,
+                    reg_class: RegisterClass::Gpr,
+                };
+                self.ld(ctx, arch, &tmp, &spmem)?;
+                let disp = -((*local_index as i32 + 1) * 8);
+                let mem = MemArgKind::Mem {
+                    base: ArgKind::Reg {
+                        reg: fp,
+                        size: MemorySize::_64,
+                    },
+                    offset: None,
+                    disp,
+                    size: MemorySize::_64,
+                    reg_class: RegisterClass::Gpr,
+                };
+                self.sd(ctx, arch, &tmp, &mem)?;
+                // push tmp back
+                let sp = Reg(2);
+                self.addi(ctx, arch, &sp, &sp, -8)?;
+                let spmem2 = MemArgKind::Mem {
+                    base: ArgKind::Reg {
+                        reg: Reg(2),
+                        size: MemorySize::_64,
+                    },
+                    offset: None,
+                    disp: 0,
+                    size: MemorySize::_64,
+                    reg_class: RegisterClass::Gpr,
+                };
+                self.sd(ctx, arch, &tmp, &spmem2)?;
+            }
+            Instruction::I64Load(memarg) => {
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                // pop address
+                let (addr_t, cmds1) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds1)?;
+                // allocate dest reg for loaded value
+                let (didx, cmds2) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push(riscv_regalloc::RegKind::Int)
+                    .map_err(|_| core::fmt::Error)?;
+                emit_cmds(self, ctx, arch, cmds2)?;
+                let addr = Reg(addr_t.reg);
+                let dest = Reg(didx as u8);
+                let mem = MemArgKind::Mem {
+                    base: ArgKind::Reg {
+                        reg: addr,
+                        size: MemorySize::_64,
+                    },
+                    offset: None,
+                    disp: memarg.offset as i32,
+                    size: MemorySize::_64,
+                    reg_class: RegisterClass::Gpr,
+                };
+                self.ld(ctx, arch, &dest, &mem)?;
+                // push the dest register as the value
+                let mut it = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push_existing(regalloc::Target {
+                        reg: didx as u8,
+                        kind: riscv_regalloc::RegKind::Int,
+                    });
+                emit_cmds(self, ctx, arch, it)?;
+            }
+            Instruction::I64Store(memarg) => {
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                // pop value then pop address
+                let (val_t, cmds1) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds1)?;
+                let (addr_t, cmds2) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds2)?;
+                let val = Reg(val_t.reg);
+                let addr = Reg(addr_t.reg);
+                let mem = MemArgKind::Mem {
+                    base: ArgKind::Reg {
+                        reg: addr,
+                        size: MemorySize::_64,
+                    },
+                    offset: None,
+                    disp: memarg.offset as i32,
+                    size: MemorySize::_64,
+                    reg_class: RegisterClass::Gpr,
+                };
+                self.sd(ctx, arch, &val, &mem)?;
+            }
+            Instruction::I64Add => {
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                // pop t1 (b)
+                let (t1, cmds1) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds1)?;
+                // pop t2 (a)
+                let (t2, cmds2) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds2)?;
+                let r1 = Reg(t1.reg);
+                let r2 = Reg(t2.reg);
+                // perform add into r2 (a = a + b)
+                self.add(ctx, arch, &r2, &r2, &r1)?;
+                // push existing r2 as result
+                let mut it = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push_existing(regalloc::Target {
+                        reg: t2.reg,
+                        kind: t2.kind,
+                    });
+                emit_cmds(self, ctx, arch, it)?;
+            }
+            Instruction::I64Sub => {
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                // pop b then a
+                let (t1, cmds1) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds1)?;
+                let (t2, cmds2) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds2)?;
+                let r1 = Reg(t1.reg);
+                let r2 = Reg(t2.reg);
+                self.sub(ctx, arch, &r2, &r2, &r1)?;
+                let it = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push_existing(regalloc::Target {
+                        reg: t2.reg,
+                        kind: t2.kind,
+                    });
+                emit_cmds(self, ctx, arch, it)?;
+            }
+            Instruction::I64Mul => {
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                let (t1, cmds1) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds1)?;
+                let (t2, cmds2) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds2)?;
+                let r1 = Reg(t1.reg);
+                let r2 = Reg(t2.reg);
+                self.mul(ctx, arch, &r2, &r2, &r1)?;
+                let it = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push_existing(regalloc::Target {
+                        reg: t2.reg,
+                        kind: t2.kind,
+                    });
+                emit_cmds(self, ctx, arch, it)?;
+            }
+            Instruction::I64And => {
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                let (t1, cmds1) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds1)?;
+                let (t2, cmds2) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds2)?;
+                let r1 = Reg(t1.reg);
+                let r2 = Reg(t2.reg);
+                self.and(ctx, arch, &r2, &r2, &r1)?;
+                let it = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push_existing(regalloc::Target {
+                        reg: t2.reg,
+                        kind: t2.kind,
+                    });
+                emit_cmds(self, ctx, arch, it)?;
+            }
+            Instruction::I64Or => {
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                let (t1, cmds1) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds1)?;
+                let (t2, cmds2) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds2)?;
+                let r1 = Reg(t1.reg);
+                let r2 = Reg(t2.reg);
+                self.or(ctx, arch, &r2, &r2, &r1)?;
+                let it = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push_existing(regalloc::Target {
+                        reg: t2.reg,
+                        kind: t2.kind,
+                    });
+                emit_cmds(self, ctx, arch, it)?;
+            }
+            Instruction::I64Xor => {
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                let (t1, cmds1) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds1)?;
+                let (t2, cmds2) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds2)?;
+                let r1 = Reg(t1.reg);
+                let r2 = Reg(t2.reg);
+                self.xor(ctx, arch, &r2, &r2, &r1)?;
+                let it = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push_existing(regalloc::Target {
+                        reg: t2.reg,
+                        kind: t2.kind,
+                    });
+                emit_cmds(self, ctx, arch, it)?;
+            }
+            Instruction::I64Shl => {
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                // shift amount then source
+                let (tsh, cmds1) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds1)?;
+                let (tsrc, cmds2) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds2)?;
+                let rsh = Reg(tsh.reg);
+                let rsrc = Reg(tsrc.reg);
+                self.sll(ctx, arch, &rsrc, &rsrc, &rsh)?;
+                let it = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push_existing(regalloc::Target {
+                        reg: tsrc.reg,
+                        kind: tsrc.kind,
+                    });
+                emit_cmds(self, ctx, arch, it)?;
+            }
+            Instruction::I64ShrS => {
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                let (tsh, cmds1) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds1)?;
+                let (tsrc, cmds2) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds2)?;
+                let rsh = Reg(tsh.reg);
+                let rsrc = Reg(tsrc.reg);
+                self.sra(ctx, arch, &rsrc, &rsrc, &rsh)?;
+                let it = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push_existing(regalloc::Target {
+                        reg: tsrc.reg,
+                        kind: tsrc.kind,
+                    });
+                emit_cmds(self, ctx, arch, it)?;
+            }
+            Instruction::I64ShrU => {
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                let (tsh, cmds1) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds1)?;
+                let (tsrc, cmds2) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds2)?;
+                let rsh = Reg(tsh.reg);
+                let rsrc = Reg(tsrc.reg);
+                self.srl(ctx, arch, &rsrc, &rsrc, &rsh)?;
+                let it = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push_existing(regalloc::Target {
+                        reg: tsrc.reg,
+                        kind: tsrc.kind,
+                    });
+                emit_cmds(self, ctx, arch, it)?;
+            }
+            Instruction::I64Eq => {
+                // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a==b)
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                // pop b then a
+                let (tb, cb) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cb)?;
+                let (ta, ca) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, ca)?;
+                // allocate dest
+                let (didx, cd) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push(riscv_regalloc::RegKind::Int)
+                    .map_err(|_| core::fmt::Error)?;
+                emit_cmds(self, ctx, arch, cd)?;
+                let ra = Reg(ta.reg);
+                let rb = Reg(tb.reg);
+                let dest = Reg(didx as u8);
+                let i = state.label_index;
+                state.label_index += 2;
+                let lbl_true = RiscvLabel::Indexed { idx: i };
+                let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
+                self.bcond_label(ctx, arch, ConditionCode::EQ, &ra, &rb, lbl_true)?;
+                // false: dest = 0
+                self.li(ctx, arch, &dest, 0)?;
+                self.jal_label(
+                    ctx,
+                    arch,
+                    &portal_solutions_blitz_common::asm::Reg(0),
+                    lbl_end,
+                )?;
+                self.set_label(ctx, arch, lbl_true)?;
+                self.li(ctx, arch, &dest, 1)?;
+                self.set_label(ctx, arch, lbl_end)?;
+            }
+            Instruction::I64Ne => {
+                // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a!=b)
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                // pop b then a
+                let (tb, cb) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cb)?;
+                let (ta, ca) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, ca)?;
+                // allocate dest
+                let (didx, cd) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push(riscv_regalloc::RegKind::Int)
+                    .map_err(|_| core::fmt::Error)?;
+                emit_cmds(self, ctx, arch, cd)?;
+                let ra = Reg(ta.reg);
+                let rb = Reg(tb.reg);
+                let dest = Reg(didx as u8);
+                let i = state.label_index;
+                state.label_index += 2;
+                let lbl_true = RiscvLabel::Indexed { idx: i };
+                let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
+                self.bcond_label(ctx, arch, ConditionCode::NE, &ra, &rb, lbl_true)?;
+                // false: dest = 0
+                self.li(ctx, arch, &dest, 0)?;
+                self.jal_label(
+                    ctx,
+                    arch,
+                    &portal_solutions_blitz_common::asm::Reg(0),
+                    lbl_end,
+                )?;
+                self.set_label(ctx, arch, lbl_true)?;
+                self.li(ctx, arch, &dest, 1)?;
+                self.set_label(ctx, arch, lbl_end)?;
+            }
+            Instruction::I64LtS => {
+                // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a<b) signed
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                let (tb, cb) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cb)?;
+                let (ta, ca) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, ca)?;
+                let (didx, cd) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push(riscv_regalloc::RegKind::Int)
+                    .map_err(|_| core::fmt::Error)?;
+                emit_cmds(self, ctx, arch, cd)?;
+                let ra = Reg(ta.reg);
+                let rb = Reg(tb.reg);
+                let dest = Reg(didx as u8);
+                let i = state.label_index;
+                state.label_index += 2;
+                let lbl_true = RiscvLabel::Indexed { idx: i };
+                let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
+                self.bcond_label(ctx, arch, ConditionCode::LT, &ra, &rb, lbl_true)?;
+                self.li(ctx, arch, &dest, 0)?;
+                self.jal_label(
+                    ctx,
+                    arch,
+                    &portal_solutions_blitz_common::asm::Reg(0),
+                    lbl_end,
+                )?;
+                self.set_label(ctx, arch, lbl_true)?;
+                self.li(ctx, arch, &dest, 1)?;
+                self.set_label(ctx, arch, lbl_end)?;
+            }
+            Instruction::I64LtU => {
+                // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a<b) unsigned
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                let (tb, cb) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cb)?;
+                let (ta, ca) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, ca)?;
+                let (didx, cd) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push(riscv_regalloc::RegKind::Int)
+                    .map_err(|_| core::fmt::Error)?;
+                emit_cmds(self, ctx, arch, cd)?;
+                let ra = Reg(ta.reg);
+                let rb = Reg(tb.reg);
+                let dest = Reg(didx as u8);
+                let i = state.label_index;
+                state.label_index += 2;
+                let lbl_true = RiscvLabel::Indexed { idx: i };
+                let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
+                self.bcond_label(ctx, arch, ConditionCode::LTU, &ra, &rb, lbl_true)?;
+                self.li(ctx, arch, &dest, 0)?;
+                self.jal_label(
+                    ctx,
+                    arch,
+                    &portal_solutions_blitz_common::asm::Reg(0),
+                    lbl_end,
+                )?;
+                self.set_label(ctx, arch, lbl_true)?;
+                self.li(ctx, arch, &dest, 1)?;
+                self.set_label(ctx, arch, lbl_end)?;
+            }
+            Instruction::I64GtS => {
+                // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a>b) signed
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                let (tb, cb) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cb)?;
+                let (ta, ca) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, ca)?;
+                let (didx, cd) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push(riscv_regalloc::RegKind::Int)
+                    .map_err(|_| core::fmt::Error)?;
+                emit_cmds(self, ctx, arch, cd)?;
+                let ra = Reg(ta.reg);
+                let rb = Reg(tb.reg);
+                let dest = Reg(didx as u8);
+                let i = state.label_index;
+                state.label_index += 2;
+                let lbl_true = RiscvLabel::Indexed { idx: i };
+                let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
+                // a > b  <=> b < a
+                self.bcond_label(ctx, arch, ConditionCode::LT, &rb, &ra, lbl_true)?;
+                self.li(ctx, arch, &dest, 0)?;
+                self.jal_label(
+                    ctx,
+                    arch,
+                    &portal_solutions_blitz_common::asm::Reg(0),
+                    lbl_end,
+                )?;
+                self.set_label(ctx, arch, lbl_true)?;
+                self.li(ctx, arch, &dest, 1)?;
+                self.set_label(ctx, arch, lbl_end)?;
+            }
+            Instruction::I64GtU => {
+                // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a>b) unsigned
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                let (tb, cb) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cb)?;
+                let (ta, ca) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, ca)?;
+                let (didx, cd) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push(riscv_regalloc::RegKind::Int)
+                    .map_err(|_| core::fmt::Error)?;
+                emit_cmds(self, ctx, arch, cd)?;
+                let ra = Reg(ta.reg);
+                let rb = Reg(tb.reg);
+                let dest = Reg(didx as u8);
+                let i = state.label_index;
+                state.label_index += 2;
+                let lbl_true = RiscvLabel::Indexed { idx: i };
+                let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
+                // a > b <=> b < a
+                self.bcond_label(ctx, arch, ConditionCode::LTU, &rb, &ra, lbl_true)?;
+                self.li(ctx, arch, &dest, 0)?;
+                self.jal_label(
+                    ctx,
+                    arch,
+                    &portal_solutions_blitz_common::asm::Reg(0),
+                    lbl_end,
+                )?;
+                self.set_label(ctx, arch, lbl_true)?;
+                self.li(ctx, arch, &dest, 1)?;
+                self.set_label(ctx, arch, lbl_end)?;
+            }
+            Instruction::I64LeS => {
+                // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a<=b) signed
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                let (tb, cb) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cb)?;
+                let (ta, ca) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, ca)?;
+                let (didx, cd) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push(riscv_regalloc::RegKind::Int)
+                    .map_err(|_| core::fmt::Error)?;
+                emit_cmds(self, ctx, arch, cd)?;
+                let ra = Reg(ta.reg);
+                let rb = Reg(tb.reg);
+                let dest = Reg(didx as u8);
+                let i = state.label_index;
+                state.label_index += 2;
+                let lbl_true = RiscvLabel::Indexed { idx: i };
+                let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
+                // a <= b <=> !(a > b)  => branch if GT then true
+                self.bcond_label(ctx, arch, ConditionCode::GT, &ra, &rb, lbl_true)?;
+                self.li(ctx, arch, &dest, 0)?;
+                self.jal_label(
+                    ctx,
+                    arch,
+                    &portal_solutions_blitz_common::asm::Reg(0),
+                    lbl_end,
+                )?;
+                self.set_label(ctx, arch, lbl_true)?;
+                self.li(ctx, arch, &dest, 1)?;
+                self.set_label(ctx, arch, lbl_end)?;
+            }
+            Instruction::I64LeU => {
+                // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a<=b) unsigned
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    let new = regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    };
+                    state.regalloc = Some(new);
+                }
+                let (tb, cb) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cb)?;
+                let (ta, ca) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, ca)?;
+                let (didx, cd) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push(riscv_regalloc::RegKind::Int)
+                    .map_err(|_| core::fmt::Error)?;
+                emit_cmds(self, ctx, arch, cd)?;
+                let ra = Reg(ta.reg);
+                let rb = Reg(tb.reg);
+                let dest = Reg(didx as u8);
+                let i = state.label_index;
+                state.label_index += 2;
+                let lbl_true = RiscvLabel::Indexed { idx: i };
+                let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
+                // a <= b <=> !(a > b unsigned)
+                self.bcond_label(ctx, arch, ConditionCode::GTU, &ra, &rb, lbl_true)?;
+                self.li(ctx, arch, &dest, 0)?;
+                self.jal_label(
+                    ctx,
+                    arch,
+                    &portal_solutions_blitz_common::asm::Reg(0),
+                    lbl_end,
+                )?;
+                self.set_label(ctx, arch, lbl_true)?;
+                self.li(ctx, arch, &dest, 1)?;
+                self.set_label(ctx, arch, lbl_end)?;
+            }
+            Instruction::Br(relative_depth) => {
+                self.br(ctx, arch, state, *relative_depth)?;
+            }
+            Instruction::BrIf(relative_depth) => {
+                // flush regalloc before conditional branch
+                if let Some(ralloc) = state.regalloc.as_mut() {
+                    let it = ralloc.flush();
+                    emit_cmds(self, ctx, arch, it)?;
+                }
+                let i = state.label_index;
+                state.label_index += 1;
+                let skip = RiscvLabel::Indexed { idx: i };
+                let tmp = Reg(10);
+                let spmem = MemArgKind::Mem {
+                    base: ArgKind::Reg {
+                        reg: Reg(2),
+                        size: MemorySize::_64,
+                    },
+                    offset: None,
+                    disp: 0,
+                    size: MemorySize::_64,
+                    reg_class: RegisterClass::Gpr,
+                };
+                self.ld(ctx, arch, &tmp, &spmem)?;
+                self.addi(ctx, arch, &Reg(2), &Reg(2), 8)?;
+                self.bcond_label(
+                    ctx,
+                    arch,
+                    ConditionCode::EQ,
+                    &tmp,
+                    &portal_solutions_blitz_common::asm::Reg(0),
+                    skip,
+                )?;
+                self.br(ctx, arch, state, *relative_depth)?;
+                self.set_label(ctx, arch, skip)?;
+            }
+            Instruction::BrTable(targets, default) => {
+                // flush regalloc before br_table
+                if let Some(ralloc) = state.regalloc.as_mut() {
+                    let it = ralloc.flush();
+                    emit_cmds(self, ctx, arch, it)?;
+                }
+                let idx_reg = Reg(10);
+                let spmem = MemArgKind::Mem {
+                    base: ArgKind::Reg {
+                        reg: Reg(2),
+                        size: MemorySize::_64,
+                    },
+                    offset: None,
+                    disp: 0,
+                    size: MemorySize::_64,
+                    reg_class: RegisterClass::Gpr,
+                };
+                self.ld(ctx, arch, &idx_reg, &spmem)?;
+                self.addi(ctx, arch, &Reg(2), &Reg(2), 8)?;
+                // emit chain of comparisons
+                let mut case_labels = Vec::new();
+                for _ in targets.iter() {
+                    let i = state.label_index;
+                    state.label_index += 1;
+                    case_labels.push(RiscvLabel::Indexed { idx: i });
+                }
+                let default_label = RiscvLabel::Indexed {
+                    idx: state.label_index,
+                };
+                state.label_index += 1;
+                for (i, target) in targets.iter().enumerate() {
+                    let lit: u64 = i as u64;
+                    self.bcond_label(ctx, arch, ConditionCode::EQ, &idx_reg, &lit, case_labels[i])?;
+                }
+                // none matched -> branch to default
+                self.br(ctx, arch, state, *default)?;
+                // cases
+                for (i, target) in targets.iter().enumerate() {
+                    self.set_label(ctx, arch, case_labels[i])?;
+                    self.br(ctx, arch, state, *target)?;
+                }
+                self.set_label(ctx, arch, default_label)?;
+            }
+            Instruction::Block(_blockty) => {
+                let i = state.label_index;
+                state.label_index += 1;
+                state.if_stack.push(Endable::Block { idx: i });
+                self.set_label(ctx, arch, RiscvLabel::Indexed { idx: i })?;
+            }
+            Instruction::If(_blockty) => {
+                let i = state.label_index;
+                state.label_index += 3;
+                state.if_stack.push(Endable::If { idx: i });
+                let tmp = Reg(10);
+                let spmem = MemArgKind::Mem {
+                    base: ArgKind::Reg {
+                        reg: Reg(2),
+                        size: MemorySize::_64,
+                    },
+                    offset: None,
+                    disp: 0,
+                    size: MemorySize::_64,
+                    reg_class: RegisterClass::Gpr,
+                };
+                self.ld(ctx, arch, &tmp, &spmem)?;
+                self.addi(ctx, arch, &Reg(2), &Reg(2), 8)?;
+                let lbl_else = RiscvLabel::Indexed { idx: i + 1 };
+                self.bcond_label(
+                    ctx,
+                    arch,
+                    ConditionCode::EQ,
+                    &tmp,
+                    &portal_solutions_blitz_common::asm::Reg(0),
+                    lbl_else,
+                )?;
+                self.set_label(ctx, arch, RiscvLabel::Indexed { idx: i })?;
+            }
+            Instruction::Else => {
+                // flush regalloc on else boundary
+                if let Some(ralloc) = state.regalloc.as_mut() {
+                    let it = ralloc.flush();
+                    emit_cmds(self, ctx, arch, it)?;
+                }
+                let endable = state.if_stack.last().unwrap();
+                let idx = match endable {
+                    Endable::If { idx } => *idx,
+                    _ => panic!("Else without If"),
+                };
+                let lbl_end = RiscvLabel::Indexed { idx: idx + 2 };
+                self.jal_label(
+                    ctx,
+                    arch,
+                    &portal_solutions_blitz_common::asm::Reg(0),
+                    lbl_end,
+                )?;
+                self.set_label(ctx, arch, RiscvLabel::Indexed { idx: idx + 1 })?;
+            }
+            Instruction::Loop(_blockty) => {
+                let i = state.label_index;
+                state.label_index += 1;
+                state.if_stack.push(Endable::Loop { idx: i });
+                self.set_label(ctx, arch, RiscvLabel::Indexed { idx: i })?;
+            }
+            Instruction::End => {
+                // flush regalloc on end boundary
+                if let Some(ralloc) = state.regalloc.as_mut() {
+                    let it = ralloc.flush();
+                    emit_cmds(self, ctx, arch, it)?;
+                }
+                match state.if_stack.pop().unwrap() {
+                    Endable::Block { idx } => {
+                        self.set_label(ctx, arch, RiscvLabel::Indexed { idx })?;
+                    }
+                    Endable::Loop { idx } => {
+                        // no-op; loop already has label at start
+                        //  self.set_label(ctx,arch, RiscvLabel::Indexed { idx })?;
+                    }
+                    Endable::If { idx } => {
+                        self.set_label(ctx, arch, RiscvLabel::Indexed { idx: idx + 2 })?;
+                    }
+                }
+                // restore control stack space if reserved
+                let control_space = (state.control_depth as i32) * 16;
+                if control_space > 0 {
+                    self.addi(ctx, arch, &Reg(2), &Reg(2), control_space)?;
+                }
+                // pop sp marker
+                let spmem = MemArgKind::Mem {
+                    base: ArgKind::Reg {
+                        reg: Reg(2),
+                        size: MemorySize::_64,
+                    },
+                    offset: None,
+                    disp: 0,
+                    size: MemorySize::_64,
+                    reg_class: RegisterClass::Gpr,
+                };
+                let tmp = Reg(10);
+                self.ld(ctx, arch, &tmp, &spmem)?;
+                self.addi(ctx, arch, &Reg(2), &Reg(2), 8)?;
+            }
+            Instruction::Call(function_index) => {
+                // flush regalloc before call
+                if let Some(ralloc) = state.regalloc.as_mut() {
+                    let it = ralloc.flush();
+                    emit_cmds(self, ctx, arch, it)?;
+                }
+                match func_imports.get(*function_index as usize) {
+                    Some(("blitz", h)) if h.starts_with("hypercall") => {
+                        // not implemented: hypercall path
+                    }
+                    _ => {
+                        let function_index = *function_index - func_imports.len() as u32;
+                        self.jal_label(
+                            ctx,
+                            arch,
+                            &portal_solutions_blitz_common::asm::Reg(10),
+                            RiscvLabel::Func {
+                                r#fn: function_index,
+                            },
+                        )?;
+                        self.call(ctx, arch, &portal_solutions_blitz_common::asm::Reg(10))?;
+                    }
+                }
+            }
+            Instruction::Return => {
+                // flush regalloc before return
+                if let Some(ralloc) = state.regalloc.as_mut() {
+                    let it = ralloc.flush();
+                    emit_cmds(self, ctx, arch, it)?;
+                }
+                // function epilogue: restore sp from fp, restore saved fp, return
+                let sp = Reg(2);
+                let fp = Reg(8);
+                // set sp = fp
+                self.mv(ctx, arch, &sp, &fp)?;
+                let mem = MemArgKind::Mem {
+                    base: ArgKind::Reg {
+                        reg: sp,
+                        size: MemorySize::_64,
+                    },
+                    offset: None,
+                    disp: 0,
+                    size: MemorySize::_64,
+                    reg_class: RegisterClass::Gpr,
+                };
+                let saved_fp = Reg(10);
+                self.ld(ctx, arch, &saved_fp, &mem)?;
+                self.addi(ctx, arch, &sp, &sp, 8)?;
+                self.mv(ctx, arch, &fp, &saved_fp)?;
+                self.ret(ctx, arch)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
     fn handle_op<E>(
         &mut self,
         ctx: &mut Context,
@@ -130,12 +1313,37 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
         func_imports: &[(&str, &str)],
         op: &MachOperator<'_>,
         _rewriter: &mut (dyn Reencode<Error = E> + '_),
+        target: u32,
     ) -> Result<(), Self::Error>
     where
         wasm_encoder::reencode::Error<E>: Into<Self::Error>,
         Self::Error: From<core::fmt::Error>,
         Self: Sized,
     {
+        if target != state.body {
+            self.jal_label(
+                ctx,
+                arch,
+                &Reg(0),
+                RiscvLabel::Indexed {
+                    idx: *state.body_labels.entry(state.body).or_insert_with(|| {
+                        state.label_index += 1;
+                        return state.label_index - 1;
+                    }),
+                },
+            )?;
+            state.body = target;
+            self.set_label(
+                ctx,
+                arch,
+                RiscvLabel::Indexed {
+                    idx: *state.body_labels.entry(state.body).or_insert_with(|| {
+                        state.label_index += 1;
+                        return state.label_index - 1;
+                    }),
+                },
+            )?;
+        }
         match op {
             MachOperator::StartFn { id, data } => {
                 state.local_count = data.num_params;
@@ -188,7 +1396,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         .unwrap()
                         .push(riscv_regalloc::RegKind::Int)
                         .map_err(|_| core::fmt::Error)?;
-                    emit_cmds(self,ctx, arch, cmds)?;
+                    emit_cmds(self, ctx, arch, cmds)?;
                     // emit a simple li into the allocated phys reg
                     let phys = Reg(ridx as u8);
                     self.li(ctx, arch, &phys, 0u64)?;
@@ -244,1157 +1452,22 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 Ok(())
             }
             MachOperator::Instruction { op, .. } => {
-                use portal_solutions_blitz_common::wasm_encoder::Instruction;
-                match op {
-                    Instruction::I32Const(v) => {
-                        // Use regalloc to push an int value
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        let (ridx, cmds) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push(riscv_regalloc::RegKind::Int)
-                            .map_err(|_| core::fmt::Error)?;
-                        emit_cmds(self,ctx, arch, cmds)?;
-                        let phys = Reg(ridx as u8);
-                        self.li(ctx, arch, &phys, *v as u64)?;
-                    }
-                    Instruction::I64Const(v) => {
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        let (ridx, cmds) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push(riscv_regalloc::RegKind::Int)
-                            .map_err(|_| core::fmt::Error)?;
-                        emit_cmds(self,ctx, arch, cmds)?;
-                        let phys = Reg(ridx as u8);
-                        self.li(ctx, arch, &phys, *v as u64)?;
-                    }
-                    Instruction::LocalGet(local_index) => {
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        let cmds = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push_local(riscv_regalloc::RegKind::Int, *local_index)
-                            .map_err(|_| core::fmt::Error)?;
-                        emit_cmds(self,ctx, arch, cmds)?;
-                    }
-                    Instruction::LocalSet(local_index) => {
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        let (tt, cmds) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds)?;
-                        let it = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop_local(riscv_regalloc::RegKind::Int, *local_index);
-                        emit_cmds(self,ctx, arch, it)?;
-                    }
-                    Instruction::LocalTee(local_index) => {
-                        let fp = Reg(8);
-                        let tmp = Reg(10);
-                        let spmem = MemArgKind::Mem {
-                            base: ArgKind::Reg {
-                                reg: Reg(2),
-                                size: MemorySize::_64,
-                            },
-                            offset: None,
-                            disp: 0,
-                            size: MemorySize::_64,
-                            reg_class: RegisterClass::Gpr,
-                        };
-                        self.ld(ctx, arch, &tmp, &spmem)?;
-                        let disp = -((*local_index as i32 + 1) * 8);
-                        let mem = MemArgKind::Mem {
-                            base: ArgKind::Reg {
-                                reg: fp,
-                                size: MemorySize::_64,
-                            },
-                            offset: None,
-                            disp,
-                            size: MemorySize::_64,
-                            reg_class: RegisterClass::Gpr,
-                        };
-                        self.sd(ctx, arch, &tmp, &mem)?;
-                        // push tmp back
-                        let sp = Reg(2);
-                        self.addi(ctx, arch, &sp, &sp, -8)?;
-                        let spmem2 = MemArgKind::Mem {
-                            base: ArgKind::Reg {
-                                reg: Reg(2),
-                                size: MemorySize::_64,
-                            },
-                            offset: None,
-                            disp: 0,
-                            size: MemorySize::_64,
-                            reg_class: RegisterClass::Gpr,
-                        };
-                        self.sd(ctx, arch, &tmp, &spmem2)?;
-                    }
-                    Instruction::I64Load(memarg) => {
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        // pop address
-                        let (addr_t, cmds1) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds1)?;
-                        // allocate dest reg for loaded value
-                        let (didx, cmds2) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push(riscv_regalloc::RegKind::Int)
-                            .map_err(|_| core::fmt::Error)?;
-                        emit_cmds(self,ctx, arch, cmds2)?;
-                        let addr = Reg(addr_t.reg);
-                        let dest = Reg(didx as u8);
-                        let mem = MemArgKind::Mem {
-                            base: ArgKind::Reg {
-                                reg: addr,
-                                size: MemorySize::_64,
-                            },
-                            offset: None,
-                            disp: memarg.offset as i32,
-                            size: MemorySize::_64,
-                            reg_class: RegisterClass::Gpr,
-                        };
-                        self.ld(ctx, arch, &dest, &mem)?;
-                        // push the dest register as the value
-                        let mut it =
-                            state
-                                .regalloc
-                                .as_mut()
-                                .unwrap()
-                                .push_existing(regalloc::Target {
-                                    reg: didx as u8,
-                                    kind: riscv_regalloc::RegKind::Int,
-                                });
-                        emit_cmds(self,ctx, arch, it)?;
-                    }
-                    Instruction::I64Store(memarg) => {
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        // pop value then pop address
-                        let (val_t, cmds1) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds1)?;
-                        let (addr_t, cmds2) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds2)?;
-                        let val = Reg(val_t.reg);
-                        let addr = Reg(addr_t.reg);
-                        let mem = MemArgKind::Mem {
-                            base: ArgKind::Reg {
-                                reg: addr,
-                                size: MemorySize::_64,
-                            },
-                            offset: None,
-                            disp: memarg.offset as i32,
-                            size: MemorySize::_64,
-                            reg_class: RegisterClass::Gpr,
-                        };
-                        self.sd(ctx, arch, &val, &mem)?;
-                    }
-                    Instruction::I64Add => {
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        // pop t1 (b)
-                        let (t1, cmds1) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds1)?;
-                        // pop t2 (a)
-                        let (t2, cmds2) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds2)?;
-                        let r1 = Reg(t1.reg);
-                        let r2 = Reg(t2.reg);
-                        // perform add into r2 (a = a + b)
-                        self.add(ctx, arch, &r2, &r2, &r1)?;
-                        // push existing r2 as result
-                        let mut it =
-                            state
-                                .regalloc
-                                .as_mut()
-                                .unwrap()
-                                .push_existing(regalloc::Target {
-                                    reg: t2.reg,
-                                    kind: t2.kind,
-                                });
-                        emit_cmds(self,ctx, arch, it)?;
-                    }
-                    Instruction::I64Sub => {
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        // pop b then a
-                        let (t1, cmds1) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds1)?;
-                        let (t2, cmds2) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds2)?;
-                        let r1 = Reg(t1.reg);
-                        let r2 = Reg(t2.reg);
-                        self.sub(ctx, arch, &r2, &r2, &r1)?;
-                        let it = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push_existing(regalloc::Target {
-                                reg: t2.reg,
-                                kind: t2.kind,
-                            });
-                        emit_cmds(self,ctx, arch, it)?;
-                    }
-                    Instruction::I64Mul => {
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        let (t1, cmds1) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds1)?;
-                        let (t2, cmds2) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds2)?;
-                        let r1 = Reg(t1.reg);
-                        let r2 = Reg(t2.reg);
-                        self.mul(ctx, arch, &r2, &r2, &r1)?;
-                        let it = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push_existing(regalloc::Target {
-                                reg: t2.reg,
-                                kind: t2.kind,
-                            });
-                        emit_cmds(self,ctx, arch, it)?;
-                    }
-                    Instruction::I64And => {
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        let (t1, cmds1) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds1)?;
-                        let (t2, cmds2) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds2)?;
-                        let r1 = Reg(t1.reg);
-                        let r2 = Reg(t2.reg);
-                        self.and(ctx, arch, &r2, &r2, &r1)?;
-                        let it = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push_existing(regalloc::Target {
-                                reg: t2.reg,
-                                kind: t2.kind,
-                            });
-                        emit_cmds(self,ctx, arch, it)?;
-                    }
-                    Instruction::I64Or => {
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        let (t1, cmds1) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds1)?;
-                        let (t2, cmds2) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds2)?;
-                        let r1 = Reg(t1.reg);
-                        let r2 = Reg(t2.reg);
-                        self.or(ctx, arch, &r2, &r2, &r1)?;
-                        let it = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push_existing(regalloc::Target {
-                                reg: t2.reg,
-                                kind: t2.kind,
-                            });
-                        emit_cmds(self,ctx, arch, it)?;
-                    }
-                    Instruction::I64Xor => {
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        let (t1, cmds1) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds1)?;
-                        let (t2, cmds2) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds2)?;
-                        let r1 = Reg(t1.reg);
-                        let r2 = Reg(t2.reg);
-                        self.xor(ctx, arch, &r2, &r2, &r1)?;
-                        let it = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push_existing(regalloc::Target {
-                                reg: t2.reg,
-                                kind: t2.kind,
-                            });
-                        emit_cmds(self,ctx, arch, it)?;
-                    }
-                    Instruction::I64Shl => {
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        // shift amount then source
-                        let (tsh, cmds1) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds1)?;
-                        let (tsrc, cmds2) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds2)?;
-                        let rsh = Reg(tsh.reg);
-                        let rsrc = Reg(tsrc.reg);
-                        self.sll(ctx, arch, &rsrc, &rsrc, &rsh)?;
-                        let it = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push_existing(regalloc::Target {
-                                reg: tsrc.reg,
-                                kind: tsrc.kind,
-                            });
-                        emit_cmds(self,ctx, arch, it)?;
-                    }
-                    Instruction::I64ShrS => {
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        let (tsh, cmds1) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds1)?;
-                        let (tsrc, cmds2) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds2)?;
-                        let rsh = Reg(tsh.reg);
-                        let rsrc = Reg(tsrc.reg);
-                        self.sra(ctx, arch, &rsrc, &rsrc, &rsh)?;
-                        let it = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push_existing(regalloc::Target {
-                                reg: tsrc.reg,
-                                kind: tsrc.kind,
-                            });
-                        emit_cmds(self,ctx, arch, it)?;
-                    }
-                    Instruction::I64ShrU => {
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        let (tsh, cmds1) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds1)?;
-                        let (tsrc, cmds2) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cmds2)?;
-                        let rsh = Reg(tsh.reg);
-                        let rsrc = Reg(tsrc.reg);
-                        self.srl(ctx, arch, &rsrc, &rsrc, &rsh)?;
-                        let it = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push_existing(regalloc::Target {
-                                reg: tsrc.reg,
-                                kind: tsrc.kind,
-                            });
-                        emit_cmds(self,ctx, arch, it)?;
-                    }
-                    Instruction::I64Eq => {
-                        // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a==b)
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        // pop b then a
-                        let (tb, cb) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cb)?;
-                        let (ta, ca) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, ca)?;
-                        // allocate dest
-                        let (didx, cd) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push(riscv_regalloc::RegKind::Int)
-                            .map_err(|_| core::fmt::Error)?;
-                        emit_cmds(self,ctx, arch, cd)?;
-                        let ra = Reg(ta.reg);
-                        let rb = Reg(tb.reg);
-                        let dest = Reg(didx as u8);
-                        let i = state.label_index;
-                        state.label_index += 2;
-                        let lbl_true = RiscvLabel::Indexed { idx: i };
-                        let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                        self.bcond_label(ctx, arch, ConditionCode::EQ, &ra, &rb, lbl_true)?;
-                        // false: dest = 0
-                        self.li(ctx, arch, &dest, 0)?;
-                        self.jal_label(
-                            ctx,
-                            arch,
-                            &portal_solutions_blitz_common::asm::Reg(0),
-                            lbl_end,
-                        )?;
-                        self.set_label(ctx, arch, lbl_true)?;
-                        self.li(ctx, arch, &dest, 1)?;
-                        self.set_label(ctx, arch, lbl_end)?;
-                    }
-                    Instruction::I64Ne => {
-                        // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a!=b)
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        // pop b then a
-                        let (tb, cb) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cb)?;
-                        let (ta, ca) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, ca)?;
-                        // allocate dest
-                        let (didx, cd) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push(riscv_regalloc::RegKind::Int)
-                            .map_err(|_| core::fmt::Error)?;
-                        emit_cmds(self,ctx, arch, cd)?;
-                        let ra = Reg(ta.reg);
-                        let rb = Reg(tb.reg);
-                        let dest = Reg(didx as u8);
-                        let i = state.label_index;
-                        state.label_index += 2;
-                        let lbl_true = RiscvLabel::Indexed { idx: i };
-                        let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                        self.bcond_label(ctx, arch, ConditionCode::NE, &ra, &rb, lbl_true)?;
-                        // false: dest = 0
-                        self.li(ctx, arch, &dest, 0)?;
-                        self.jal_label(
-                            ctx,
-                            arch,
-                            &portal_solutions_blitz_common::asm::Reg(0),
-                            lbl_end,
-                        )?;
-                        self.set_label(ctx, arch, lbl_true)?;
-                        self.li(ctx, arch, &dest, 1)?;
-                        self.set_label(ctx, arch, lbl_end)?;
-                    }
-                    Instruction::I64LtS => {
-                        // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a<b) signed
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        let (tb, cb) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cb)?;
-                        let (ta, ca) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, ca)?;
-                        let (didx, cd) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push(riscv_regalloc::RegKind::Int)
-                            .map_err(|_| core::fmt::Error)?;
-                        emit_cmds(self,ctx, arch, cd)?;
-                        let ra = Reg(ta.reg);
-                        let rb = Reg(tb.reg);
-                        let dest = Reg(didx as u8);
-                        let i = state.label_index;
-                        state.label_index += 2;
-                        let lbl_true = RiscvLabel::Indexed { idx: i };
-                        let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                        self.bcond_label(ctx, arch, ConditionCode::LT, &ra, &rb, lbl_true)?;
-                        self.li(ctx, arch, &dest, 0)?;
-                        self.jal_label(
-                            ctx,
-                            arch,
-                            &portal_solutions_blitz_common::asm::Reg(0),
-                            lbl_end,
-                        )?;
-                        self.set_label(ctx, arch, lbl_true)?;
-                        self.li(ctx, arch, &dest, 1)?;
-                        self.set_label(ctx, arch, lbl_end)?;
-                    }
-                    Instruction::I64LtU => {
-                        // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a<b) unsigned
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        let (tb, cb) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cb)?;
-                        let (ta, ca) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, ca)?;
-                        let (didx, cd) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push(riscv_regalloc::RegKind::Int)
-                            .map_err(|_| core::fmt::Error)?;
-                        emit_cmds(self,ctx, arch, cd)?;
-                        let ra = Reg(ta.reg);
-                        let rb = Reg(tb.reg);
-                        let dest = Reg(didx as u8);
-                        let i = state.label_index;
-                        state.label_index += 2;
-                        let lbl_true = RiscvLabel::Indexed { idx: i };
-                        let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                        self.bcond_label(ctx, arch, ConditionCode::LTU, &ra, &rb, lbl_true)?;
-                        self.li(ctx, arch, &dest, 0)?;
-                        self.jal_label(
-                            ctx,
-                            arch,
-                            &portal_solutions_blitz_common::asm::Reg(0),
-                            lbl_end,
-                        )?;
-                        self.set_label(ctx, arch, lbl_true)?;
-                        self.li(ctx, arch, &dest, 1)?;
-                        self.set_label(ctx, arch, lbl_end)?;
-                    }
-                    Instruction::I64GtS => {
-                        // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a>b) signed
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        let (tb, cb) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cb)?;
-                        let (ta, ca) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, ca)?;
-                        let (didx, cd) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push(riscv_regalloc::RegKind::Int)
-                            .map_err(|_| core::fmt::Error)?;
-                        emit_cmds(self,ctx, arch, cd)?;
-                        let ra = Reg(ta.reg);
-                        let rb = Reg(tb.reg);
-                        let dest = Reg(didx as u8);
-                        let i = state.label_index;
-                        state.label_index += 2;
-                        let lbl_true = RiscvLabel::Indexed { idx: i };
-                        let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                        // a > b  <=> b < a
-                        self.bcond_label(ctx, arch, ConditionCode::LT, &rb, &ra, lbl_true)?;
-                        self.li(ctx, arch, &dest, 0)?;
-                        self.jal_label(
-                            ctx,
-                            arch,
-                            &portal_solutions_blitz_common::asm::Reg(0),
-                            lbl_end,
-                        )?;
-                        self.set_label(ctx, arch, lbl_true)?;
-                        self.li(ctx, arch, &dest, 1)?;
-                        self.set_label(ctx, arch, lbl_end)?;
-                    }
-                    Instruction::I64GtU => {
-                        // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a>b) unsigned
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        let (tb, cb) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cb)?;
-                        let (ta, ca) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, ca)?;
-                        let (didx, cd) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push(riscv_regalloc::RegKind::Int)
-                            .map_err(|_| core::fmt::Error)?;
-                        emit_cmds(self,ctx, arch, cd)?;
-                        let ra = Reg(ta.reg);
-                        let rb = Reg(tb.reg);
-                        let dest = Reg(didx as u8);
-                        let i = state.label_index;
-                        state.label_index += 2;
-                        let lbl_true = RiscvLabel::Indexed { idx: i };
-                        let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                        // a > b <=> b < a
-                        self.bcond_label(ctx, arch, ConditionCode::LTU, &rb, &ra, lbl_true)?;
-                        self.li(ctx, arch, &dest, 0)?;
-                        self.jal_label(
-                            ctx,
-                            arch,
-                            &portal_solutions_blitz_common::asm::Reg(0),
-                            lbl_end,
-                        )?;
-                        self.set_label(ctx, arch, lbl_true)?;
-                        self.li(ctx, arch, &dest, 1)?;
-                        self.set_label(ctx, arch, lbl_end)?;
-                    }
-                    Instruction::I64LeS => {
-                        // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a<=b) signed
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        let (tb, cb) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cb)?;
-                        let (ta, ca) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, ca)?;
-                        let (didx, cd) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push(riscv_regalloc::RegKind::Int)
-                            .map_err(|_| core::fmt::Error)?;
-                        emit_cmds(self,ctx, arch, cd)?;
-                        let ra = Reg(ta.reg);
-                        let rb = Reg(tb.reg);
-                        let dest = Reg(didx as u8);
-                        let i = state.label_index;
-                        state.label_index += 2;
-                        let lbl_true = RiscvLabel::Indexed { idx: i };
-                        let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                        // a <= b <=> !(a > b)  => branch if GT then true
-                        self.bcond_label(ctx, arch, ConditionCode::GT, &ra, &rb, lbl_true)?;
-                        self.li(ctx, arch, &dest, 0)?;
-                        self.jal_label(
-                            ctx,
-                            arch,
-                            &portal_solutions_blitz_common::asm::Reg(0),
-                            lbl_end,
-                        )?;
-                        self.set_label(ctx, arch, lbl_true)?;
-                        self.li(ctx, arch, &dest, 1)?;
-                        self.set_label(ctx, arch, lbl_end)?;
-                    }
-                    Instruction::I64LeU => {
-                        // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a<=b) unsigned
-                        if state.regalloc.is_none() {
-                            let r = riscv_regalloc::init_regalloc::<32>(arch);
-                            let new = regalloc::RegAlloc {
-                                frames: Frames(r.frames),
-                                tos: r.tos,
-                            };
-                            state.regalloc = Some(new);
-                        }
-                        let (tb, cb) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, cb)?;
-                        let (ta, ca) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .pop(riscv_regalloc::RegKind::Int);
-                        emit_cmds(self,ctx, arch, ca)?;
-                        let (didx, cd) = state
-                            .regalloc
-                            .as_mut()
-                            .unwrap()
-                            .push(riscv_regalloc::RegKind::Int)
-                            .map_err(|_| core::fmt::Error)?;
-                        emit_cmds(self,ctx, arch, cd)?;
-                        let ra = Reg(ta.reg);
-                        let rb = Reg(tb.reg);
-                        let dest = Reg(didx as u8);
-                        let i = state.label_index;
-                        state.label_index += 2;
-                        let lbl_true = RiscvLabel::Indexed { idx: i };
-                        let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                        // a <= b <=> !(a > b unsigned)
-                        self.bcond_label(ctx, arch, ConditionCode::GTU, &ra, &rb, lbl_true)?;
-                        self.li(ctx, arch, &dest, 0)?;
-                        self.jal_label(
-                            ctx,
-                            arch,
-                            &portal_solutions_blitz_common::asm::Reg(0),
-                            lbl_end,
-                        )?;
-                        self.set_label(ctx, arch, lbl_true)?;
-                        self.li(ctx, arch, &dest, 1)?;
-                        self.set_label(ctx, arch, lbl_end)?;
-                    }
-                    Instruction::Br(relative_depth) => {
-                        self.br(ctx, arch, state, *relative_depth)?;
-                    }
-                    Instruction::BrIf(relative_depth) => {
-                        // flush regalloc before conditional branch
-                        if let Some(ralloc) = state.regalloc.as_mut() {
-                            let it = ralloc.flush();
-                            emit_cmds(self,ctx, arch, it)?;
-                        }
-                        let i = state.label_index;
-                        state.label_index += 1;
-                        let skip = RiscvLabel::Indexed { idx: i };
-                        let tmp = Reg(10);
-                        let spmem = MemArgKind::Mem {
-                            base: ArgKind::Reg {
-                                reg: Reg(2),
-                                size: MemorySize::_64,
-                            },
-                            offset: None,
-                            disp: 0,
-                            size: MemorySize::_64,
-                            reg_class: RegisterClass::Gpr,
-                        };
-                        self.ld(ctx, arch, &tmp, &spmem)?;
-                        self.addi(ctx, arch, &Reg(2), &Reg(2), 8)?;
-                        self.bcond_label(
-                            ctx,
-                            arch,
-                            ConditionCode::EQ,
-                            &tmp,
-                            &portal_solutions_blitz_common::asm::Reg(0),
-                            skip,
-                        )?;
-                        self.br(ctx, arch, state, *relative_depth)?;
-                        self.set_label(ctx, arch, skip)?;
-                    }
-                    Instruction::BrTable(targets, default) => {
-                        // flush regalloc before br_table
-                        if let Some(ralloc) = state.regalloc.as_mut() {
-                            let it = ralloc.flush();
-                            emit_cmds(self,ctx, arch, it)?;
-                        }
-                        let idx_reg = Reg(10);
-                        let spmem = MemArgKind::Mem {
-                            base: ArgKind::Reg {
-                                reg: Reg(2),
-                                size: MemorySize::_64,
-                            },
-                            offset: None,
-                            disp: 0,
-                            size: MemorySize::_64,
-                            reg_class: RegisterClass::Gpr,
-                        };
-                        self.ld(ctx, arch, &idx_reg, &spmem)?;
-                        self.addi(ctx, arch, &Reg(2), &Reg(2), 8)?;
-                        // emit chain of comparisons
-                        let mut case_labels = Vec::new();
-                        for _ in targets.iter() {
-                            let i = state.label_index;
-                            state.label_index += 1;
-                            case_labels.push(RiscvLabel::Indexed { idx: i });
-                        }
-                        let default_label = RiscvLabel::Indexed {
-                            idx: state.label_index,
-                        };
-                        state.label_index += 1;
-                        for (i, target) in targets.iter().enumerate() {
-                            let lit: u64 = i as u64;
-                            self.bcond_label(
-                                ctx,
-                                arch,
-                                ConditionCode::EQ,
-                                &idx_reg,
-                                &lit,
-                                case_labels[i],
-                            )?;
-                        }
-                        // none matched -> branch to default
-                        self.br(ctx, arch, state, *default)?;
-                        // cases
-                        for (i, target) in targets.iter().enumerate() {
-                            self.set_label(ctx, arch, case_labels[i])?;
-                            self.br(ctx, arch, state, *target)?;
-                        }
-                        self.set_label(ctx, arch, default_label)?;
-                    }
-                    Instruction::Block(_blockty) => {
-                        let i = state.label_index;
-                        state.label_index += 1;
-                        state.if_stack.push(Endable::Block { idx: i });
-                        self.set_label(ctx, arch, RiscvLabel::Indexed { idx: i })?;
-                    }
-                    Instruction::If(_blockty) => {
-                        let i = state.label_index;
-                        state.label_index += 3;
-                        state.if_stack.push(Endable::If { idx: i });
-                        let tmp = Reg(10);
-                        let spmem = MemArgKind::Mem {
-                            base: ArgKind::Reg {
-                                reg: Reg(2),
-                                size: MemorySize::_64,
-                            },
-                            offset: None,
-                            disp: 0,
-                            size: MemorySize::_64,
-                            reg_class: RegisterClass::Gpr,
-                        };
-                        self.ld(ctx, arch, &tmp, &spmem)?;
-                        self.addi(ctx, arch, &Reg(2), &Reg(2), 8)?;
-                        let lbl_else = RiscvLabel::Indexed { idx: i + 1 };
-                        self.bcond_label(
-                            ctx,
-                            arch,
-                            ConditionCode::EQ,
-                            &tmp,
-                            &portal_solutions_blitz_common::asm::Reg(0),
-                            lbl_else,
-                        )?;
-                        self.set_label(ctx, arch, RiscvLabel::Indexed { idx: i })?;
-                    }
-                    Instruction::Else => {
-                        // flush regalloc on else boundary
-                        if let Some(ralloc) = state.regalloc.as_mut() {
-                            let it = ralloc.flush();
-                            emit_cmds(self,ctx, arch, it)?;
-                        }
-                        let endable = state.if_stack.last().unwrap();
-                        let idx = match endable {
-                            Endable::If { idx } => *idx,
-                            _ => panic!("Else without If"),
-                        };
-                        let lbl_end = RiscvLabel::Indexed { idx: idx + 2 };
-                        self.jal_label(
-                            ctx,
-                            arch,
-                            &portal_solutions_blitz_common::asm::Reg(0),
-                            lbl_end,
-                        )?;
-                        self.set_label(ctx, arch, RiscvLabel::Indexed { idx: idx + 1 })?;
-                    }
-                    Instruction::Loop(_blockty) => {
-                        let i = state.label_index;
-                        state.label_index += 1;
-                        state.if_stack.push(Endable::Loop { idx: i });
-                        self.set_label(ctx, arch, RiscvLabel::Indexed { idx: i })?;
-                    }
-                    Instruction::End => {
-                        // flush regalloc on end boundary
-                        if let Some(ralloc) = state.regalloc.as_mut() {
-                            let it = ralloc.flush();
-                            emit_cmds(self,ctx, arch, it)?;
-                        }
-                        match state.if_stack.pop().unwrap() {
-                            Endable::Block { idx } => {
-                                self.set_label(ctx, arch, RiscvLabel::Indexed { idx })?;
-                            }
-                            Endable::Loop { idx } => {
-                                // no-op; loop already has label at start
-                                //  self.set_label(ctx,arch, RiscvLabel::Indexed { idx })?;
-                            }
-                            Endable::If { idx } => {
-                                self.set_label(ctx, arch, RiscvLabel::Indexed { idx: idx + 2 })?;
-                            }
-                        }
-                        // restore control stack space if reserved
-                        let control_space = (state.control_depth as i32) * 16;
-                        if control_space > 0 {
-                            self.addi(ctx, arch, &Reg(2), &Reg(2), control_space)?;
-                        }
-                        // pop sp marker
-                        let spmem = MemArgKind::Mem {
-                            base: ArgKind::Reg {
-                                reg: Reg(2),
-                                size: MemorySize::_64,
-                            },
-                            offset: None,
-                            disp: 0,
-                            size: MemorySize::_64,
-                            reg_class: RegisterClass::Gpr,
-                        };
-                        let tmp = Reg(10);
-                        self.ld(ctx, arch, &tmp, &spmem)?;
-                        self.addi(ctx, arch, &Reg(2), &Reg(2), 8)?;
-                    }
-                    Instruction::Call(function_index) => {
-                        // flush regalloc before call
-                        if let Some(ralloc) = state.regalloc.as_mut() {
-                            let it = ralloc.flush();
-                            emit_cmds(self,ctx, arch, it)?;
-                        }
-                        match func_imports.get(*function_index as usize) {
-                            Some(("blitz", h)) if h.starts_with("hypercall") => {
-                                // not implemented: hypercall path
-                            }
-                            _ => {
-                                let function_index = *function_index - func_imports.len() as u32;
-                                self.jal_label(
-                                    ctx,
-                                    arch,
-                                    &portal_solutions_blitz_common::asm::Reg(10),
-                                    RiscvLabel::Func {
-                                        r#fn: function_index,
-                                    },
-                                )?;
-                                self.call(ctx, arch, &portal_solutions_blitz_common::asm::Reg(10))?;
-                            }
-                        }
-                    }
-                    Instruction::Return => {
-                        // flush regalloc before return
-                        if let Some(ralloc) = state.regalloc.as_mut() {
-                            let it = ralloc.flush();
-                            emit_cmds(self,ctx, arch, it)?;
-                        }
-                        // function epilogue: restore sp from fp, restore saved fp, return
-                        let sp = Reg(2);
-                        let fp = Reg(8);
-                        // set sp = fp
-                        self.mv(ctx, arch, &sp, &fp)?;
-                        let mem = MemArgKind::Mem {
-                            base: ArgKind::Reg {
-                                reg: sp,
-                                size: MemorySize::_64,
-                            },
-                            offset: None,
-                            disp: 0,
-                            size: MemorySize::_64,
-                            reg_class: RegisterClass::Gpr,
-                        };
-                        let saved_fp = Reg(10);
-                        self.ld(ctx, arch, &saved_fp, &mem)?;
-                        self.addi(ctx, arch, &sp, &sp, 8)?;
-                        self.mv(ctx, arch, &fp, &saved_fp)?;
-                        self.ret(ctx, arch)?;
-                    }
-                    _ => {}
+                self.handle_op_(ctx, arch, state, func_imports, op, _rewriter, target)
+            }
+            MachOperator::Operator { op, .. } => {
+                if let Some(op) = op {
+                    self.handle_op_(
+                        ctx,
+                        arch,
+                        state,
+                        func_imports,
+                        &_rewriter.instruction(op.clone()).map_err(|e| e.into())?,
+                        _rewriter,
+                        target,
+                    )
+                } else {
+                    Ok(())
                 }
-                Ok(())
             }
             _ => Ok(()),
         }
@@ -1450,7 +1523,7 @@ pub fn push<W: Writer<RiscvLabel, Context>, Context>(
         size: MemorySize::_64,
         reg_class: RegisterClass::Gpr,
     };
-    w.sd(ctx,arch, &r, &mem)
+    w.sd(ctx, arch, &r, &mem)
 }
 
 pub fn pop<W: Writer<RiscvLabel, Context>, Context>(
