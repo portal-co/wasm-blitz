@@ -74,3 +74,4 @@ impl<T: portal_solutions_blitz_common::Label<X64Label> + ?Sized> Label for T {}
 ///
 /// Contains the naive (straightforward) code generation strategy for x86-64.
 pub mod naive;
+pub mod fast;

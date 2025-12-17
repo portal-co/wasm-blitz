@@ -247,15 +247,6 @@ dependencies = [
 name = "portal-solutions-blitz-x86-64"
 version = "0.1.0"
 dependencies = [
- "portal-solutions-asm-x86-64",
- "portal-solutions-blitz-common",
- "typeid",
-]
-
-[[package]]
-name = "portal-solutions-blitz-x86-64-fast"
-version = "0.1.0"
-dependencies = [
  "portal-solutions-asm-regalloc",
  "portal-solutions-asm-x86-64",
  "portal-solutions-blitz-common",
