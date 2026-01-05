@@ -124,7 +124,7 @@ dependencies = [
 [[package]]
 name = "portal-pc-asm-common"
 version = "0.1.1"
-source = "git+https://github.com/portal-co/asm-common.git#1e8d56d424d807c1c3177ae5b674ec0dcbca021e"
+source = "git+https://github.com/portal-co/asm-common.git#e201b930a8811378402dc97f072f576c1fd42f3f"
 dependencies = [
  "array-init",
  "bitvec",
@@ -139,7 +139,7 @@ dependencies = [
 [[package]]
 name = "portal-solutions-asm-regalloc"
 version = "0.1.0"
-source = "git+https://github.com/portal-co/asm-arch#fad0ea68932adbfafc97445ce01c7afefcced974"
+source = "git+https://github.com/portal-co/asm-arch#bc9c0f3a1fe00903e41a0248944b1695247b5c77"
 dependencies = [
  "portal-pc-asm-common",
  "typeid",
@@ -148,7 +148,7 @@ dependencies = [
 [[package]]
 name = "portal-solutions-asm-riscv64"
 version = "0.1.0"
-source = "git+https://github.com/portal-co/asm-arch#fad0ea68932adbfafc97445ce01c7afefcced974"
+source = "git+https://github.com/portal-co/asm-arch#bc9c0f3a1fe00903e41a0248944b1695247b5c77"
 dependencies = [
  "portal-pc-asm-common",
  "portal-solutions-asm-regalloc",
@@ -158,7 +158,7 @@ dependencies = [
 [[package]]
 name = "portal-solutions-asm-x86-64"
 version = "0.1.0"
-source = "git+https://github.com/portal-co/asm-arch#fad0ea68932adbfafc97445ce01c7afefcced974"
+source = "git+https://github.com/portal-co/asm-arch#bc9c0f3a1fe00903e41a0248944b1695247b5c77"
 dependencies = [
  "portal-pc-asm-common",
  "portal-solutions-asm-regalloc",
@@ -255,9 +255,9 @@ dependencies = [
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.103"
+version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ee95bc4ef87b8d5ba32e8b7714ccc834865276eab0aed5c9958d00ec45f49e8"
+checksum = "9695f8df41bb4f3d222c95a67532365f569318332d03d5f3f67f37b20e6ebdf0"
 dependencies = [
  "unicode-ident",
 ]
@@ -324,9 +324,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "2.0.111"
+version = "2.0.113"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "390cc9a294ab71bdb1aa2e99d13be9c753cd2d7bd6560c77118597410c4d2e87"
+checksum = "678faa00651c9eb72dd2020cbdf275d92eccb2400d568e419efdd64838145cb4"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -373,7 +373,7 @@ dependencies = [
 [[package]]
 name = "wax-core"
 version = "0.1.0"
-source = "git+https://github.com/portal-co/wax.git?branch=main#e3b16c1b4e741f45df84c8ba3f15a82d95d03df0"
+source = "git+https://github.com/portal-co/wax.git?branch=main#d57906c0bb21606e29a17a2fb7c2e9f7cd2b39b9"
 dependencies = [
  "impl-trait-for-tuples",
  "wasm-encoder",
