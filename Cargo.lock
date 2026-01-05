@@ -139,7 +139,7 @@ dependencies = [
 [[package]]
 name = "portal-solutions-asm-regalloc"
 version = "0.1.0"
-source = "git+https://github.com/portal-co/asm-arch#75a696712d920a22187eaef4d06542d4e262cee2"
+source = "git+https://github.com/portal-co/asm-arch#f1b1986ed2871aeb296db47fe556dd6bc7354f43"
 dependencies = [
  "portal-pc-asm-common",
  "typeid",
@@ -148,7 +148,7 @@ dependencies = [
 [[package]]
 name = "portal-solutions-asm-riscv64"
 version = "0.1.0"
-source = "git+https://github.com/portal-co/asm-arch#75a696712d920a22187eaef4d06542d4e262cee2"
+source = "git+https://github.com/portal-co/asm-arch#f1b1986ed2871aeb296db47fe556dd6bc7354f43"
 dependencies = [
  "portal-pc-asm-common",
  "portal-solutions-asm-regalloc",
@@ -158,7 +158,7 @@ dependencies = [
 [[package]]
 name = "portal-solutions-asm-x86-64"
 version = "0.1.0"
-source = "git+https://github.com/portal-co/asm-arch#75a696712d920a22187eaef4d06542d4e262cee2"
+source = "git+https://github.com/portal-co/asm-arch#f1b1986ed2871aeb296db47fe556dd6bc7354f43"
 dependencies = [
  "portal-pc-asm-common",
  "portal-solutions-asm-regalloc",
