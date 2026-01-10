@@ -150,3 +150,9 @@ Contributions are welcome! Please ensure your code:
 ## Project Status
 
 This project is under active development. APIs may change between versions.
+
+## Goals
+- [ ] Add project goals
+
+---
+*AI assisted*
