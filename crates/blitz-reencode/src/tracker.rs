@@ -61,8 +61,9 @@ impl MachTracker<Function> {
 /// # Returns
 ///
 /// Result indicating success or a re-encoding error.
-pub fn do_mach_instruction<E, A,S: InstructionSink<E>>(
+pub fn do_mach_instruction<E, A,Context,S: InstructionSink<Context, E>>(
     r: &mut (impl Reencode<Error = E> + ?Sized),
+    ctx: &mut Context,
     a: &MachOperator<'_, A>,
     state: &mut MachTracker<S>,
     create: &mut (dyn FnMut(Drain<'_,(u32,wasm_encoder::ValType)>) -> S + '_),
@@ -86,13 +87,13 @@ pub fn do_mach_instruction<E, A,S: InstructionSink<E>>(
             };
             let mut f = state.funcs.last_mut().unwrap();
             if !dce(&mut state.dce_stack, &o) {
-                f.instruction(&r.instruction(o.clone())?).map_err(|e|wasm_encoder::reencode::Error::UserError(e))?;
+                f.instruction(ctx, &r.instruction(o.clone())?).map_err(|e|wasm_encoder::reencode::Error::UserError(e))?;
             }
         }
         MachOperator::Instruction { op, .. } => {
             let mut f = state.funcs.last_mut().unwrap();
             if !dce_instr(&mut state.dce_stack, op) {
-                f.instruction(op).map_err(|e|wasm_encoder::reencode::Error::UserError(e))?;
+                f.instruction(ctx, op).map_err(|e|wasm_encoder::reencode::Error::UserError(e))?;
             }
         }
         _ => todo!(),

@@ -54,13 +54,14 @@ pub trait ReencodeExt: Reencode {
     /// # Returns
     ///
     /// Result indicating success or a re-encoding error.
-    fn mach_instruction<A, S: InstructionSink<Self::Error>>(
+    fn mach_instruction<A, Context, S: InstructionSink<Context, Self::Error>>(
         &mut self,
+        ctx: &mut Context,
         a: &MachOperator<'_, A>,
         state: &mut MachTracker<S>,
         create: &mut (dyn FnMut(Drain<'_, (u32, wasm_encoder::ValType)>) -> S + '_),
     ) -> Result<(), wasm_encoder::reencode::Error<Self::Error>> {
-        do_mach_instruction(self, a, state, create)
+        do_mach_instruction(self, ctx, a, state, create)
     }
 }
 impl<T: Reencode + ?Sized> ReencodeExt for T {}
