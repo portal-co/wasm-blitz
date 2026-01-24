@@ -223,25 +223,13 @@ pub enum MachOperator<'a, Annot = ()> {
         annot: Annot,
     },
     /// An encoded WASM instruction.
-    Instruction {
-        op: Instruction<'a>,
-        annot: Annot,
-    },
+    Instruction { op: Instruction<'a>, annot: Annot },
     /// A trap instruction (unconditional or conditional).
-    Trap {
-        conditional: bool,
-        annot: Annot,
-    },
+    Trap { conditional: bool, annot: Annot },
     /// Declaration of local variables.
-    Local {
-        count: u32,
-        ty: ValType,
-    },
+    Local { count: u32, ty: ValType },
     /// Start of a function definition.
-    StartFn {
-        id: u32,
-        data: FnData,
-    },
+    StartFn { id: u32, data: FnData },
     /// Start of function body (after locals).
     StartBody,
     /// End of function body.

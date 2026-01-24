@@ -240,7 +240,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 },
             )?;
             state.body = target;
-        if let Some(idx) = state.body_labels.remove(&state.body) {
+            if let Some(idx) = state.body_labels.remove(&state.body) {
                 self.set_label(ctx, arch, X64Label::Indexed { idx })?;
             }
         }

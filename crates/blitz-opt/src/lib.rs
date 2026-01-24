@@ -62,11 +62,7 @@ pub trait OptCodegen {
     ///
     /// * `w` - The writer to output code to
     /// * `index` - The stack index where the value will be stored
-    fn write_opt_push_end(
-        &self,
-        w: &mut (dyn Write + '_),
-        index: usize,
-    ) -> core::fmt::Result;
+    fn write_opt_push_end(&self, w: &mut (dyn Write + '_), index: usize) -> core::fmt::Result;
 
     /// Generates code for a non-optimized push operation.
     ///
@@ -130,7 +126,7 @@ pub fn push(
     if let Some(o) = opt_state {
         // First write: opening part with the value
         codegen.write_opt_push_start(w, a)?;
-        
+
         // Lock operation: read depth, write closing part, update depth
         let mut o = o.lock();
         codegen.write_opt_push_end(w, o.depth + 1)?;
@@ -164,7 +160,10 @@ pub fn pop(
     if let Some(o) = opt_state {
         let index = {
             let mut o = o.lock();
-            debug_assert!(o.depth > 0, "Stack underflow: attempting to pop from empty stack");
+            debug_assert!(
+                o.depth > 0,
+                "Stack underflow: attempting to pop from empty stack"
+            );
             o.depth -= 1;
             o.depth + 1
         };
@@ -189,7 +188,7 @@ pub fn pop(
 ///
 /// ```ignore
 /// use portal_solutions_blitz_opt::{pop_display, OptCodegen, OptState};
-/// 
+///
 /// let codegen = MyCodegen;
 /// let opt_state = Some(&mutex);
 /// write!(w, "result = {}", pop_display!(codegen, opt_state));

@@ -66,11 +66,7 @@ impl OptCodegen for JsCodegen {
         write!(w, "(tmp={value}")
     }
 
-    fn write_opt_push_end(
-        &self,
-        w: &mut (dyn Write + '_),
-        index: usize,
-    ) -> core::fmt::Result {
+    fn write_opt_push_end(&self, w: &mut (dyn Write + '_), index: usize) -> core::fmt::Result {
         write!(w, ",stack.length++,stack[{index}]=tmp,tmp)")
     }
 
@@ -101,11 +97,7 @@ impl OptCodegen for JsCodegen {
 /// * `state` - The current compilation state
 /// * `w` - The writer to output JavaScript code to
 /// * `a` - The expression to push onto the stack
-pub fn push(
-    state: &State,
-    w: &mut (dyn Write + '_),
-    a: &dyn Display,
-) -> core::fmt::Result {
+pub fn push(state: &State, w: &mut (dyn Write + '_), a: &dyn Display) -> core::fmt::Result {
     blitz_opt::push(&JsCodegen, state.opt(), w, a)
 }
 

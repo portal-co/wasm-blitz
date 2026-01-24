@@ -15,7 +15,6 @@ type X64FastLabel = X64Label;
 pub trait FastWriter: portal_solutions_blitz_common::Label<X64FastLabel> {}
 impl<T: portal_solutions_blitz_common::Label<X64FastLabel> + ?Sized> FastWriter for T {}
 
-
 use portal_solutions_asm_regalloc as regalloc;
 use portal_solutions_asm_x86_64::regalloc as x86_regalloc;
 use portal_solutions_asm_x86_64::{self as asm_x86, stack::StackManager};

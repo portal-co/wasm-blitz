@@ -61,12 +61,12 @@ impl MachTracker<Function> {
 /// # Returns
 ///
 /// Result indicating success or a re-encoding error.
-pub fn do_mach_instruction<E, A,Context,S: InstructionSink<Context, E>>(
+pub fn do_mach_instruction<E, A, Context, S: InstructionSink<Context, E>>(
     r: &mut (impl Reencode<Error = E> + ?Sized),
     ctx: &mut Context,
     a: &MachOperator<'_, A>,
     state: &mut MachTracker<S>,
-    create: &mut (dyn FnMut(Drain<'_,(u32,wasm_encoder::ValType)>) -> S + '_),
+    create: &mut (dyn FnMut(Drain<'_, (u32, wasm_encoder::ValType)>) -> S + '_),
 ) -> Result<(), wasm_encoder::reencode::Error<E>> {
     match a {
         MachOperator::StartFn { id, data } => {}
@@ -74,9 +74,7 @@ pub fn do_mach_instruction<E, A,Context,S: InstructionSink<Context, E>>(
             state.locals.push((*a, r.val_type(b.clone())?));
         }
         MachOperator::StartBody => {
-            state
-                .funcs
-                .push(create(state.locals.drain(..)));
+            state.funcs.push(create(state.locals.drain(..)));
         }
         MachOperator::EndBody => {
             state.dce_stack = Default::default();
@@ -87,13 +85,15 @@ pub fn do_mach_instruction<E, A,Context,S: InstructionSink<Context, E>>(
             };
             let mut f = state.funcs.last_mut().unwrap();
             if !dce(&mut state.dce_stack, &o) {
-                f.instruction(ctx, &r.instruction(o.clone())?).map_err(|e|wasm_encoder::reencode::Error::UserError(e))?;
+                f.instruction(ctx, &r.instruction(o.clone())?)
+                    .map_err(|e| wasm_encoder::reencode::Error::UserError(e))?;
             }
         }
         MachOperator::Instruction { op, .. } => {
             let mut f = state.funcs.last_mut().unwrap();
             if !dce_instr(&mut state.dce_stack, op) {
-                f.instruction(ctx, op).map_err(|e|wasm_encoder::reencode::Error::UserError(e))?;
+                f.instruction(ctx, op)
+                    .map_err(|e| wasm_encoder::reencode::Error::UserError(e))?;
             }
         }
         _ => todo!(),
