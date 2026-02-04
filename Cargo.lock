@@ -124,7 +124,7 @@ dependencies = [
 [[package]]
 name = "portal-pc-asm-common"
 version = "0.1.1"
-source = "git+https://github.com/portal-co/asm-common.git#41bb8b54dbdff71c06dcb65700f1278e589462e6"
+source = "git+https://github.com/portal-co/asm-common.git#4d12dff5ef42455a06f46b0b5e5eeaf033ba1398"
 dependencies = [
  "array-init",
  "bitvec",
@@ -139,7 +139,7 @@ dependencies = [
 [[package]]
 name = "portal-solutions-asm-regalloc"
 version = "0.1.0"
-source = "git+https://github.com/portal-co/asm-arch#6b20621ab608401b209d68368668ffa60ddc355c"
+source = "git+https://github.com/portal-co/asm-arch#4510a2413703f730ceb24a7aca8ddae890da3851"
 dependencies = [
  "portal-pc-asm-common",
  "typeid",
@@ -148,7 +148,7 @@ dependencies = [
 [[package]]
 name = "portal-solutions-asm-riscv64"
 version = "0.1.0"
-source = "git+https://github.com/portal-co/asm-arch#6b20621ab608401b209d68368668ffa60ddc355c"
+source = "git+https://github.com/portal-co/asm-arch#4510a2413703f730ceb24a7aca8ddae890da3851"
 dependencies = [
  "portal-pc-asm-common",
  "portal-solutions-asm-regalloc",
@@ -158,7 +158,7 @@ dependencies = [
 [[package]]
 name = "portal-solutions-asm-x86-64"
 version = "0.1.0"
-source = "git+https://github.com/portal-co/asm-arch#6b20621ab608401b209d68368668ffa60ddc355c"
+source = "git+https://github.com/portal-co/asm-arch#4510a2413703f730ceb24a7aca8ddae890da3851"
 dependencies = [
  "portal-pc-asm-common",
  "portal-solutions-asm-regalloc",
@@ -373,7 +373,7 @@ dependencies = [
 [[package]]
 name = "wax-core"
 version = "0.1.0"
-source = "git+https://github.com/portal-co/wax.git?branch=main#6a0cd5105d6ba7e444e0988bb267533c3a4edb16"
+source = "git+https://github.com/portal-co/wax.git?branch=main#3a71a4515d27d0b0392945c91b3ef494f150e22c"
 dependencies = [
  "impl-trait-for-tuples",
  "wasm-encoder",
