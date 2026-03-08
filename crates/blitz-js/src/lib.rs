@@ -200,15 +200,18 @@ pub trait JsWrite: Write {
             o.depth -= sig.params().len();
             let s2 = o.depth;
             o.depth += sig.results().len();
+            // BUG FIX: stack indices are 1-based in opt mode (push writes to
+            // stack[depth+1] then increments depth). Arguments live at
+            // stack[s+1..=od]; results at stack[s2+1..=o.depth].
             write!(
                 self,
                 "args=[{}];stack.length -= {};
                 tmp_locals=({function_index}(...args));
                 stack.length += {};{}",
                 DisplayFn(&|f| {
-                    for n in s..od {
+                    for n in (s + 1)..=od {
                         write!(f, "stack[{n}]")?;
-                        if n + 1 != od {
+                        if n != od {
                             write!(f, ",")?;
                         }
                     }
@@ -217,7 +220,7 @@ pub trait JsWrite: Write {
                 sig.params().len(),
                 sig.results().len(),
                 DisplayFn(&|f| {
-                    for (i, n) in (s2..o.depth).enumerate() {
+                    for (i, n) in ((s2 + 1)..=o.depth).enumerate() {
                         write!(f, "stack[{n}]=tmp_locals[{i}];")?;
                     }
                     Ok(())
@@ -303,9 +306,10 @@ pub trait JsWrite: Write {
                         }
                     };
                     let s = o.depth - d;
+                    // BUG FIX: Loop branch is a back-edge; emit continue, not break.
                     write!(
                         self,
-                        "{{stack=[{}];break l{idx};}}",
+                        "{{stack=[{}];continue l{idx};}}",
                         DisplayFn(&|f| {
                             for n in s..o.depth {
                                 write!(f, "stack[{n}]")?;
@@ -362,11 +366,12 @@ pub trait JsWrite: Write {
                 self,
                 &format_args!("((a={},b={})=>(a+b)&mask32)()", pop!(state), pop!(state)),
             ),
+            // BUG FIX: a=first pop=rhs, b=second pop=lhs; use b-a (lhs-rhs).
             Instruction::I32Sub => push(
                 state,
                 self,
                 &format_args!(
-                    "((a={},b={})=>toUint((a-b)&mask32,32))()",
+                    "((a={},b={})=>toUint((b-a)&mask32,32))()",
                     pop!(state),
                     pop!(state)
                 ),
@@ -376,77 +381,85 @@ pub trait JsWrite: Write {
                 self,
                 &format_args!("((a={},b={})=>(a*b)&mask32)()", pop!(state), pop!(state)),
             ),
+            // BUG FIX: swap operands — b/a = lhs/rhs.
             Instruction::I32DivU => push(
                 state,
                 self,
-                &format_args!("((a={},b={})=>(a/b)&mask32)()", pop!(state), pop!(state)),
+                &format_args!("((a={},b={})=>(b/a)&mask32)()", pop!(state), pop!(state)),
             ),
+            // BUG FIX: swap operands.
             Instruction::I32RemU => push(
                 state,
                 self,
-                &format_args!("((a={},b={})=>(a%b)&mask32)()", pop!(state), pop!(state)),
+                &format_args!("((a={},b={})=>(b%a)&mask32)()", pop!(state), pop!(state)),
             ),
+            // BUG FIX: swap operands; also added missing ,32 to toUint.
             Instruction::I32DivS => push(
                 state,
                 self,
                 &format_args!(
-                    "((a=toInt({},32),b=toInt({},32))=>toUint((a/b)&mask32))()",
-                    // pop!()
+                    "((a=toInt({},32),b=toInt({},32))=>toUint((b/a)&mask32,32))()",
                     pop!(state),
                     pop!(state)
                 ),
             ),
+            // BUG FIX: swap operands; also added missing ,32 to toUint.
             Instruction::I32RemS => push(
                 state,
                 self,
                 &format_args!(
-                    "((a=toInt({},32),b=toInt({},32))=>toUint((a%b)&mask32))()",
-                    // pop!()
+                    "((a=toInt({},32),b=toInt({},32))=>toUint((b%a)&mask32,32))()",
                     pop!(state),
                     pop!(state)
                 ),
             ),
+            // BUG FIX: a=shift-count (rhs, first pop) modulo 32; b=value (lhs, second pop).
             Instruction::I32Shl => push(
                 state,
                 self,
                 &format_args!(
-                    "((a={},b={}%32n)=>(a<<b)&mask32)()",
+                    "((a={}%32n,b={})=>(b<<a)&mask32)()",
                     pop!(state),
                     pop!(state)
                 ),
             ),
+            // BUG FIX: same — shift count is rhs (first pop).
             Instruction::I32ShrU => push(
                 state,
                 self,
                 &format_args!(
-                    "((a={},b={}%32n)=>(a>>b)&mask32)()",
+                    "((a={}%32n,b={})=>(b>>a)&mask32)()",
                     pop!(state),
                     pop!(state)
                 ),
             ),
+            // BUG FIX: shift count (rhs=first pop) is unsigned; value (lhs=second pop) is sign-extended.
+            // Also fixes misplaced ,32 — it was outside toUint in the original.
             Instruction::I32ShrS => push(
                 state,
                 self,
                 &format_args!(
-                    "((a=toInt({},32),b={}%32n)=>toUint((a>>b)&mask32),32)()",
+                    "((a={}%32n,b=toInt({},32))=>toUint((b>>a)&mask32,32))()",
                     pop!(state),
                     pop!(state)
                 ),
             ),
+            // BUG FIX: a=shift-count (rhs, first pop), b=value (lhs, second pop).
             Instruction::I32Rotl => push(
                 state,
                 self,
                 &format_args!(
-                    "((a={},b={}%32n)=>((a<<b)|(a>>(32n-b)))&mask32)()",
+                    "((a={}%32n,b={})=>((b<<a)|(b>>(32n-a)))&mask32)()",
                     pop!(state),
                     pop!(state)
                 ),
             ),
+            // BUG FIX: same.
             Instruction::I32Rotr => push(
                 state,
                 self,
                 &format_args!(
-                    "((a={},b={}%32n)=>((a>>b)|(a<<(32n-b)))&mask32)()",
+                    "((a={}%32n,b={})=>((b>>a)|(b<<(32n-a)))&mask32)()",
                     pop!(state),
                     pop!(state)
                 ),
@@ -457,11 +470,12 @@ pub trait JsWrite: Write {
                 self,
                 &format_args!("((a={},b={})=>(a+b)&mask64)()", pop!(state), pop!(state)),
             ),
+            // BUG FIX: a=rhs (first pop), b=lhs (second pop); use b-a.
             Instruction::I64Sub => push(
                 state,
                 self,
                 &format_args!(
-                    "((a={},b={})=>toUint((a-b)&mask64,64))()",
+                    "((a={},b={})=>toUint((b-a)&mask64,64))()",
                     pop!(state),
                     pop!(state)
                 ),
@@ -471,75 +485,85 @@ pub trait JsWrite: Write {
                 self,
                 &format_args!("((a={},b={})=>(a*b)&mask64)()", pop!(state), pop!(state)),
             ),
+            // BUG FIX: b/a = lhs/rhs.
             Instruction::I64DivU => push(
                 state,
                 self,
-                &format_args!("((a={},b={})=>(a/b)&mask64)()", pop!(state), pop!(state)),
+                &format_args!("((a={},b={})=>(b/a)&mask64)()", pop!(state), pop!(state)),
             ),
+            // BUG FIX: b%a = lhs%rhs.
             Instruction::I64RemU => push(
                 state,
                 self,
-                &format_args!("((a={},b={})=>(a%b)&mask64)()", pop!(state), pop!(state)),
+                &format_args!("((a={},b={})=>(b%a)&mask64)()", pop!(state), pop!(state)),
             ),
+            // BUG FIX: swap operands; also add missing ,64 to toUint.
             Instruction::I64DivS => push(
                 state,
                 self,
                 &format_args!(
-                    "((a=toInt({},64),b=toInt({},64))=>toUint((a/b)&mask64))()",
+                    "((a=toInt({},64),b=toInt({},64))=>toUint((b/a)&mask64,64))()",
                     pop!(state),
                     pop!(state)
                 ),
             ),
+            // BUG FIX: swap operands; also add missing ,64 to toUint.
             Instruction::I64RemS => push(
                 state,
                 self,
                 &format_args!(
-                    "((a=toInt({},64),b=toInt({},64))=>toUint((a%b)&mask64))()",
+                    "((a=toInt({},64),b=toInt({},64))=>toUint((b%a)&mask64,64))()",
                     pop!(state),
                     pop!(state)
                 ),
             ),
+            // BUG FIX: a=shift-count (rhs, first pop) modulo 64; b=value (lhs, second pop).
             Instruction::I64Shl => push(
                 state,
                 self,
                 &format_args!(
-                    "((a={},b={}%64n)=>(a<<b)&mask64)()",
+                    "((a={}%64n,b={})=>(b<<a)&mask64)()",
                     pop!(state),
                     pop!(state)
                 ),
             ),
+            // BUG FIX: same — shift count is rhs (first pop).
             Instruction::I64ShrU => push(
                 state,
                 self,
                 &format_args!(
-                    "((a={},b={}%64n)=>(a>>b)&mask64)()",
+                    "((a={}%64n,b={})=>(b>>a)&mask64)()",
                     pop!(state),
                     pop!(state)
                 ),
             ),
+            // BUG FIX: shift count unsigned (rhs=first pop), value sign-extended (lhs=second pop).
+            // Also fixes misplaced ,64 — it was outside toUint in the original.
             Instruction::I64ShrS => push(
                 state,
                 self,
                 &format_args!(
-                    "((a=toInt({},64),b={}%64n)=>toUint((a>>b)&mask64),64)()",
+                    "((a={}%64n,b=toInt({},64))=>toUint((b>>a)&mask64,64))()",
                     pop!(state),
                     pop!(state)
                 ),
             ),
+            // BUG FIX: a=shift-count (rhs, first pop), b=value (lhs, second pop).
             Instruction::I64Rotl => push(
                 state,
                 self,
                 &format_args!(
-                    "((a={},b={}%64n)=>((a<<b)|(a>>(64n-b)))&mask64)()",
+                    "((a={}%64n,b={})=>((b<<a)|(b>>(64n-a)))&mask64)()",
                     pop!(state),
                     pop!(state)
                 ),
             ),
+            // BUG FIX: same.
             Instruction::I64Rotr => push(
                 state,
                 self,
                 &format_args!(
-                    "((a={},b={}%64n)=>((a>>b)|(a<<(64n-b)))&mask64)()",
+                    "((a={}%64n,b={})=>((b>>a)|(b<<(64n-a)))&mask64)()",
                     pop!(state),
                     pop!(state)
                 ),
@@ -559,13 +583,15 @@ pub trait JsWrite: Write {
             Instruction::LocalGet(local_index) => {
                 push(state, self, &format_args!("locals[{local_index}]"))
             }
+            // BUG FIX: was `locals[{local_index}=` — missing `]` before `=`.
             Instruction::LocalSet(local_index) => {
-                write!(self, "locals[{local_index}={}", pop!(state))
+                write!(self, "locals[{local_index}]={}", pop!(state))
             }
+            // BUG FIX: same missing `]`; value must also be returned (tee leaves it on stack).
             Instruction::LocalTee(local_index) => push(
                 state,
                 self,
-                &format_args!("locals[{local_index}={}", pop!(state)),
+                &format_args!("(locals[{local_index}]={})", pop!(state)),
             ),
             Instruction::Block(blockty) => {
                 state.stack.push(Frame::Block(blockty.clone()));
@@ -643,7 +669,9 @@ pub trait JsWrite: Write {
                 DisplayFn(&|f| f.br(sigs, state, *relative_depth))
             ),
             Instruction::BrTable(targets, default) => {
-                write!(self, "{}", pop!(state))?;
+                // BUG FIX: was `write!(self, "{}", pop!(state))` which discarded the
+                // popped value — tmp was never assigned before the loop used it.
+                write!(self, "tmp={};", pop!(state))?;
                 for t in targets.iter().cloned() {
                     write!(
                         self,
