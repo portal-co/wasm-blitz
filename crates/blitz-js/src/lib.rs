@@ -633,8 +633,12 @@ pub trait JsWrite: Write {
                 write!(self, "}}else{{")
             }
             Instruction::End => {
-                let s = state.stack.pop();
-                match s.unwrap() {
+                let s = match state.stack.pop() {
+                    Some(s) => s,
+                    // Function-level end (implicit outer block) — no frame to close.
+                    None => return Ok(()),
+                };
+                match s {
                     Frame::Block(blockty) => {
                         write!(self, "break;")?;
                         if let Some(o) = state.opt() {

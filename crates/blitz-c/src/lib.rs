@@ -591,7 +591,11 @@ pub trait CWrite: Write {
             Instruction::End => {
                 // Retrieve the label *before* popping so we can emit it.
                 let label = state.stack.len();
-                let frame = state.stack.pop().unwrap();
+                let frame = match state.stack.pop() {
+                    Some(f) => f,
+                    // Function-level end (implicit outer block) — no frame to close.
+                    None => return Ok(()),
+                };
                 match frame {
                     Frame::Block(blockty) => {
                         if let Some(o) = state.opt() {

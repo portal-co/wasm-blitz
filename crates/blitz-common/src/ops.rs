@@ -357,7 +357,7 @@ pub fn control_depth(a: &FunctionBody<'_>) -> usize {
                 max = max.max(cur);
             }
             Operator::End => {
-                cur -= 1;
+                cur = cur.saturating_sub(1);
             }
             _ => {}
         }

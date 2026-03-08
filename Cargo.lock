@@ -253,6 +253,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "portal-solutions-blitz-tests"
+version = "0.1.0"
+dependencies = [
+ "portal-solutions-blitz-c",
+ "portal-solutions-blitz-common",
+ "portal-solutions-blitz-js",
+]
+
+[[package]]
 name = "portal-solutions-blitz-x86-64"
 version = "0.1.0"
 dependencies = [

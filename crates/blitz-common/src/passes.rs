@@ -25,10 +25,10 @@ macro_rules! dce_pass {
                 a,
                 |_, _, o, dce_stack| match o {
                     $crate::MachOperator::Operator {
-                        op: $crate::__::core::option::Option::Some(op),
+                        op: $crate::__::core::option::Option::Some(ref op),
                         annot,
                     } if $crate::dce::dce(dce_stack, op) => $crate::__::core::option::Option::None,
-                    $crate::MachOperator::Instruction { op, annot }
+                    $crate::MachOperator::Instruction { ref op, annot }
                         if $crate::dce::dce_instr(dce_stack, op) =>
                     {
                         $crate::__::core::option::Option::None
