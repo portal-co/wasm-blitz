@@ -2,18 +2,20 @@
 //!
 //! Each test builds a minimal WASM module in memory with `wasm-encoder`,
 //! drives it through the backend pipeline, and asserts properties of the
-//! emitted source code.
+//! emitted source code, then actually executes the output to verify correctness.
 //!
 //! # Pipeline
 //! ```text
 //! wasm-encoder  →  raw bytes  →  wasmparser (FunctionBody, FuncType)
 //!   →  mach_operators  →  dce_pass!  →  on_mach  →  String output
+//!   →  node / clang   →  execute  →  numeric result
 //! ```
 //!
 //! # Bug coverage
 //! Each test is annotated with the bug(s) it exercises.
 
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use portal_solutions_blitz_common::{
     dce_pass,
@@ -28,6 +30,9 @@ use portal_solutions_blitz_common::{
 };
 use portal_solutions_blitz_c::{CWrite, State as CState};
 use portal_solutions_blitz_js::{JsWrite, State as JsState};
+
+/// Global counter for unique temp-file names (needed for parallel test runs).
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -158,8 +163,117 @@ fn compile_c(wasm: &[u8]) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Tests — basic compilation
+// Execution helpers
 // ---------------------------------------------------------------------------
+
+/// Run the generated JavaScript source code using `node`, passing `bigint_args`
+/// as the function arguments (each is emitted as a BigInt literal `{n}n`).
+/// Returns all return values as `i64` (interpreting the BigInt as signed).
+///
+/// The JS backend names function 0 as `$0`.
+fn run_js(js_src: &str, bigint_args: &[i64]) -> Vec<i64> {
+    let args: Vec<String> = bigint_args.iter().map(|v| format!("{v}n")).collect();
+    let harness = format!(
+        "\nconst __r=$0({args});const __n=Array.isArray(__r)?__r:[__r];for(const v of __n)console.log(String(v));",
+        args = args.join(",")
+    );
+    let code = format!("{js_src}{harness}");
+
+    let out = std::process::Command::new("node")
+        .arg("-e")
+        .arg(&code)
+        .output()
+        .expect("node not found in PATH");
+
+    assert!(
+        out.status.success(),
+        "node exited non-zero.\nstderr: {}\ncode: {}",
+        String::from_utf8_lossy(&out.stderr),
+        code
+    );
+
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.trim().parse::<i64>().expect("expected integer line from node"))
+        .collect()
+}
+
+/// Compile the generated C source (function `fn_{fn_id}`) with clang/gcc,
+/// run the resulting binary, and return all printed `uint64_t` return values.
+///
+/// `args` are the raw `uint64_t` arguments to pass to the function.
+/// `rets` is how many return values to read.
+fn run_c(c_src: &str, fn_id: u32, args: &[u64], rets: usize) -> Vec<u64> {
+    use std::io::Write as _;
+
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let dir = std::env::temp_dir();
+    let src_path = dir.join(format!("blitz_e2e_{pid}_{seq}.c"));
+    let bin_path = dir.join(format!("blitz_e2e_{pid}_{seq}"));
+
+    // Build main(): declare a zero-padded arg array so 0-param functions still
+    // receive a valid (non-null) pointer.
+    let mut main_body = format!(
+        "int main(){{uint64_t _args[{n}]={{",
+        n = args.len().max(1)
+    );
+    for (i, &a) in args.iter().enumerate() {
+        if i > 0 { main_body.push(','); }
+        main_body.push_str(&format!("{a}ull"));
+    }
+    // Pad to at least 1 element so the pointer is non-null.
+    if args.is_empty() {
+        main_body.push('0');
+    }
+    main_body.push_str(&format!("}};uint64_t*_r=fn_{fn_id}(_args);"));
+    for i in 0..rets {
+        main_body.push_str(&format!("printf(\"%llu\\n\",_r[{i}]);"));
+    }
+    main_body.push_str("return 0;}");
+
+    let full_src = format!(
+        "#include<stdint.h>\n#include<string.h>\n#include<stdlib.h>\n#include<stdio.h>\n#define WASM_STACK_SIZE 512\n{c_src}\n{main_body}\n"
+    );
+
+    std::fs::write(&src_path, &full_src).unwrap();
+
+    let compile = std::process::Command::new("cc")
+        .arg(&src_path)
+        .arg("-Wno-unsequenced")   // C backend may use sp in single expression
+        .arg("-o")
+        .arg(&bin_path)
+        .output()
+        .expect("cc not found in PATH");
+
+    assert!(
+        compile.status.success(),
+        "C compile failed:\n{}\nsource:\n{}",
+        String::from_utf8_lossy(&compile.stderr),
+        full_src
+    );
+
+    let run = std::process::Command::new(&bin_path)
+        .output()
+        .expect("failed to run compiled binary");
+
+    assert!(run.status.success(), "binary exited non-zero: {}", String::from_utf8_lossy(&run.stderr));
+
+    // Clean up.
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&bin_path);
+
+    String::from_utf8(run.stdout)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.trim().parse::<u64>().expect("expected integer line"))
+        .collect()
+}
+
+
 
 /// A function that returns an i32 constant should emit a BigInt literal in JS
 /// and a uint64_t cast in C.
@@ -537,3 +651,371 @@ fn test_i64const_c() {
     let c = compile_c(&wasm);
     assert!(c.contains("ull"), "expected ull suffix in: {c}");
 }
+
+// ---------------------------------------------------------------------------
+// Execution tests — run the generated code and verify numeric results
+// ---------------------------------------------------------------------------
+
+/// A constant function returns the right value when executed.
+#[test]
+fn test_exec_const_js() {
+    let wasm = make_module(&[], &[ValType::I32], &[Instruction::I32Const(42)]);
+    let js = compile_js(&wasm);
+    let result = run_js(&js, &[]);
+    assert_eq!(result, vec![42], "I32Const(42) should return 42");
+}
+
+#[test]
+fn test_exec_const_c() {
+    let wasm = make_module(&[], &[ValType::I32], &[Instruction::I32Const(42)]);
+    let c = compile_c(&wasm);
+    let result = run_c(&c, 0, &[], 1);
+    assert_eq!(result, vec![42], "I32Const(42) should return 42");
+}
+
+/// Addition returns the correct sum.
+#[test]
+fn test_exec_add_js() {
+    let wasm = make_module(
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Add],
+    );
+    let js = compile_js(&wasm);
+    assert_eq!(run_js(&js, &[5, 3]), vec![8]);
+    assert_eq!(run_js(&js, &[100, 200]), vec![300]);
+}
+
+#[test]
+fn test_exec_add_c() {
+    let wasm = make_module(
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Add],
+    );
+    let c = compile_c(&wasm);
+    assert_eq!(run_c(&c, 0, &[5, 3], 1), vec![8]);
+    assert_eq!(run_c(&c, 0, &[100, 200], 1), vec![300]);
+}
+
+/// Subtraction respects operand order: first arg minus second arg.
+/// (This is the key operand-order bug — was computing rhs−lhs.)
+#[test]
+fn test_exec_sub_js() {
+    let wasm = make_module(
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Sub],
+    );
+    let js = compile_js(&wasm);
+    // 10 - 3 = 7, NOT 3 - 10 = -7
+    assert_eq!(run_js(&js, &[10, 3]), vec![7]);
+    // 3 - 10 = -7, stored as unsigned 2's complement in i32: 0xFFFFFFF9
+    let r = run_js(&js, &[3, 10]);
+    // JS BigInt returns the signed i32 result as a full BigInt; mask to i32 range
+    assert_eq!(r[0] as i32, -7i32, "3-10 should be -7, got {}", r[0]);
+}
+
+#[test]
+fn test_exec_sub_c() {
+    let wasm = make_module(
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Sub],
+    );
+    let c = compile_c(&wasm);
+    assert_eq!(run_c(&c, 0, &[10, 3], 1), vec![7]);
+    // 3 - 10 in i32 = 0xFFFFFFF9 (stored in u64 low 32 bits)
+    assert_eq!(run_c(&c, 0, &[3, 10], 1)[0] as u32, (-7i32) as u32);
+}
+
+/// Division respects operand order: first arg divided by second arg.
+#[test]
+fn test_exec_divu_js() {
+    let wasm = make_module(
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32DivU],
+    );
+    let js = compile_js(&wasm);
+    // 10 / 2 = 5, NOT 2 / 10 = 0
+    assert_eq!(run_js(&js, &[10, 2]), vec![5]);
+}
+
+#[test]
+fn test_exec_divu_c() {
+    let wasm = make_module(
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32DivU],
+    );
+    let c = compile_c(&wasm);
+    assert_eq!(run_c(&c, 0, &[10, 2], 1), vec![5]);
+}
+
+/// LocalSet/LocalGet round-trip: the stored value comes back unchanged.
+#[test]
+fn test_exec_localset_js() {
+    let wasm = make_module(
+        &[ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::I32Const(77),
+            Instruction::LocalSet(0),
+            Instruction::LocalGet(0),
+        ],
+    );
+    let js = compile_js(&wasm);
+    assert_eq!(run_js(&js, &[0]), vec![77]);
+}
+
+#[test]
+fn test_exec_localset_c() {
+    let wasm = make_module(
+        &[ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::I32Const(77),
+            Instruction::LocalSet(0),
+            Instruction::LocalGet(0),
+        ],
+    );
+    let c = compile_c(&wasm);
+    assert_eq!(run_c(&c, 0, &[0], 1), vec![77]);
+}
+
+/// i64 constant is returned with full 64-bit precision.
+#[test]
+fn test_exec_i64const_js() {
+    let val: i64 = 0x0123_4567_89AB_CDEFu64 as i64;
+    let wasm = make_module(&[], &[ValType::I64], &[Instruction::I64Const(val)]);
+    let js = compile_js(&wasm);
+    let result = run_js(&js, &[]);
+    assert_eq!(result[0], val, "i64 constant should be preserved");
+}
+
+#[test]
+fn test_exec_i64const_c() {
+    let val: u64 = 0x0123_4567_89AB_CDEFu64;
+    let wasm = make_module(&[], &[ValType::I64], &[Instruction::I64Const(val as i64)]);
+    let c = compile_c(&wasm);
+    let result = run_c(&c, 0, &[], 1);
+    assert_eq!(result[0], val, "i64 constant should be preserved");
+}
+
+/// i64 subtraction respects operand order.
+#[test]
+fn test_exec_i64sub_js() {
+    let wasm = make_module(
+        &[ValType::I64, ValType::I64],
+        &[ValType::I64],
+        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I64Sub],
+    );
+    let js = compile_js(&wasm);
+    assert_eq!(run_js(&js, &[100, 37]), vec![63]);
+}
+
+#[test]
+fn test_exec_i64sub_c() {
+    let wasm = make_module(
+        &[ValType::I64, ValType::I64],
+        &[ValType::I64],
+        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I64Sub],
+    );
+    let c = compile_c(&wasm);
+    assert_eq!(run_c(&c, 0, &[100, 37], 1), vec![63]);
+}
+
+/// Left-shift respects operand order: `value << count`, not `count << value`.
+#[test]
+fn test_exec_shl_js() {
+    let wasm = make_module(
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Shl],
+    );
+    let js = compile_js(&wasm);
+    // 3 << 4 = 48
+    assert_eq!(run_js(&js, &[3, 4]), vec![48]);
+}
+
+#[test]
+fn test_exec_shl_c() {
+    let wasm = make_module(
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Shl],
+    );
+    let c = compile_c(&wasm);
+    assert_eq!(run_c(&c, 0, &[3, 4], 1), vec![48]);
+}
+
+/// A br_table dispatches to the correct branch.
+#[test]
+fn test_exec_brtable_js() {
+    // Function: takes i32 selector, returns 10 if selector==0, else 20.
+    //   block (result i32)           ; label 1 — carries the result
+    //     block                      ; label 2 — default/else path (br skips to label 1)
+    //       block                    ; label 3 — selector==0 path
+    //         local.get 0
+    //         br_table 0 1           ; 0→label3(skip), default→label2(skip)
+    //       end                      ; exit label 3
+    //       i32.const 20
+    //       br 1                     ; jump over label 1
+    //     end                        ; exit label 2 (selector==0 falls here)
+    //     i32.const 10
+    //   end                          ; exit label 1
+    let wasm = make_module(
+        &[ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::Block(wasm_encoder::BlockType::Result(ValType::I32)),
+            Instruction::Block(wasm_encoder::BlockType::Empty),
+            Instruction::Block(wasm_encoder::BlockType::Empty),
+            Instruction::LocalGet(0),
+            Instruction::BrTable(Cow::Borrowed(&[0u32]), 1),
+            Instruction::End,
+            Instruction::I32Const(20),
+            Instruction::Br(1),
+            Instruction::End,
+            Instruction::I32Const(10),
+            Instruction::End,
+        ],
+    );
+    let js = compile_js(&wasm);
+    assert_eq!(run_js(&js, &[0]), vec![20], "selector 0 → target 0 (inner block) → falls to i32.const 20, br 1 → 20");
+    assert_eq!(run_js(&js, &[1]), vec![10], "selector 1 → default (middle block) → falls to i32.const 10 → 10");
+}
+
+#[test]
+fn test_exec_brtable_c() {
+    let wasm = make_module(
+        &[ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::Block(wasm_encoder::BlockType::Result(ValType::I32)),
+            Instruction::Block(wasm_encoder::BlockType::Empty),
+            Instruction::Block(wasm_encoder::BlockType::Empty),
+            Instruction::LocalGet(0),
+            Instruction::BrTable(Cow::Borrowed(&[0u32]), 1),
+            Instruction::End,
+            Instruction::I32Const(20),
+            Instruction::Br(1),
+            Instruction::End,
+            Instruction::I32Const(10),
+            Instruction::End,
+        ],
+    );
+    let c = compile_c(&wasm);
+    assert_eq!(run_c(&c, 0, &[0], 1), vec![20], "selector 0 → target 0 (inner block) → i32.const 20, br 1 → 20");
+    assert_eq!(run_c(&c, 0, &[1], 1), vec![10], "selector 1 → default (middle block) → i32.const 10 → 10");
+}
+
+/// A loop with a counter: counts down from N to 0, returns N total iterations.
+/// Tests that `br 0` inside a loop is a back-edge (continue), not a break.
+#[test]
+fn test_exec_loop_counter_js() {
+    // (func (param $n i32) (result i32)
+    //   (local $acc i32)        ;; local 1
+    //   (loop $lp
+    //     (if (local.get $n)    ;; while n != 0
+    //       (then
+    //         (local.set $acc (i32.add (local.get $acc) (i32.const 1)))
+    //         (local.set $n   (i32.sub (local.get $n)   (i32.const 1)))
+    //         (br $lp)          ;; back-edge
+    //       )
+    //     )
+    //   )
+    //   (local.get $acc)
+    // )
+    use wasm_encoder::BlockType;
+    let wasm = {
+        let mut module = Module::new();
+
+        let mut types = TypeSection::new();
+        types.ty().function([ValType::I32], [ValType::I32]);
+        module.section(&types);
+
+        let mut functions = FunctionSection::new();
+        functions.function(0);
+        module.section(&functions);
+
+        let mut exports = ExportSection::new();
+        exports.export("f", ExportKind::Func, 0);
+        module.section(&exports);
+
+        let mut code = CodeSection::new();
+        // One extra local: i32 accumulator (local 1).
+        let mut func = Function::new([(1u32, ValType::I32)]);
+        func.instruction(&Instruction::Loop(BlockType::Empty));
+        func.instruction(&Instruction::LocalGet(0)); // n
+        func.instruction(&Instruction::If(BlockType::Empty));
+        // acc += 1
+        func.instruction(&Instruction::LocalGet(1));
+        func.instruction(&Instruction::I32Const(1));
+        func.instruction(&Instruction::I32Add);
+        func.instruction(&Instruction::LocalSet(1));
+        // n -= 1
+        func.instruction(&Instruction::LocalGet(0));
+        func.instruction(&Instruction::I32Const(1));
+        func.instruction(&Instruction::I32Sub);
+        func.instruction(&Instruction::LocalSet(0));
+        func.instruction(&Instruction::Br(1)); // br $lp (depth 1 from if = loop)
+        func.instruction(&Instruction::End);   // end if
+        func.instruction(&Instruction::End);   // end loop
+        func.instruction(&Instruction::LocalGet(1)); // acc
+        func.instruction(&Instruction::Return);
+        func.instruction(&Instruction::End);   // end func
+        code.function(&func);
+        module.section(&code);
+        module.finish()
+    };
+    let js = compile_js(&wasm);
+    assert_eq!(run_js(&js, &[0]), vec![0],  "loop(0) → 0 iterations");
+    assert_eq!(run_js(&js, &[5]), vec![5],  "loop(5) → 5 iterations");
+    assert_eq!(run_js(&js, &[10]), vec![10], "loop(10) → 10 iterations");
+}
+
+#[test]
+fn test_exec_loop_counter_c() {
+    use wasm_encoder::BlockType;
+    let wasm = {
+        let mut module = Module::new();
+        let mut types = TypeSection::new();
+        types.ty().function([ValType::I32], [ValType::I32]);
+        module.section(&types);
+        let mut functions = FunctionSection::new();
+        functions.function(0);
+        module.section(&functions);
+        let mut exports = ExportSection::new();
+        exports.export("f", ExportKind::Func, 0);
+        module.section(&exports);
+        let mut code = CodeSection::new();
+        let mut func = Function::new([(1u32, ValType::I32)]);
+        func.instruction(&Instruction::Loop(BlockType::Empty));
+        func.instruction(&Instruction::LocalGet(0));
+        func.instruction(&Instruction::If(BlockType::Empty));
+        func.instruction(&Instruction::LocalGet(1));
+        func.instruction(&Instruction::I32Const(1));
+        func.instruction(&Instruction::I32Add);
+        func.instruction(&Instruction::LocalSet(1));
+        func.instruction(&Instruction::LocalGet(0));
+        func.instruction(&Instruction::I32Const(1));
+        func.instruction(&Instruction::I32Sub);
+        func.instruction(&Instruction::LocalSet(0));
+        func.instruction(&Instruction::Br(1));
+        func.instruction(&Instruction::End);
+        func.instruction(&Instruction::End);
+        func.instruction(&Instruction::LocalGet(1));
+        func.instruction(&Instruction::Return);
+        func.instruction(&Instruction::End);
+        code.function(&func);
+        module.section(&code);
+        module.finish()
+    };
+    let c = compile_c(&wasm);
+    assert_eq!(run_c(&c, 0, &[0], 1), vec![0]);
+    assert_eq!(run_c(&c, 0, &[5], 1), vec![5]);
+    assert_eq!(run_c(&c, 0, &[10], 1), vec![10]);
+}
+

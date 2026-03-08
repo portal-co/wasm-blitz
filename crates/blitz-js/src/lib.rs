@@ -50,7 +50,7 @@ use spin::Mutex;
 extern crate alloc;
 
 /// JavaScript code for stack restoration using optional symbol iterator.
-const STACK_WEAVE: &'static str = "($$stack_restore_symbol_iterator ?? (a=>a))";
+const STACK_WEAVE: &'static str = "(typeof $$stack_restore_symbol_iterator!=='undefined'?$$stack_restore_symbol_iterator:(a=>a))";
 
 /// JavaScript implementation of the OptCodegen trait.
 ///
@@ -83,7 +83,9 @@ impl OptCodegen for JsCodegen {
     }
 
     fn write_non_opt_pop(&self, w: &mut (dyn Write + '_)) -> core::fmt::Result {
-        write!(w, "(([...stack,tmp]={STACK_WEAVE}(stack)),tmp)")
+        // Apply STACK_WEAVE into a fresh stack array, then pop the last element.
+        // (`[...stack, tmp] = ...` is invalid JS — rest must be last in destructuring.)
+        write!(w, "([...stack]={STACK_WEAVE}(stack),tmp=stack.pop(),tmp)")
     }
 }
 
@@ -158,7 +160,9 @@ impl State {
 enum Frame {
     Block(BlockType),
     Loop(BlockType),
-    If,
+    /// `If` is like `Block` for branching purposes: `br N` that targets an `if`
+    /// frame is a forward exit out of the if/else body.
+    If(BlockType),
 }
 
 /// Trait for writing JavaScript code for WASM operations.
@@ -258,23 +262,21 @@ pub trait JsWrite: Write {
             .iter()
             .enumerate()
             .rev()
-            .filter(|(_, a)| !matches!(a, Frame::If))
             .nth(idx as usize)
             .unwrap();
         let idx = idx + 1;
         match frame {
-            Frame::Block(blockty) => {
+            Frame::Block(blockty) | Frame::If(blockty) => {
+                let result_count = match blockty {
+                    portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
+                    portal_solutions_blitz_common::wasm_encoder::BlockType::Result(_) => 1,
+                    portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => {
+                        sigs[*f as usize].results().len()
+                    }
+                };
                 if let Some(o) = state.opt() {
                     let mut o = o.lock();
-                    let d = match blockty {
-                        portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
-                        portal_solutions_blitz_common::wasm_encoder::BlockType::Result(
-                            val_type,
-                        ) => 1,
-                        portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => {
-                            sigs[*f as usize].results().len()
-                        }
-                    };
+                    let d = result_count;
                     let s = o.depth - d;
                     write!(
                         self,
@@ -289,22 +291,24 @@ pub trait JsWrite: Write {
                             Ok(())
                         })
                     )?;
-                } else {
+                } else if result_count == 0 {
                     write!(self, "{{stack=[];break l{idx};}}")?;
+                } else {
+                    // Carry the top `result_count` values across the branch.
+                    write!(self, "{{stack=stack.slice(-{result_count});break l{idx};}}")?;
                 }
             }
             Frame::Loop(blockty) => {
+                let param_count = match blockty {
+                    portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
+                    portal_solutions_blitz_common::wasm_encoder::BlockType::Result(_) => 0,
+                    portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => {
+                        sigs[*f as usize].params().len()
+                    }
+                };
                 if let Some(o) = state.opt() {
                     let mut o = o.lock();
-                    let d = match blockty {
-                        portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
-                        portal_solutions_blitz_common::wasm_encoder::BlockType::Result(
-                            val_type,
-                        ) => 0,
-                        portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => {
-                            sigs[*f as usize].params().len()
-                        }
-                    };
+                    let d = param_count;
                     let s = o.depth - d;
                     // BUG FIX: Loop branch is a back-edge; emit continue, not break.
                     write!(
@@ -320,8 +324,10 @@ pub trait JsWrite: Write {
                             Ok(())
                         })
                     )?;
-                } else {
+                } else if param_count == 0 {
                     write!(self, "{{stack=[];continue l{idx};}}")?;
+                } else {
+                    write!(self, "{{stack=stack.slice(-{param_count});continue l{idx};}}")?;
                 }
             }
             _ => todo!(),
@@ -626,8 +632,11 @@ pub trait JsWrite: Write {
                 write!(self, "l{}: for(;;){{", state.stack.len())
             }
             Instruction::If(blockty) => {
-                state.stack.push(Frame::If);
-                write!(self, "if({}){{", pop!(state))
+                // Wrap in a labeled block so `br N` targeting this If frame can
+                // use `break l{n}` to exit it (JavaScript allows labeled breaks
+                // on any statement, not just loops).
+                state.stack.push(Frame::If(blockty.clone()));
+                write!(self, "l{}: {{if({}){{", state.stack.len(), pop!(state))
             }
             Instruction::Else => {
                 write!(self, "}}else{{")
@@ -649,6 +658,7 @@ pub trait JsWrite: Write {
                                 portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => sigs[f as usize].results().len(),
                             };
                         }
+                        write!(self, "}}")?;
                     }
                     Frame::Loop(blockty) => {
                         write!(self, "break;")?;
@@ -660,10 +670,22 @@ pub trait JsWrite: Write {
                                 portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => sigs[f as usize].results().len(),
                             };
                         }
+                        write!(self, "}}")?;
                     }
-                    _ => {}
+                    Frame::If(blockty) => {
+                        // Close if body, then close the labeled outer block wrapper.
+                        write!(self, "}}}}")?;
+                        if let Some(o) = state.opt() {
+                            let mut o = o.lock();
+                            o.depth = match blockty {
+                                portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
+                                portal_solutions_blitz_common::wasm_encoder::BlockType::Result(_) => 1,
+                                portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => sigs[f as usize].results().len(),
+                            };
+                        }
+                    }
                 }
-                write!(self, "}}")
+                Ok(())
             }
             Instruction::Br(relative_depth) => self.br(sigs, state, *relative_depth),
             Instruction::BrIf(relative_depth) => write!(

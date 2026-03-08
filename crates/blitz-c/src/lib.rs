@@ -179,7 +179,9 @@ impl State {
 enum Frame {
     Block(BlockType),
     Loop(BlockType),
-    If,
+    /// `If` is like `Block` for branching purposes: `br N` that targets an `if`
+    /// frame is a forward exit out of the if/else body.
+    If(BlockType),
 }
 
 // ---------------------------------------------------------------------------
@@ -262,7 +264,6 @@ pub trait CWrite: Write {
             .iter()
             .enumerate()
             .rev()
-            .filter(|(_, f)| !matches!(f, Frame::If))
             .nth(relative_depth as usize)
             .unwrap();
 
@@ -270,11 +271,10 @@ pub trait CWrite: Write {
         let label = enum_idx + 1;
 
         match frame {
-            // Branch to a Block = forward jump to its exit label.
-            Frame::Block(_) => write!(self, "goto blk_e_{label};"),
+            // Branch to a Block or If = forward jump to its exit label.
+            Frame::Block(_) | Frame::If(_) => write!(self, "goto blk_e_{label};"),
             // BUG FIX vs JS: Loop branch is a *back*-edge (continue), not a break.
             Frame::Loop(_) => write!(self, "goto lp_s_{label};"),
-            _ => todo!(),
         }
     }
 
@@ -581,8 +581,8 @@ pub trait CWrite: Write {
                 write!(self, "lp_s_{0}:;{{", state.stack.len())
             }
 
-            Instruction::If(_blockty) => {
-                state.stack.push(Frame::If);
+            Instruction::If(blockty) => {
+                state.stack.push(Frame::If(blockty.clone()));
                 write!(self, "if((uint64_t){}!=0ull){{", pop!(state))
             }
 
@@ -626,7 +626,20 @@ pub trait CWrite: Write {
                         // WASM's fall-through off a loop end exits the loop.
                         write!(self, "}}")
                     }
-                    Frame::If => write!(self, "}}"),
+                    Frame::If(blockty) => {
+                        if let Some(o) = state.opt() {
+                            let mut o = o.lock();
+                            o.depth = match blockty {
+                                BlockType::Empty => 0,
+                                BlockType::Result(_) => 1,
+                                BlockType::FunctionType(f) => {
+                                    sigs[f as usize].results().len()
+                                }
+                            };
+                        }
+                        // Emit exit label so `goto blk_e_{label}` can target it.
+                        write!(self, "blk_e_{label}:;}}")
+                    }
                 }
             }
 
