@@ -765,6 +765,36 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     self.call(ctx, arch, &Reg(0))?;
                 }
             },
+            // ---- memory.size ------------------------------------------------
+            // Load __wasm_mem_pages (32-bit global) and push as i64 onto the WASM stack.
+            // The concrete writer must resolve X64Label::External symbols.
+            Instruction::MemorySize(_) => {
+                // Get address of the pages-count global into Reg(0).
+                self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: "__wasm_mem_pages" })?;
+                // Load the 32-bit value (zero-extend to 64 bits).
+                self.mov(
+                    ctx,
+                    arch,
+                    &Reg(0),
+                    &MemArgKind::Mem {
+                        base: Reg(0),
+                        offset: None,
+                        disp: 0,
+                        size: MemorySize::_32,
+                        reg_class: RegisterClass::Gpr,
+                    },
+                )?;
+                self.push(ctx, arch, &Reg(0))?;
+            }
+            // ---- memory.grow ------------------------------------------------
+            // delta is on the WASM stack top.  Call __wasm_memory_grow using the
+            // same blitz-x86-64 WASM calling convention as regular function calls:
+            // the callee pops the hardware return address, accesses delta via its
+            // frame pointer, and pushes old_pages before returning.
+            Instruction::MemoryGrow(_) => {
+                self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: "__wasm_memory_grow" })?;
+                self.call(ctx, arch, &Reg(0))?;
+            }
             _ => {}
         };
         Ok(())

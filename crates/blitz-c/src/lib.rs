@@ -751,6 +751,16 @@ pub trait CWrite: Write {
                 write!(self, "tmp={};tmp2={};*(uint32_t*)(__wasm_mem+(uint32_t)tmp2+{off}ull)=(uint32_t)tmp",
                     pop!(state), pop!(state))
             }
+            // ---- memory.size / memory.grow ----------------------------------
+            Instruction::MemorySize(_) => {
+                push(state, self, &format_args!("(uint64_t)__wasm_mem_pages"))
+            }
+            Instruction::MemoryGrow(_) => {
+                write!(self, "tmp={};", pop!(state))?;
+                push(state, self, &format_args!(
+                    "(uint64_t)__wasm_memory_grow((uint32_t)tmp,&__wasm_mem,&__wasm_mem_pages)"
+                ))
+            }
             _ => todo!(),
         }?;
         Ok(())
@@ -855,10 +865,45 @@ pub trait CWrite: Write {
 /// Blanket implementation of `CWrite` for all `Write` types.
 impl<T: Write + ?Sized> CWrite for T {}
 
-/// Emit the module-level global required for linear memory access.
+/// Emit module-level globals and extern declarations for linear memory access.
 ///
-/// Call this once, before the first `on_mach` loop, so that `__wasm_mem` is
-/// declared at file scope in the generated C translation unit.
+/// Call once before the first `on_mach` loop. Declares:
+/// - `__wasm_mem`       – pointer to the byte buffer (set by the caller)
+/// - `__wasm_mem_pages` – current page count (set/updated by the caller)
+/// - `__wasm_memory_grow` – extern function that the caller must provide to
+///   implement `memory.grow`; signature:
+///   `uint32_t __wasm_memory_grow(uint32_t delta, uint8_t** mem, uint32_t* pages)`
+///   It returns the old page count (or `UINT32_MAX` on failure) and updates
+///   `*mem` and `*pages`.
 pub fn c_module_preamble(w: &mut (dyn core::fmt::Write + '_)) -> core::fmt::Result {
-    write!(w, "static uint8_t*__wasm_mem=0;")
+    write!(
+        w,
+        "static uint8_t*__wasm_mem=0;\
+         static uint32_t __wasm_mem_pages=0;\
+         extern uint32_t __wasm_memory_grow(uint32_t delta,uint8_t**mem,uint32_t*pages);"
+    )
+}
+
+/// Emit a `__wasm_init_data()` function that copies active data segments into
+/// `__wasm_mem`.
+///
+/// Each `(byte_offset, bytes)` pair becomes one `memcpy` call.  The caller
+/// must invoke `__wasm_init_data()` after `__wasm_mem` has been initialised
+/// and is large enough to hold all segments.
+pub fn c_emit_data_segments(
+    w: &mut (dyn core::fmt::Write + '_),
+    segments: &[(u32, &[u8])],
+) -> core::fmt::Result {
+    write!(w, "static void __wasm_init_data(void){{")?;
+    for (i, (offset, bytes)) in segments.iter().enumerate() {
+        write!(w, "static const uint8_t __data_{i}[]={{")?;
+        let mut first = true;
+        for b in *bytes {
+            if !first { write!(w, ",")?; }
+            write!(w, "{b}")?;
+            first = false;
+        }
+        write!(w, "}};memcpy(__wasm_mem+{offset},__data_{i},sizeof __data_{i});")?;
+    }
+    write!(w, "}}")
 }

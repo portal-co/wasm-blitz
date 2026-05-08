@@ -796,6 +796,20 @@ pub trait JsWrite: Write {
                 write!(self, "((v={},a={})=>$mem_dv.setUint32(Number(a)+{off},Number(v)&0xffffffff,true))()",
                     pop!(state), pop!(state))
             }
+            // ---- memory.size / memory.grow ----------------------------------
+            Instruction::MemorySize(_) => {
+                push(state, self, &format_args!("BigInt($mem.byteLength/65536)"))
+            }
+            Instruction::MemoryGrow(_) => {
+                // Inline grow: allocate new Uint8Array, copy old data, update globals.
+                push(state, self, &format_args!(
+                    "((d={})=>{{const o=BigInt($mem.byteLength/65536);\
+                     try{{const n=new Uint8Array((Number(o)+Number(d))*65536);\
+                     n.set($mem);$mem=n;$mem_dv=new DataView($mem.buffer);return o}}\
+                     catch(e){{return -1n}}}})()",
+                    pop!(state)
+                ))
+            }
             _ => todo!(),
         }?;
         Ok(())
@@ -898,4 +912,27 @@ impl<T: Write + ?Sized> JsWrite for T {}
 /// `$mem_dv` in the generated JavaScript module scope.
 pub fn js_module_preamble(w: &mut (dyn Write + '_)) -> core::fmt::Result {
     write!(w, "var $mem=new Uint8Array(0);var $mem_dv=new DataView($mem.buffer);")
+}
+
+/// Emit module-scope data-segment initialisation code.
+///
+/// Each `(offset, bytes)` pair emits a `$mem.set([...], offset)` call.
+/// This must appear **after** `$mem` has been resized to at least cover
+/// `offset + bytes.len()`. Typically called after the test harness resizes
+/// `$mem` but before invoking any compiled function.
+pub fn js_apply_data_segments(
+    w: &mut (dyn Write + '_),
+    segments: &[(u32, &[u8])],
+) -> core::fmt::Result {
+    for (offset, bytes) in segments {
+        write!(w, "$mem.set([")?;
+        let mut first = true;
+        for b in *bytes {
+            if !first { write!(w, ",")?; }
+            write!(w, "{b}")?;
+            first = false;
+        }
+        write!(w, "],{offset});")?;
+    }
+    Ok(())
 }

@@ -53,6 +53,10 @@ pub enum X64Label {
     Indexed { idx: usize },
     /// A function entry point label.
     Func { r#fn: u32 },
+    /// An external symbol that the linker/loader resolves at runtime.
+    /// Used for references to runtime globals (`__wasm_mem_pages`) and
+    /// runtime functions (`__wasm_memory_grow`).
+    External { name: &'static str },
 }
 
 impl Display for X64Label {
@@ -60,6 +64,7 @@ impl Display for X64Label {
         match self {
             X64Label::Indexed { idx } => write!(f, "_idx_{idx}"),
             X64Label::Func { r#fn } => write!(f, "f{}", r#fn),
+            X64Label::External { name } => write!(f, "{name}"),
         }
     }
 }

@@ -20,16 +20,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use portal_solutions_blitz_common::{
     dce_pass,
     ops::mach_operators,
-    wasmparser::{self, FuncType as WpFuncType},
+    wasmparser::{self, DataKind, FuncType as WpFuncType, Operator},
     wasm_encoder::{
         self,
         reencode::RoundtripReencoder,
-        CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction, MemorySection,
-        MemoryType, Module, TypeSection, ValType,
+        CodeSection, DataSection, ExportKind, ExportSection, Function, FunctionSection, Instruction,
+        MemorySection, MemoryType, Module, TypeSection, ValType,
     },
 };
-use portal_solutions_blitz_c::{c_module_preamble, CWrite, State as CState};
-use portal_solutions_blitz_js::{js_module_preamble, JsWrite, State as JsState};
+use portal_solutions_blitz_c::{c_emit_data_segments, c_module_preamble, CWrite, State as CState};
+use portal_solutions_blitz_js::{js_apply_data_segments, js_module_preamble, JsWrite, State as JsState};
 
 /// Global counter for unique temp-file names (needed for parallel test runs).
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -1370,5 +1370,379 @@ fn test_exec_loop_counter_c() {
     assert_eq!(run_c(&c, 0, &[0], 1), vec![0]);
     assert_eq!(run_c(&c, 0, &[5], 1), vec![5]);
     assert_eq!(run_c(&c, 0, &[10], 1), vec![10]);
+}
+
+// ---------------------------------------------------------------------------
+// Data-segment and memory.size / memory.grow helpers
+// ---------------------------------------------------------------------------
+
+/// Parse active data segments from a WASM binary.
+/// Returns `Vec<(byte_offset, bytes)>` for segments with a simple `i32.const N; end` offset.
+fn parse_active_data(wasm: &[u8]) -> Vec<(u32, Vec<u8>)> {
+    let mut result = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::DataSection(reader) = payload {
+            for data in reader.into_iter().flatten() {
+                if let DataKind::Active { offset_expr, .. } = data.kind {
+                    let mut r = offset_expr.get_operators_reader();
+                    if let Ok(Operator::I32Const { value }) = r.read() {
+                        result.push((value as u32, data.data.to_vec()));
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Build a WASM module with one memory page, a function, and active data segments.
+fn make_module_with_data(
+    params: &[ValType],
+    results: &[ValType],
+    instrs: &[Instruction<'_>],
+    data: &[(u32, &[u8])],
+) -> Vec<u8> {
+    let mut module = Module::new();
+
+    let mut types = TypeSection::new();
+    types.ty().function(params.iter().cloned(), results.iter().cloned());
+    module.section(&types);
+
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+
+    let mut memories = MemorySection::new();
+    memories.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    module.section(&memories);
+
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+
+    let mut code = CodeSection::new();
+    let mut func = Function::new([]);
+    for instr in instrs {
+        func.instruction(instr);
+    }
+    func.instruction(&Instruction::Return);
+    func.instruction(&Instruction::End);
+    code.function(&func);
+    module.section(&code);
+
+    if !data.is_empty() {
+        let mut ds = DataSection::new();
+        for (offset, bytes) in data {
+            let ce = wasm_encoder::ConstExpr::i32_const(*offset as i32);
+            ds.active(0, &ce, bytes.iter().copied());
+        }
+        module.section(&ds);
+    }
+
+    module.finish()
+}
+
+/// Compile a WASM module (with memory and possibly data) to JS.
+/// Data segments are NOT emitted here; call `apply_segments_to_mem` to
+/// pre-initialise the memory buffer before passing it to `run_js_with_mem`.
+fn compile_js_with_data(wasm: &[u8]) -> String {
+    compile_js_with_mem(wasm)
+}
+
+/// Apply parsed active data segments to a mutable memory buffer (Rust-side).
+fn apply_segments_to_mem(mem: &mut Vec<u8>, segments: &[(u32, Vec<u8>)]) {
+    for (offset, bytes) in segments {
+        let start = *offset as usize;
+        let end = start + bytes.len();
+        if end > mem.len() {
+            mem.resize(end, 0);
+        }
+        mem[start..end].copy_from_slice(bytes);
+    }
+}
+
+/// Compile a WASM module (with memory and data segments) to C.
+/// Emits `c_module_preamble` + `c_emit_data_segments` + function code.
+/// The test harness must call `__wasm_init_data()` after setting `__wasm_mem`.
+fn compile_c_with_data(wasm: &[u8], segments: &[(u32, &[u8])]) -> String {
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(wasm);
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut out = String::new();
+    c_module_preamble(&mut out).unwrap();
+    c_emit_data_segments(&mut out, segments).unwrap();
+    let mut state = CState::default();
+    let mut reencoder = RoundtripReencoder;
+    for op in ops {
+        let op = op.unwrap();
+        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &mut state, &op, &mut reencoder).unwrap();
+    }
+    out
+}
+
+/// The default `__wasm_memory_grow` implementation injected into C test harnesses.
+/// Matches the extern declaration emitted by `c_module_preamble`.
+const C_MEMORY_GROW_IMPL: &str = "\
+static uint32_t __wasm_memory_grow(uint32_t delta,uint8_t**mem,uint32_t*pages){\
+    uint32_t old=*pages;\
+    uint64_t new_size=((uint64_t)old+delta)*65536;\
+    uint8_t*p=(uint8_t*)realloc(*mem,(size_t)new_size);\
+    if(!p)return(uint32_t)-1;\
+    memset(p+(uint64_t)old*65536,0,(uint64_t)delta*65536);\
+    *mem=p;*pages=old+delta;\
+    return old;\
+}";
+
+/// Run C source that uses `memory.size`/`memory.grow`, injecting a default grow impl.
+/// `mem_pages` is how many pages to pre-allocate (each 65536 bytes).
+fn run_c_with_grow(
+    c_src: &str,
+    mem_pages: u32,
+    fn_id: u32,
+    args: &[u64],
+    rets: usize,
+) -> Vec<u64> {
+    use std::io::Write as _;
+
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let dir = std::env::temp_dir();
+    let src_path = dir.join(format!("blitz_grow_{pid}_{seq}.c"));
+    let bin_path = dir.join(format!("blitz_grow_{pid}_{seq}"));
+
+    let mem_size = mem_pages as u64 * 65536;
+    let mut main_body = format!(
+        "int main(){{uint8_t*_mem=(uint8_t*)calloc({mem_size}ull,1);\
+         if(!_mem)return 1;\
+         __wasm_mem=_mem;__wasm_mem_pages={mem_pages};\
+         uint64_t _args[{n}]={{",
+        n = args.len().max(1)
+    );
+    for (i, &a) in args.iter().enumerate() {
+        if i > 0 { main_body.push(','); }
+        main_body.push_str(&format!("{a}ull"));
+    }
+    if args.is_empty() { main_body.push('0'); }
+    main_body.push_str(&format!(
+        "}};uint64_t*_r=fn_{fn_id}(_args);"
+    ));
+    for i in 0..rets {
+        main_body.push_str(&format!("printf(\"%llu\\n\",_r[{i}]);"));
+    }
+    main_body.push_str("free(__wasm_mem);return 0;}");
+
+    let full_src = format!(
+        "#include<stdint.h>\n#include<string.h>\n#include<stdlib.h>\n#include<stdio.h>\n\
+         #define WASM_STACK_SIZE 512\n\
+         {C_MEMORY_GROW_IMPL}\n\
+         {c_src}\n{main_body}\n"
+    );
+
+    std::fs::write(&src_path, &full_src).unwrap();
+
+    let compile = std::process::Command::new("cc")
+        .arg(&src_path)
+        .arg("-Wno-unsequenced")
+        .arg("-o")
+        .arg(&bin_path)
+        .output()
+        .expect("cc not found in PATH");
+
+    assert!(
+        compile.status.success(),
+        "C compile failed:\n{}\nsource:\n{}",
+        String::from_utf8_lossy(&compile.stderr),
+        full_src
+    );
+
+    let run = std::process::Command::new(&bin_path)
+        .output()
+        .expect("failed to run compiled binary");
+
+    assert!(run.status.success(), "binary exited non-zero: {}", String::from_utf8_lossy(&run.stderr));
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&bin_path);
+
+    String::from_utf8(run.stdout)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.trim().parse::<u64>().expect("expected integer line"))
+        .collect()
+}
+
+/// Run JS source with a grow-capable memory (start with `init_pages` 64 KiB pages).
+fn run_js_with_grow(js_src: &str, init_pages: u32, args: &[i64]) -> Vec<i64> {
+    let init_size = init_pages as u64 * 65536;
+    let fn_args: Vec<String> = args.iter().map(|v| format!("{v}n")).collect();
+    let harness = format!(
+        "$mem=new Uint8Array({init_size});$mem_dv=new DataView($mem.buffer);\n\
+         const __r=$0({});const __n=Array.isArray(__r)?__r:[__r];\
+         for(const v of __n)console.log(String(v));",
+        fn_args.join(",")
+    );
+    let code = format!("{js_src}{harness}");
+
+    let out = std::process::Command::new("node")
+        .arg("-e")
+        .arg(&code)
+        .output()
+        .expect("node not found in PATH");
+
+    assert!(
+        out.status.success(),
+        "node exited non-zero.\nstderr: {}\ncode: {}",
+        String::from_utf8_lossy(&out.stderr),
+        code
+    );
+
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.trim().parse::<i64>().expect("expected integer line"))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// memory.size tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_memory_size_js() {
+    // (func (result i32) memory.size)
+    let wasm = make_module_with_memory(&[], &[ValType::I32], &[Instruction::MemorySize(0)]);
+    let js = compile_js_with_mem(&wasm);
+    // 1 page allocated → size = 1
+    let mem = vec![0u8; 65536];
+    assert_eq!(run_js_with_mem(&js, &mem, &[]), vec![1]);
+}
+
+#[test]
+fn test_memory_size_c() {
+    let wasm = make_module_with_memory(&[], &[ValType::I32], &[Instruction::MemorySize(0)]);
+    let c = compile_c_with_mem(&wasm);
+    // run_c_with_grow pre-allocates 1 page and sets __wasm_mem_pages=1
+    assert_eq!(run_c_with_grow(&c, 1, 0, &[], 1), vec![1]);
+    assert_eq!(run_c_with_grow(&c, 3, 0, &[], 1), vec![3]);
+}
+
+// ---------------------------------------------------------------------------
+// memory.grow tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_memory_grow_js() {
+    // (func (param i64) (result i64) local.get 0 memory.grow)
+    let wasm = make_module_with_memory(
+        &[ValType::I64],
+        &[ValType::I64],
+        &[Instruction::LocalGet(0), Instruction::MemoryGrow(0)],
+    );
+    let js = compile_js_with_mem(&wasm);
+    let mem = vec![0u8; 65536]; // 1 page
+    // Grow by 1: old size = 1 returned
+    assert_eq!(run_js_with_mem(&js, &mem, &[1]), vec![1]);
+    // After grow, size should be 2 — verify with a second call
+    let wasm2 = make_module_with_memory(&[], &[ValType::I64], &[Instruction::MemorySize(0)]);
+    let js2 = compile_js_with_mem(&wasm2);
+    // Start with 2 pages pre-allocated
+    let mem2 = vec![0u8; 2 * 65536];
+    assert_eq!(run_js_with_mem(&js2, &mem2, &[]), vec![2]);
+}
+
+#[test]
+fn test_memory_grow_c() {
+    // (func (param i64) (result i64) local.get 0 memory.grow)
+    let wasm = make_module_with_memory(
+        &[ValType::I64],
+        &[ValType::I64],
+        &[Instruction::LocalGet(0), Instruction::MemoryGrow(0)],
+    );
+    let c = compile_c_with_mem(&wasm);
+    // Start with 1 page, grow by 1 → returns old size = 1
+    assert_eq!(run_c_with_grow(&c, 1, 0, &[1], 1), vec![1]);
+    // After grow, pages = 2. But we can't observe that here without another call.
+    // Start with 2 pages, grow by 3 → returns old size = 2
+    assert_eq!(run_c_with_grow(&c, 2, 0, &[3], 1), vec![2]);
+}
+
+// ---------------------------------------------------------------------------
+// Data segment tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_data_segment_js() {
+    use wasm_encoder::MemArg;
+    // Module with data segment: [0xAB, 0xCD, 0x00, 0x00] at offset 8.
+    // Function loads i32 at address 8 → 0xCDAB (little-endian).
+    let data_bytes: &[u8] = &[0xAB, 0xCD, 0x00, 0x00];
+    let wasm = make_module_with_data(
+        &[],
+        &[ValType::I32],
+        &[Instruction::I32Const(8), Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 })],
+        &[(8, data_bytes)],
+    );
+    let js = compile_js_with_data(&wasm);
+    // Build 1-page memory and pre-apply data segments (avoids the $mem-is-empty problem).
+    let mut mem = vec![0u8; 65536];
+    apply_segments_to_mem(&mut mem, &parse_active_data(&wasm));
+    assert_eq!(run_js_with_mem(&js, &mem, &[]), vec![0xCDAB]);
+}
+
+#[test]
+fn test_data_segment_c() {
+    use wasm_encoder::MemArg;
+    let data_bytes: &[u8] = &[0xAB, 0xCD, 0x00, 0x00];
+    let wasm = make_module_with_data(
+        &[],
+        &[ValType::I32],
+        &[Instruction::I32Const(8), Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 })],
+        &[(8, data_bytes)],
+    );
+    let segments = parse_active_data(&wasm);
+    let seg_refs: Vec<(u32, &[u8])> = segments.iter().map(|(o, b)| (*o, b.as_slice())).collect();
+    // compile_c_with_data emits __wasm_init_data(); harness calls it after alloc.
+    let c = compile_c_with_data(&wasm, &seg_refs);
+
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let dir = std::env::temp_dir();
+    let src_path = dir.join(format!("blitz_data_{pid}_{seq}.c"));
+    let bin_path = dir.join(format!("blitz_data_{pid}_{seq}"));
+
+    let full_src = format!(
+        "#include<stdint.h>\n#include<string.h>\n#include<stdlib.h>\n#include<stdio.h>\n\
+         #define WASM_STACK_SIZE 512\n\
+         {C_MEMORY_GROW_IMPL}\n\
+         {c}\n\
+         int main(){{\
+             uint8_t*_mem=(uint8_t*)calloc(65536,1);__wasm_mem=_mem;__wasm_mem_pages=1;\
+             __wasm_init_data();\
+             uint64_t _args[1]={{0}};uint64_t*_r=fn_0(_args);\
+             printf(\"%llu\\n\",_r[0]);\
+             free(_mem);return 0;}}\n"
+    );
+
+    std::fs::write(&src_path, &full_src).unwrap();
+    let compile = std::process::Command::new("cc")
+        .arg(&src_path).arg("-Wno-unsequenced").arg("-o").arg(&bin_path)
+        .output().expect("cc not found");
+    assert!(compile.status.success(), "C compile failed:\n{}\nsource:\n{}", String::from_utf8_lossy(&compile.stderr), full_src);
+    let run = std::process::Command::new(&bin_path).output().expect("run failed");
+    assert!(run.status.success(), "binary failed: {}", String::from_utf8_lossy(&run.stderr));
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&bin_path);
+    let result: Vec<u64> = String::from_utf8(run.stdout).unwrap().lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.trim().parse::<u64>().unwrap())
+        .collect();
+    assert_eq!(result, vec![0xCDAB]);
 }
 
