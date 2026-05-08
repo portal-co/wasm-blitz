@@ -69,34 +69,6 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         Ok(())
     }
 
-    /// Generates code for a higher-order call (indirect call).
-    ///
-    /// Emits x86-64 assembly for calling a function through a function pointer,
-    /// managing the return address and stack properly.
-    ///
-    /// # Arguments
-    ///
-    /// * `arch` - The x86-64 architecture variant
-    /// * `state` - Current compilation state
-    fn hcall(
-        &mut self,
-        ctx: &mut Context,
-        arch: X64Arch,
-        state: &mut State,
-    ) -> Result<(), Self::Error> {
-        self.pop(ctx, arch, &Reg(1))?;
-        let i = state.label_index;
-        state.label_index += 1;
-        self.lea_label(ctx, arch, &Reg(0), X64Label::Indexed { idx: i })?;
-        self.push(ctx, arch, &Reg(0))?;
-        self.push(ctx, arch, &Reg(1))?;
-        self.mov(ctx, arch, &Reg(0), &Reg::CTX)?;
-        self.xchg(ctx, arch, &Reg(0), &RSP)?;
-        self.ret(ctx, arch)?;
-        self.set_label(ctx, arch, X64Label::Indexed { idx: i })?;
-        Ok(())
-    }
-
     /// Generates x86-64 assembly code for a machine operator.
     ///
     /// Main entry point for translating WASM machine operators into x86-64
@@ -748,29 +720,26 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 // }
                 self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
             }
-            Instruction::Call(function_index) => match func_imports.get(*function_index as usize) {
-                Some(("blitz", h)) if h.starts_with("hypercall") => {
-                    self.hcall(ctx, arch, state)?;
+            Instruction::Call(function_index) => {
+                match func_imports.get(*function_index as usize) {
+                    Some((module, name)) => {
+                        let sym = alloc::format!("{module}__{name}");
+                        self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: sym })?;
+                        self.call(ctx, arch, &Reg(0))?;
+                    }
+                    None => {
+                        let idx = *function_index - func_imports.len() as u32;
+                        self.lea_label(ctx, arch, &Reg(0), X64Label::Func { r#fn: idx })?;
+                        self.call(ctx, arch, &Reg(0))?;
+                    }
                 }
-                _ => {
-                    let function_index = *function_index - func_imports.len() as u32;
-                    self.lea_label(
-                        ctx,
-                        arch,
-                        &Reg(0),
-                        X64Label::Func {
-                            r#fn: function_index,
-                        },
-                    )?;
-                    self.call(ctx, arch, &Reg(0))?;
-                }
-            },
+            }
             // ---- memory.size ------------------------------------------------
             // Load __wasm_mem_pages (32-bit global) and push as i64 onto the WASM stack.
             // The concrete writer must resolve X64Label::External symbols.
             Instruction::MemorySize(_) => {
                 // Get address of the pages-count global into Reg(0).
-                self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: "__wasm_mem_pages" })?;
+                self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: "__wasm_mem_pages".into() })?;
                 // Load the 32-bit value (zero-extend to 64 bits).
                 self.mov(
                     ctx,
@@ -792,7 +761,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
             // the callee pops the hardware return address, accesses delta via its
             // frame pointer, and pushes old_pages before returning.
             Instruction::MemoryGrow(_) => {
-                self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: "__wasm_memory_grow" })?;
+                self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: "__wasm_memory_grow".into() })?;
                 self.call(ctx, arch, &Reg(0))?;
             }
             _ => {}
@@ -801,3 +770,25 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
     }
 }
 impl<T: Writer<X64Label, Context> + ?Sized, Context> WriterExt<Context> for T {}
+
+/// Emit one-instruction jump stubs for each exported function.
+///
+/// Each stub emits an `External` label followed by a `jmp_label` to the
+/// function's internal label. The caller provides `exports` as a list of
+/// `(internal_id, export_name)` where `internal_id` is the WASM function index
+/// minus the import count (i.e. 0-based within the internal function space).
+pub fn emit_export_dispatchers<W, Ctx>(
+    w: &mut W,
+    ctx: &mut Ctx,
+    arch: X64Arch,
+    exports: &[(u32, &str)],
+) -> Result<(), W::Error>
+where
+    W: WriterExt<Ctx>,
+{
+    for (id, name) in exports {
+        w.set_label(ctx, arch, X64Label::External { name: (*name).into() })?;
+        w.jmp_label(ctx, arch, X64Label::Func { r#fn: *id })?;
+    }
+    Ok(())
+}

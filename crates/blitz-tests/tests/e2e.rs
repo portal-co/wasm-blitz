@@ -28,8 +28,8 @@ use portal_solutions_blitz_common::{
         MemorySection, MemoryType, Module, TypeSection, ValType,
     },
 };
-use portal_solutions_blitz_c::{c_emit_data_segments, c_module_preamble, CWrite, State as CState};
-use portal_solutions_blitz_js::{js_apply_data_segments, js_module_preamble, JsWrite, State as JsState};
+use portal_solutions_blitz_c::{c_emit_data_segments, c_emit_exports, c_emit_import_decls, c_module_preamble, CWrite, State as CState};
+use portal_solutions_blitz_js::{js_apply_data_segments, js_emit_exports, js_emit_imports, js_module_preamble, JsWrite, State as JsState};
 
 /// Global counter for unique temp-file names (needed for parallel test runs).
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -88,6 +88,15 @@ fn parse_sigs(wasm: &[u8]) -> (Vec<WpFuncType>, Vec<wasm_encoder::FuncType>, Vec
                         {
                             sigs_wp.push(ft);
                         }
+                    }
+                }
+            }
+            // Imports come before the FunctionSection in WASM; add their type
+            // indices first so that fsigs[wasm_index] is correct for all functions.
+            wasmparser::Payload::ImportSection(reader) => {
+                for imp in reader.into_iter().flatten() {
+                    if let wasmparser::TypeRef::Func(ty_idx) = imp.ty {
+                        fsigs.push(ty_idx);
                     }
                 }
             }
@@ -1744,5 +1753,276 @@ fn test_data_segment_c() {
         .map(|l| l.trim().parse::<u64>().unwrap())
         .collect();
     assert_eq!(result, vec![0xCDAB]);
+}
+
+// ---------------------------------------------------------------------------
+// Import/export helpers
+// ---------------------------------------------------------------------------
+
+/// Parse function imports from WASM bytes, returning `(module, name)` pairs.
+fn parse_imports(wasm: &[u8]) -> Vec<(String, String)> {
+    let mut imports = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::ImportSection(reader) = payload {
+            for imp in reader.into_iter().flatten() {
+                if matches!(imp.ty, wasmparser::TypeRef::Func(_)) {
+                    imports.push((imp.module.to_owned(), imp.name.to_owned()));
+                }
+            }
+        }
+    }
+    imports
+}
+
+/// Parse function exports from WASM bytes, returning `(wasm_function_index, name)` pairs.
+fn parse_exports(wasm: &[u8]) -> Vec<(u32, String)> {
+    let mut exports = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::ExportSection(reader) = payload {
+            for exp in reader.into_iter().flatten() {
+                if exp.kind == wasmparser::ExternalKind::Func {
+                    exports.push((exp.index, exp.name.to_owned()));
+                }
+            }
+        }
+    }
+    exports
+}
+
+/// Build a WASM module that:
+/// 1. Imports `("env", "add_one")` with sig `(i64) -> i64`
+/// 2. Defines an internal function `run(x: i64) -> i64` that calls the import
+/// 3. Exports `"run"` (WASM index 1, since index 0 is the import)
+fn make_module_with_import() -> Vec<u8> {
+    let mut module = Module::new();
+
+    // type 0: (i64) -> i64
+    let mut types = TypeSection::new();
+    types.ty().function([ValType::I64], [ValType::I64]);
+    module.section(&types);
+
+    // import: env::add_one has type 0
+    let mut imports = wasm_encoder::ImportSection::new();
+    imports.import("env", "add_one", wasm_encoder::EntityType::Function(0));
+    module.section(&imports);
+
+    // function 1 (internal): type 0
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+
+    // export "run" = function index 1
+    let mut exports = ExportSection::new();
+    exports.export("run", ExportKind::Func, 1);
+    module.section(&exports);
+
+    // body: local.get 0; call 0 (import); return; end
+    let mut code = CodeSection::new();
+    let mut func = Function::new([]);
+    func.instruction(&Instruction::LocalGet(0));
+    func.instruction(&Instruction::Call(0));
+    func.instruction(&Instruction::Return);
+    func.instruction(&Instruction::End);
+    code.function(&func);
+    module.section(&code);
+
+    module.finish()
+}
+
+/// Compile a WASM module with imports to JS source.
+/// Emits import placeholders first, then function bodies, then export aliases.
+fn compile_js_with_imports_exports(wasm: &[u8]) -> String {
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(wasm);
+    let raw_imports = parse_imports(wasm);
+    let raw_exports = parse_exports(wasm);
+
+    // Convert to &str slices for the API
+    let imports_ref: Vec<(&str, &str)> = raw_imports.iter()
+        .map(|(m, n)| (m.as_str(), n.as_str()))
+        .collect();
+    let exports_ref: Vec<(u32, &str)> = raw_exports.iter()
+        .map(|(idx, n)| (*idx, n.as_str()))
+        .collect();
+
+    let mut bodies = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+
+    let import_count = imports_ref.len() as u32;
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(
+        &bodies, &fsigs, &sigs_wp, import_count,
+    );
+    let ops = dce_pass!(raw_ops);
+
+    let mut out = String::new();
+    js_emit_imports(&mut out, &imports_ref).unwrap();
+
+    let mut state = JsState::default();
+    let mut reencoder = RoundtripReencoder;
+    for op in ops {
+        let op = op.unwrap();
+        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &imports_ref, &mut state, &op, &mut reencoder)
+            .unwrap();
+    }
+
+    js_emit_exports(&mut out, &exports_ref).unwrap();
+    out
+}
+
+/// Compile a WASM module with imports to C source.
+fn compile_c_with_imports_exports(wasm: &[u8]) -> String {
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(wasm);
+    let raw_imports = parse_imports(wasm);
+    let raw_exports = parse_exports(wasm);
+
+    let imports_ref: Vec<(&str, &str)> = raw_imports.iter()
+        .map(|(m, n)| (m.as_str(), n.as_str()))
+        .collect();
+    let exports_ref: Vec<(u32, &str)> = raw_exports.iter()
+        .map(|(idx, n)| (*idx, n.as_str()))
+        .collect();
+
+    let mut bodies = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+
+    let import_count = imports_ref.len() as u32;
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(
+        &bodies, &fsigs, &sigs_wp, import_count,
+    );
+    let ops = dce_pass!(raw_ops);
+
+    let mut out = String::new();
+    c_emit_import_decls(&mut out, &imports_ref, &sigs_enc, &fsigs).unwrap();
+
+    let mut state = CState::default();
+    let mut reencoder = RoundtripReencoder;
+    for op in ops {
+        let op = op.unwrap();
+        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &imports_ref, &mut state, &op, &mut reencoder)
+            .unwrap();
+    }
+
+    c_emit_exports(&mut out, &exports_ref).unwrap();
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Import/export tests
+// ---------------------------------------------------------------------------
+
+/// JS: call an imported function through a WASM module.
+///
+/// The host provides `add_one(x) = x + 1`. The WASM `run` function calls it.
+/// Expected: run(41n) == 42n.
+#[test]
+fn test_import_call_js() {
+    let wasm = make_module_with_import();
+    let js_src = compile_js_with_imports_exports(&wasm);
+
+    // Provide the import ($0 = add_one) and call run (= $1)
+    let harness = "\n$0=function(x){return [x+1n];};Object.defineProperty($0,'__sig',{value:{params:1,rets:1}});\nconst __r=run(41n);\nconst __n=Array.isArray(__r)?__r:[__r];for(const v of __n)console.log(String(v));";
+    let code = format!("{js_src}{harness}");
+
+    let out = std::process::Command::new("node")
+        .arg("-e").arg(&code)
+        .output().expect("node not found");
+    assert!(out.status.success(), "node failed:\n{}\ncode:\n{}", String::from_utf8_lossy(&out.stderr), code);
+
+    let result: Vec<i64> = String::from_utf8(out.stdout).unwrap()
+        .lines().filter(|l| !l.is_empty())
+        .map(|l| l.trim().parse::<i64>().unwrap())
+        .collect();
+    assert_eq!(result, vec![42]);
+}
+
+/// C: call an imported function through a WASM module.
+///
+/// The host provides `fn_0` (add_one). The WASM `fn_1` (`run`) calls it.
+/// Expected: run(41) == 42.
+#[test]
+fn test_import_call_c() {
+    let wasm = make_module_with_import();
+    let c_src = compile_c_with_imports_exports(&wasm);
+
+    // The module exports "run" = fn_1 (WASM index 1, since index 0 is the import)
+    // We provide fn_0 as an add_one impl and call fn_1(41)
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let dir = std::env::temp_dir();
+    let src_path = dir.join(format!("blitz_import_test_{pid}_{seq}.c"));
+    let bin_path = dir.join(format!("blitz_import_test_{pid}_{seq}"));
+
+    let full_src = format!(
+        "#include<stdint.h>\n#include<string.h>\n#include<stdlib.h>\n#include<stdio.h>\n\
+         #define WASM_STACK_SIZE 512\n\
+         // import impl: add_one\n\
+         static uint64_t __add_one_rets[1];\n\
+         static uint64_t* add_one_impl(uint64_t* restrict __in){{\n\
+             __add_one_rets[0]=__in[0]+1;\n\
+             return __add_one_rets;\n\
+         }}\n\
+         {c_src}\n\
+         int main(){{\n\
+             fn_0=add_one_impl;\n\
+             uint64_t _args[1]={{41ull}};\n\
+             uint64_t*_r=run(_args);\n\
+             printf(\"%llu\\n\",_r[0]);\n\
+             return 0;\n\
+         }}\n"
+    );
+
+    std::fs::write(&src_path, &full_src).unwrap();
+    let compile = std::process::Command::new("cc")
+        .arg(&src_path).arg("-Wno-unsequenced").arg("-o").arg(&bin_path)
+        .output().expect("cc not found");
+    assert!(compile.status.success(), "C compile failed:\n{}\nsource:\n{}", String::from_utf8_lossy(&compile.stderr), full_src);
+
+    let run = std::process::Command::new(&bin_path).output().expect("failed to run");
+    assert!(run.status.success());
+
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&bin_path);
+
+    let result: u64 = String::from_utf8(run.stdout).unwrap().trim().parse().unwrap();
+    assert_eq!(result, 42);
+}
+
+/// JS: verify that exported function aliases are emitted correctly.
+#[test]
+fn test_export_js() {
+    let wasm = make_module(&[ValType::I64], &[ValType::I64], &[
+        Instruction::LocalGet(0),
+    ]);
+    let js_src = compile_js(&wasm);
+    let raw_exports = parse_exports(&wasm);
+    let exports_ref: Vec<(u32, &str)> = raw_exports.iter().map(|(i, n)| (*i, n.as_str())).collect();
+    let mut with_export = js_src.clone();
+    js_emit_exports(&mut with_export, &exports_ref).unwrap();
+
+    // The module exports "f" = WASM index 0
+    assert!(with_export.contains("var f=$0;"), "expected export alias in:\n{with_export}");
+}
+
+/// C: verify that exported function alias is emitted with correct signature.
+#[test]
+fn test_export_c() {
+    let wasm = make_module(&[ValType::I64], &[ValType::I64], &[
+        Instruction::LocalGet(0),
+    ]);
+    let c_src = compile_c(&wasm);
+    let raw_exports = parse_exports(&wasm);
+    let exports_ref: Vec<(u32, &str)> = raw_exports.iter().map(|(i, n)| (*i, n.as_str())).collect();
+    let mut with_export = c_src.clone();
+    c_emit_exports(&mut with_export, &exports_ref).unwrap();
+
+    // Should emit an alias function named "f"
+    assert!(with_export.contains("uint64_t*f("), "expected export alias in:\n{with_export}");
 }
 

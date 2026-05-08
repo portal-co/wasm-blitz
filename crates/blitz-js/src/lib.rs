@@ -936,3 +936,27 @@ pub fn js_apply_data_segments(
     }
     Ok(())
 }
+
+/// Emit `var $N;` declarations for each imported function.
+///
+/// Import indices are 0-based WASM indices. The caller must assign these
+/// variables before invoking any function that calls an import:
+/// ```js
+/// $0 = function(arg) { return [arg + 1n]; };
+/// ```
+pub fn js_emit_imports(w: &mut (dyn Write + '_), imports: &[(&str, &str)]) -> core::fmt::Result {
+    for (i, (module, name)) in imports.iter().enumerate() {
+        write!(w, "var ${i};// {module}::{name}\n")?;
+    }
+    Ok(())
+}
+
+/// Emit `var <name> = $N;` aliases for each exported function.
+///
+/// `wasm_idx` is the full WASM function index (import_count + internal_id).
+pub fn js_emit_exports(w: &mut (dyn Write + '_), exports: &[(u32, &str)]) -> core::fmt::Result {
+    for (wasm_idx, name) in exports {
+        write!(w, "var {name}=${wasm_idx};\n")?;
+    }
+    Ok(())
+}

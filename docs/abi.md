@@ -296,3 +296,60 @@ mov  sp, x29
 ldp  x29, x30, [sp], #16
 ret
 ```
+
+---
+
+## Imports and Exports
+
+### Import convention
+
+When a WASM module imports a function `(module, name)`, blitz generates a call to
+an external symbol named `{module}__{name}` (double-underscore separator).
+
+**Assembly backends** (x86-64, RISC-V, AArch64):
+- The external symbol must be a function that follows the **blitz WASM ABI** for that
+  architecture (i.e. it reads/writes the hardware operand stack in the same way as
+  internal functions).
+- The symbol is loaded via a label reference (`lea_label` / `jal_label` / `adr_label`)
+  then called via `call` / `jal(Reg(10))` / `bl`.
+- The `External { name: String }` label variant carries the symbol name.
+
+**C backend**:
+- `c_emit_import_decls(w, imports, sigs, fsigs)` emits a `__sig_N` struct and a
+  function-pointer variable `fn_N` for each import (N = WASM function index).
+- The caller must set `fn_N = <host_impl>;` before invoking any WASM function that
+  calls the import. The host implementation must follow the blitz C ABI:
+  `uint64_t* host_fn(uint64_t* restrict args)`.
+
+**JS backend**:
+- `js_emit_imports(w, imports)` emits `var $N;` for each import.
+- The caller must assign `$N = hostFunction;` before calling. The host function must
+  have `Object.defineProperty($N, '__sig', { value: { params: P, rets: R } })` set,
+  and return `[...results]`.
+
+### Export convention
+
+**Assembly backends**:
+- `emit_export_dispatchers(w, ctx, arch, exports)` emits a one-instruction stub per
+  export: `External { name: export_name }` label + unconditional jump to
+  `Func { fn: internal_id }`.
+- `exports` is a list of `(internal_id, export_name)` where `internal_id` is the WASM
+  function index minus the import count.
+
+**C backend**:
+- `c_emit_exports(w, exports)` emits an alias function:
+  `uint64_t* <name>(uint64_t* restrict __in) { return fn_N(__in); }`
+- `exports` is a list of `(wasm_function_index, name)` where `wasm_function_index`
+  includes the import count.
+
+**JS backend**:
+- `js_emit_exports(w, exports)` emits `var <name> = $N;` for each export.
+- Same index convention as C: full WASM index including imports.
+
+### Symbol naming example
+
+Given a module with:
+- Import: `("env", "log")` → assembly symbol `env__log`, C/JS variable `fn_0` / `$0`
+- Internal function 0 (WASM index 1) exported as `"run"` → assembly label `run`,
+  C alias `uint64_t* run(...)`, JS alias `var run=$1;`
+

@@ -19,15 +19,15 @@ pub use portal_solutions_asm_riscv64::*;
 const SP: Reg = Reg(2);
 
 /// Label types for RISC-V code generation.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum RiscvLabel {
     /// An indexed label for control flow within a function.
     Indexed { idx: usize },
     /// A function entry point label.
     Func { r#fn: u32 },
     /// An external symbol that the linker/loader resolves at runtime.
-    /// Used for `__wasm_mem_pages` and `__wasm_memory_grow`.
-    External { name: &'static str },
+    /// Used for imports (`{module}__{name}`), `__wasm_mem_pages`, and `__wasm_memory_grow`.
+    External { name: alloc::string::String },
 }
 
 impl Display for RiscvLabel {

@@ -45,7 +45,7 @@ pub struct State {
 }
 
 /// Represents a control-flow frame.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum Endable {
     Block { end_lbl: AArch64Label },
     Loop  { head_lbl: AArch64Label },
@@ -172,7 +172,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         -> Result<(), Self::Error>
     {
         let idx = state.if_stack.len().saturating_sub(depth as usize + 1);
-        match state.if_stack[idx] {
+        match state.if_stack[idx].clone() {
             Endable::Loop { head_lbl } => {
                 self.b_label(ctx, arch, head_lbl)
             }
@@ -400,7 +400,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             // ---- memory.size / memory.grow ----
             Instruction::MemorySize(_) => {
                 // Load address of __wasm_mem_pages, load 32-bit page count.
-                self.adr_label(ctx, arch, &reg(T0), AArch64Label::External { name: "__wasm_mem_pages" })?;
+                self.adr_label(ctx, arch, &reg(T0), AArch64Label::External { name: "__wasm_mem_pages".into() })?;
                 let mem = MemArgKind::Mem {
                     base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
                     offset: None,
@@ -415,7 +415,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             }
             Instruction::MemoryGrow(_) => {
                 // delta is on WASM stack; call via blitz WASM convention.
-                self.adr_label(ctx, arch, &reg(T0), AArch64Label::External { name: "__wasm_memory_grow" })?;
+                self.adr_label(ctx, arch, &reg(T0), AArch64Label::External { name: "__wasm_memory_grow".into() })?;
                 self.bl(ctx, arch, &reg(T0))
             }
 
@@ -429,7 +429,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             Instruction::Loop(_) => {
                 let head_lbl = AArch64Label::Indexed { idx: state.label_index };
                 state.label_index += 1;
-                self.set_label(ctx, arch, head_lbl)?;
+                self.set_label(ctx, arch, head_lbl.clone())?;
                 state.if_stack.push(Endable::Loop { head_lbl });
                 Ok(())
             }
@@ -440,13 +440,13 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 state.label_index += 1;
                 self.wasm_pop(ctx, arch, T0)?;
                 self.cmp(ctx, arch, &reg(T0), &MemArgKind::NoMem(ArgKind::Lit(0)))?;
-                self.bcond_label(ctx, arch, ConditionCode::EQ, else_lbl)?;
+                self.bcond_label(ctx, arch, ConditionCode::EQ, else_lbl.clone())?;
                 state.if_stack.push(Endable::If { else_lbl, end_lbl });
                 Ok(())
             }
             Instruction::Else => {
-                if let Some(Endable::If { else_lbl, end_lbl }) = state.if_stack.last().copied() {
-                    self.b_label(ctx, arch, end_lbl)?;
+                if let Some(Endable::If { else_lbl, end_lbl }) = state.if_stack.last().cloned() {
+                    self.b_label(ctx, arch, end_lbl.clone())?;
                     self.set_label(ctx, arch, else_lbl)?;
                     *state.if_stack.last_mut().unwrap() = Endable::If {
                         else_lbl: AArch64Label::Indexed { idx: usize::MAX },
@@ -471,7 +471,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 state.label_index += 1;
                 self.wasm_pop(ctx, arch, T0)?;
                 self.cmp(ctx, arch, &reg(T0), &MemArgKind::NoMem(ArgKind::Lit(0)))?;
-                self.bcond_label(ctx, arch, ConditionCode::EQ, skip)?;
+                self.bcond_label(ctx, arch, ConditionCode::EQ, skip.clone())?;
                 self.do_br(ctx, arch, state, *depth)?;
                 self.set_label(ctx, arch, skip)
             }
@@ -484,11 +484,11 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 }
                 for (i, _) in targets.iter().enumerate() {
                     self.cmp(ctx, arch, &reg(T0), &MemArgKind::NoMem(ArgKind::Lit(i as u64)))?;
-                    self.bcond_label(ctx, arch, ConditionCode::EQ, case_labels[i])?;
+                    self.bcond_label(ctx, arch, ConditionCode::EQ, case_labels[i].clone())?;
                 }
                 self.do_br(ctx, arch, state, *default)?;
                 for (i, target) in targets.iter().enumerate() {
-                    self.set_label(ctx, arch, case_labels[i])?;
+                    self.set_label(ctx, arch, case_labels[i].clone())?;
                     self.do_br(ctx, arch, state, *target)?;
                 }
                 Ok(())
@@ -497,12 +497,14 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             // ---- function calls ----
             Instruction::Call(fn_idx) => {
                 match func_imports.get(*fn_idx as usize) {
-                    Some(("blitz", h)) if h.starts_with("hypercall") => {
-                        // hypercall not implemented
+                    Some((module, name)) => {
+                        let sym = alloc::format!("{module}__{name}");
+                        self.adr_label(ctx, arch, &reg(T0), AArch64Label::External { name: sym })?;
+                        self.bl(ctx, arch, &reg(T0))?;
                     }
-                    _ => {
-                        let fn_idx = *fn_idx - func_imports.len() as u32;
-                        self.adr_label(ctx, arch, &reg(T0), AArch64Label::Func { r#fn: fn_idx })?;
+                    None => {
+                        let idx = *fn_idx - func_imports.len() as u32;
+                        self.adr_label(ctx, arch, &reg(T0), AArch64Label::Func { r#fn: idx })?;
                         self.bl(ctx, arch, &reg(T0))?;
                     }
                 }
@@ -584,3 +586,23 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
 }
 
 impl<T: Writer<AArch64Label, Context> + ?Sized, Context> WriterExt<Context> for T {}
+
+/// Emit one-instruction jump stubs for each exported function.
+///
+/// Each stub emits an `External` label followed by a `b_label` to the
+/// function's internal label.
+pub fn emit_export_dispatchers<W, Ctx>(
+    w: &mut W,
+    ctx: &mut Ctx,
+    arch: AArch64Arch,
+    exports: &[(u32, &str)],
+) -> Result<(), W::Error>
+where
+    W: WriterExt<Ctx>,
+{
+    for (id, name) in exports {
+        w.set_label(ctx, arch, AArch64Label::External { name: (*name).into() })?;
+        w.b_label(ctx, arch, AArch64Label::Func { r#fn: *id })?;
+    }
+    Ok(())
+}

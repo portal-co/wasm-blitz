@@ -1025,3 +1025,41 @@ pub trait CWriteSysV: Write {
 }
 
 impl<T: Write + ?Sized> CWriteSysV for T {}
+
+/// Emit `__sig_N` and `fn_N` function-pointer declarations for each imported function.
+///
+/// The caller must set each pointer before invoking any function that calls an import:
+/// ```c
+/// fn_0 = my_host_add_one;
+/// ```
+/// The function pointer follows the blitz C ABI: `uint64_t* (*)(uint64_t* restrict)`.
+pub fn c_emit_import_decls(
+    w: &mut (dyn core::fmt::Write + '_),
+    imports: &[(&str, &str)],
+    sigs: &[FuncType],
+    fsigs: &[u32],
+) -> core::fmt::Result {
+    for (i, (module, name)) in imports.iter().enumerate() {
+        let sig = &sigs[fsigs[i] as usize];
+        write!(w,
+            "static const struct{{int params;int rets;}}__sig_{i}={{.params={0},.rets={1}}};",
+            sig.params().len(), sig.results().len()
+        )?;
+        write!(w, "static uint64_t*(*fn_{i})(uint64_t*restrict)=0;// {module}::{name}\n")?;
+    }
+    Ok(())
+}
+
+/// Emit alias functions that expose internal functions under their export names.
+///
+/// `exports` is a list of `(wasm_function_index, export_name)` where
+/// `wasm_function_index` is the full WASM index (import_count + internal_id).
+pub fn c_emit_exports(
+    w: &mut (dyn core::fmt::Write + '_),
+    exports: &[(u32, &str)],
+) -> core::fmt::Result {
+    for (wasm_idx, name) in exports {
+        write!(w, "uint64_t*{name}(uint64_t*restrict __in){{return fn_{wasm_idx}(__in);}}\n")?;
+    }
+    Ok(())
+}

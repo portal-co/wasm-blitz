@@ -710,14 +710,14 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 state.label_index += 2;
                 let lbl_true = RiscvLabel::Indexed { idx: i };
                 let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                self.bcond_label(ctx, arch, ConditionCode::EQ, &ra, &rb, lbl_true)?;
+                self.bcond_label(ctx, arch, ConditionCode::EQ, &ra, &rb, lbl_true.clone())?;
                 // false: dest = 0
                 self.li(ctx, arch, &dest, 0)?;
                 self.jal_label(
                     ctx,
                     arch,
                     &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_end,
+                    lbl_end.clone(),
                 )?;
                 self.set_label(ctx, arch, lbl_true)?;
                 self.li(ctx, arch, &dest, 1)?;
@@ -761,14 +761,14 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 state.label_index += 2;
                 let lbl_true = RiscvLabel::Indexed { idx: i };
                 let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                self.bcond_label(ctx, arch, ConditionCode::NE, &ra, &rb, lbl_true)?;
+                self.bcond_label(ctx, arch, ConditionCode::NE, &ra, &rb, lbl_true.clone())?;
                 // false: dest = 0
                 self.li(ctx, arch, &dest, 0)?;
                 self.jal_label(
                     ctx,
                     arch,
                     &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_end,
+                    lbl_end.clone(),
                 )?;
                 self.set_label(ctx, arch, lbl_true)?;
                 self.li(ctx, arch, &dest, 1)?;
@@ -810,13 +810,13 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 state.label_index += 2;
                 let lbl_true = RiscvLabel::Indexed { idx: i };
                 let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                self.bcond_label(ctx, arch, ConditionCode::LT, &ra, &rb, lbl_true)?;
+                self.bcond_label(ctx, arch, ConditionCode::LT, &ra, &rb, lbl_true.clone())?;
                 self.li(ctx, arch, &dest, 0)?;
                 self.jal_label(
                     ctx,
                     arch,
                     &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_end,
+                    lbl_end.clone(),
                 )?;
                 self.set_label(ctx, arch, lbl_true)?;
                 self.li(ctx, arch, &dest, 1)?;
@@ -858,13 +858,13 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 state.label_index += 2;
                 let lbl_true = RiscvLabel::Indexed { idx: i };
                 let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                self.bcond_label(ctx, arch, ConditionCode::LTU, &ra, &rb, lbl_true)?;
+                self.bcond_label(ctx, arch, ConditionCode::LTU, &ra, &rb, lbl_true.clone())?;
                 self.li(ctx, arch, &dest, 0)?;
                 self.jal_label(
                     ctx,
                     arch,
                     &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_end,
+                    lbl_end.clone(),
                 )?;
                 self.set_label(ctx, arch, lbl_true)?;
                 self.li(ctx, arch, &dest, 1)?;
@@ -907,13 +907,13 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 let lbl_true = RiscvLabel::Indexed { idx: i };
                 let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
                 // a > b  <=> b < a
-                self.bcond_label(ctx, arch, ConditionCode::LT, &rb, &ra, lbl_true)?;
+                self.bcond_label(ctx, arch, ConditionCode::LT, &rb, &ra, lbl_true.clone())?;
                 self.li(ctx, arch, &dest, 0)?;
                 self.jal_label(
                     ctx,
                     arch,
                     &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_end,
+                    lbl_end.clone(),
                 )?;
                 self.set_label(ctx, arch, lbl_true)?;
                 self.li(ctx, arch, &dest, 1)?;
@@ -956,13 +956,13 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 let lbl_true = RiscvLabel::Indexed { idx: i };
                 let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
                 // a > b <=> b < a
-                self.bcond_label(ctx, arch, ConditionCode::LTU, &rb, &ra, lbl_true)?;
+                self.bcond_label(ctx, arch, ConditionCode::LTU, &rb, &ra, lbl_true.clone())?;
                 self.li(ctx, arch, &dest, 0)?;
                 self.jal_label(
                     ctx,
                     arch,
                     &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_end,
+                    lbl_end.clone(),
                 )?;
                 self.set_label(ctx, arch, lbl_true)?;
                 self.li(ctx, arch, &dest, 1)?;
@@ -1005,13 +1005,13 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 let lbl_true = RiscvLabel::Indexed { idx: i };
                 let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
                 // a <= b <=> !(a > b)  => branch if GT then true
-                self.bcond_label(ctx, arch, ConditionCode::GT, &ra, &rb, lbl_true)?;
+                self.bcond_label(ctx, arch, ConditionCode::GT, &ra, &rb, lbl_true.clone())?;
                 self.li(ctx, arch, &dest, 0)?;
                 self.jal_label(
                     ctx,
                     arch,
                     &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_end,
+                    lbl_end.clone(),
                 )?;
                 self.set_label(ctx, arch, lbl_true)?;
                 self.li(ctx, arch, &dest, 1)?;
@@ -1054,13 +1054,13 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 let lbl_true = RiscvLabel::Indexed { idx: i };
                 let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
                 // a <= b <=> !(a > b unsigned)
-                self.bcond_label(ctx, arch, ConditionCode::GTU, &ra, &rb, lbl_true)?;
+                self.bcond_label(ctx, arch, ConditionCode::GTU, &ra, &rb, lbl_true.clone())?;
                 self.li(ctx, arch, &dest, 0)?;
                 self.jal_label(
                     ctx,
                     arch,
                     &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_end,
+                    lbl_end.clone(),
                 )?;
                 self.set_label(ctx, arch, lbl_true)?;
                 self.li(ctx, arch, &dest, 1)?;
@@ -1097,7 +1097,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     ConditionCode::EQ,
                     &tmp,
                     &portal_solutions_blitz_common::asm::Reg(0),
-                    skip,
+                    skip.clone(),
                 )?;
                 self.br(ctx, arch, state, *relative_depth)?;
                 self.set_label(ctx, arch, skip)?;
@@ -1134,13 +1134,13 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 state.label_index += 1;
                 for (i, target) in targets.iter().enumerate() {
                     let lit: u64 = i as u64;
-                    self.bcond_label(ctx, arch, ConditionCode::EQ, &idx_reg, &lit, case_labels[i])?;
+                    self.bcond_label(ctx, arch, ConditionCode::EQ, &idx_reg, &lit, case_labels[i].clone())?;
                 }
                 // none matched -> branch to default
                 self.br(ctx, arch, state, *default)?;
                 // cases
                 for (i, target) in targets.iter().enumerate() {
-                    self.set_label(ctx, arch, case_labels[i])?;
+                    self.set_label(ctx, arch, case_labels[i].clone())?;
                     self.br(ctx, arch, state, *target)?;
                 }
                 self.set_label(ctx, arch, default_label)?;
@@ -1195,7 +1195,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     ctx,
                     arch,
                     &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_end,
+                    lbl_end.clone(),
                 )?;
                 self.set_label(ctx, arch, RiscvLabel::Indexed { idx: idx + 1 })?;
             }
@@ -1250,19 +1250,16 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     emit_cmds(self, ctx, arch, it)?;
                 }
                 match func_imports.get(*function_index as usize) {
-                    Some(("blitz", h)) if h.starts_with("hypercall") => {
-                        // not implemented: hypercall path
+                    Some((module, name)) => {
+                        let sym = alloc::format!("{module}__{name}");
+                        self.jal_label(ctx, arch, &portal_solutions_blitz_common::asm::Reg(10),
+                            RiscvLabel::External { name: sym })?;
+                        self.call(ctx, arch, &portal_solutions_blitz_common::asm::Reg(10))?;
                     }
-                    _ => {
-                        let function_index = *function_index - func_imports.len() as u32;
-                        self.jal_label(
-                            ctx,
-                            arch,
-                            &portal_solutions_blitz_common::asm::Reg(10),
-                            RiscvLabel::Func {
-                                r#fn: function_index,
-                            },
-                        )?;
+                    None => {
+                        let idx = *function_index - func_imports.len() as u32;
+                        self.jal_label(ctx, arch, &portal_solutions_blitz_common::asm::Reg(10),
+                            RiscvLabel::Func { r#fn: idx })?;
                         self.call(ctx, arch, &portal_solutions_blitz_common::asm::Reg(10))?;
                     }
                 }
@@ -1304,7 +1301,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 }
                 let dest = Reg(10);
                 // Load address of __wasm_mem_pages into dest.
-                self.jal_label(ctx, arch, &dest, RiscvLabel::External { name: "__wasm_mem_pages" })?;
+                self.jal_label(ctx, arch, &dest, RiscvLabel::External { name: "__wasm_mem_pages".into() })?;
                 // Dereference: load 32-bit page count, zero-extend to 64 bits.
                 let mem = MemArgKind::Mem {
                     base: ArgKind::Reg { reg: dest, size: MemorySize::_64 },
@@ -1328,7 +1325,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     emit_cmds(self, ctx, arch, it)?;
                 }
                 let fn_reg = Reg(10);
-                self.jal_label(ctx, arch, &fn_reg, RiscvLabel::External { name: "__wasm_memory_grow" })?;
+                self.jal_label(ctx, arch, &fn_reg, RiscvLabel::External { name: "__wasm_memory_grow".into() })?;
                 self.call(ctx, arch, &fn_reg)?;
             }
             _ => {}
@@ -1599,6 +1596,28 @@ pub fn call<W: Writer<RiscvLabel, Context>, Context>(
 ) -> Result<(), W::Error> {
     // assume r contains function address; perform jalr x1, r
     w.jalr(ctx, arch, &portal_solutions_blitz_common::asm::Reg(1), r, 0)
+}
+
+/// Emit one-instruction jump stubs for each exported function.
+///
+/// Each stub emits an `External` label followed by a `jal_label` with `x0`
+/// (the pseudo-jump, equivalent to `j target`) to the function's internal label.
+pub fn emit_export_dispatchers<W, Ctx>(
+    w: &mut W,
+    ctx: &mut Ctx,
+    arch: RiscV64Arch,
+    exports: &[(u32, &str)],
+) -> Result<(), W::Error>
+where
+    W: Writer<RiscvLabel, Ctx>,
+{
+    for (id, name) in exports {
+        w.set_label(ctx, arch, RiscvLabel::External { name: (*name).into() })?;
+        // jal x0, target = unconditional jump (no link)
+        w.jal_label(ctx, arch, &portal_solutions_blitz_common::asm::Reg(0),
+            RiscvLabel::Func { r#fn: *id })?;
+    }
+    Ok(())
 }
 
 pub fn ret<W: Writer<RiscvLabel, Context>, Context>(

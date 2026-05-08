@@ -47,16 +47,15 @@ const RSP: Reg = Reg(4);
 /// Label types for x86-64 code generation.
 ///
 /// Labels are used to mark locations in the generated code for jumps and branches.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum X64Label {
     /// An indexed label for control flow within a function.
     Indexed { idx: usize },
     /// A function entry point label.
     Func { r#fn: u32 },
     /// An external symbol that the linker/loader resolves at runtime.
-    /// Used for references to runtime globals (`__wasm_mem_pages`) and
-    /// runtime functions (`__wasm_memory_grow`).
-    External { name: &'static str },
+    /// Used for imports (`{module}__{name}`), `__wasm_mem_pages`, and `__wasm_memory_grow`.
+    External { name: alloc::string::String },
 }
 
 impl Display for X64Label {
