@@ -907,3 +907,121 @@ pub fn c_emit_data_segments(
     }
     write!(w, "}}")
 }
+
+// ---------------------------------------------------------------------------
+// C System V ABI
+// ---------------------------------------------------------------------------
+
+/// State tracker for the C System V ABI code generator.
+///
+/// Identical to `State` but the function is emitted with an individual-argument
+/// signature (`fn_N_sysv`) that wraps the blitz C ABI `fn_N` internally.
+#[derive(Default)]
+pub struct SysVState {
+    fn_id: u32,
+    param_count: usize,
+    ret_count: usize,
+}
+
+/// Trait for generating C code with the System V compatible ABI.
+///
+/// Emits wrapper functions of the form:
+/// ```c
+/// // 0 returns
+/// void fn_N_sysv(uint64_t arg0, ..., uint64_t argN);
+/// // 1 return
+/// uint64_t fn_N_sysv(uint64_t arg0, ..., uint64_t argN);
+/// // 2+ returns
+/// uint64_t fn_N_sysv(uint64_t arg0, ..., uint64_t argN, uint64_t* extra);
+/// ```
+/// The wrapper simply packs its arguments into a local array, calls the blitz C ABI
+/// `fn_N`, and returns the result(s).  This is intentionally slower than a hand-coded
+/// System V function but is correct and avoids duplicating the full code generator.
+pub trait CWriteSysV: Write {
+    fn on_mach_sysv<Annot>(
+        &mut self,
+        sigs: &[FuncType],
+        fsigs: &[u32],
+        func_imports: &[(&str, &str)],
+        state: &mut SysVState,
+        m: &MachOperator<'_, Annot>,
+        r: &mut impl Reencode,
+    ) -> core::fmt::Result
+    where
+        Self: Sized,
+    {
+        match m {
+            MachOperator::StartFn { id, data } => {
+                let id = *id + func_imports.len() as u32;
+                state.fn_id = id;
+                state.param_count = data.num_params;
+                state.ret_count = data.num_returns;
+                Ok(())
+            }
+            MachOperator::Local { .. } => Ok(()),
+            MachOperator::StartBody => {
+                let id = state.fn_id;
+                let params = state.param_count;
+                let rets = state.ret_count;
+
+                // Emit static signature struct (same as blitz C ABI)
+                write!(
+                    self,
+                    "static const struct{{int params;int rets;}}__sysv_sig_{id}={{\
+                     .params={params},.rets={rets}}};"
+                )?;
+
+                // Build parameter list
+                write!(self, "static ")?;
+                match rets {
+                    0 => write!(self, "void")?,
+                    _ => write!(self, "uint64_t")?,
+                }
+                write!(self, " fn_{id}_sysv(")?;
+                for i in 0..params {
+                    if i > 0 { write!(self, ",")?; }
+                    write!(self, "uint64_t _a{i}")?;
+                }
+                // extra out-pointer for 2+ returns
+                if rets >= 2 {
+                    if params > 0 { write!(self, ",")?; }
+                    write!(self, "uint64_t*_extra_rets")?;
+                }
+                if params == 0 && rets < 2 {
+                    write!(self, "void")?;
+                }
+                write!(self, "){{")?;
+
+                // Pack args into array and call fn_N
+                write!(self, "uint64_t _args[{sz}]={{", sz = params.max(1))?;
+                for i in 0..params {
+                    if i > 0 { write!(self, ",")?; }
+                    write!(self, "_a{i}")?;
+                }
+                if params == 0 { write!(self, "0")?; }
+                write!(self, "}};uint64_t*_r=fn_{id}(_args);")?;
+
+                // Return results
+                match rets {
+                    0 => {}
+                    1 => write!(self, "return _r[0];")?,
+                    _ => {
+                        // First result as direct return, rest via out-pointer
+                        write!(self, "if(_extra_rets){{")?;
+                        for i in 1..rets {
+                            write!(self, "_extra_rets[{j}]=_r[{i}];", j = i - 1)?;
+                        }
+                        write!(self, "}}return _r[0];")?;
+                    }
+                }
+                write!(self, "}}")
+            }
+            MachOperator::Instruction { .. }
+            | MachOperator::Operator { .. }
+            | MachOperator::EndBody => Ok(()),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl<T: Write + ?Sized> CWriteSysV for T {}

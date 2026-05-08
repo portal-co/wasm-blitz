@@ -1,0 +1,586 @@
+//! Naive AArch64 code generation — mirrors the RISC-V 64 backend structure.
+//!
+//! Calling convention: blitz WASM ABI (see docs/abi.md).
+//! - SP  = Reg(31)/sp  — WASM operand stack
+//! - FP  = Reg(29)/x29 — frame pointer
+//! - LR  = Reg(30)/x30 — link register
+
+use alloc::{collections::btree_map::BTreeMap, vec::Vec};
+extern crate alloc;
+
+use portal_solutions_asm_aarch64::{
+    out::{
+        arg::{AddressingMode, ArgKind, MemArgKind},
+        Writer, WriterCore,
+    },
+    AArch64Arch, ConditionCode, RegisterClass,
+};
+use portal_pc_asm_common::types::mem::MemorySize;
+#[allow(unused_imports)]
+use portal_solutions_asm_aarch64::out::arg::MemArg;
+use portal_solutions_blitz_common::{
+    asm::Reg,
+    ops::{FnData, MachOperator},
+    wasm_encoder::{self, FuncType, Instruction, reencode::Reencode},
+    wasmparser::Operator,
+};
+
+use crate::AArch64Label;
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+/// Code-generation state for an AArch64 function.
+#[derive(Default)]
+pub struct State {
+    pub local_count: usize,
+    pub num_returns: usize,
+    pub control_depth: usize,
+    pub label_index: usize,
+    /// Control-flow stack: each entry is the label pair (break_lbl, else_lbl_or_0)
+    pub if_stack: Vec<Endable>,
+    pub body: u32,
+    pub body_labels: BTreeMap<u32, usize>,
+}
+
+/// Represents a control-flow frame.
+#[derive(Clone, Copy)]
+pub enum Endable {
+    Block { end_lbl: AArch64Label },
+    Loop  { head_lbl: AArch64Label },
+    If    { else_lbl: AArch64Label, end_lbl: AArch64Label },
+}
+
+// ---------------------------------------------------------------------------
+// Register helpers
+// ---------------------------------------------------------------------------
+
+/// WASM stack pointer = hardware SP.
+const SP: Reg = Reg(31);
+/// Frame pointer.
+const FP: Reg = Reg(29);
+/// Link register.
+const LR: Reg = Reg(30);
+/// Scratch registers (caller-saved / temporaries).
+const T0: Reg = Reg(9);
+const T1: Reg = Reg(10);
+const T2: Reg = Reg(11);
+
+fn reg(r: Reg) -> MemArgKind {
+    MemArgKind::NoMem(ArgKind::Reg { reg: r, size: MemorySize::_64 })
+}
+fn reg32(r: Reg) -> MemArgKind {
+    MemArgKind::NoMem(ArgKind::Reg { reg: r, size: MemorySize::_32 })
+}
+fn mem_base_disp(base: Reg, disp: i32) -> MemArgKind {
+    MemArgKind::Mem {
+        base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
+        offset: None,
+        disp,
+        size: MemorySize::_64,
+        reg_class: RegisterClass::Gpr,
+        mode: AddressingMode::Offset,
+    }
+}
+fn mem_pre(base: Reg, disp: i32) -> MemArgKind {
+    MemArgKind::Mem {
+        base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
+        offset: None,
+        disp,
+        size: MemorySize::_64,
+        reg_class: RegisterClass::Gpr,
+        mode: AddressingMode::PreIndex,
+    }
+}
+fn mem_post(base: Reg, disp: i32) -> MemArgKind {
+    MemArgKind::Mem {
+        base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
+        offset: None,
+        disp,
+        size: MemorySize::_64,
+        reg_class: RegisterClass::Gpr,
+        mode: AddressingMode::PostIndex,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Writer extension trait
+// ---------------------------------------------------------------------------
+
+/// Extension trait providing WASM code generation for AArch64 writers.
+pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
+    /// Push `r` onto the WASM stack (pre-decrement SP).
+    fn wasm_push(&mut self, ctx: &mut Context, arch: AArch64Arch, r: Reg)
+        -> Result<(), Self::Error>
+    {
+        // str r, [sp, #-8]!
+        self.str(ctx, arch, &reg(r), &mem_pre(SP, -8))
+    }
+
+    /// Pop top of WASM stack into `r`.
+    fn wasm_pop(&mut self, ctx: &mut Context, arch: AArch64Arch, r: Reg)
+        -> Result<(), Self::Error>
+    {
+        // ldr r, [sp], #8
+        self.ldr(ctx, arch, &reg(r), &mem_post(SP, 8))
+    }
+
+    /// Load local variable N into `dest`.
+    fn load_local(&mut self, ctx: &mut Context, arch: AArch64Arch, dest: Reg, n: usize)
+        -> Result<(), Self::Error>
+    {
+        let disp = -((n as i32 + 1) * 8);
+        self.ldr(ctx, arch, &reg(dest), &mem_base_disp(FP, disp))
+    }
+
+    /// Store `src` into local variable N.
+    fn store_local(&mut self, ctx: &mut Context, arch: AArch64Arch, src: Reg, n: usize)
+        -> Result<(), Self::Error>
+    {
+        let disp = -((n as i32 + 1) * 8);
+        self.str(ctx, arch, &reg(src), &mem_base_disp(FP, disp))
+    }
+
+    // ---- binary op helpers ----
+    fn pop2_push<F>(&mut self, ctx: &mut Context, arch: AArch64Arch, f: F)
+        -> Result<(), Self::Error>
+    where
+        F: FnOnce(&mut Self, &mut Context, AArch64Arch, Reg, Reg, Reg) -> Result<(), Self::Error>,
+    {
+        self.wasm_pop(ctx, arch, T1)?; // rhs / top
+        self.wasm_pop(ctx, arch, T0)?; // lhs
+        f(self, ctx, arch, T2, T0, T1)?;
+        self.wasm_push(ctx, arch, T2)
+    }
+
+    // ---- compare helper ----
+    fn cmp_push_bool(&mut self, ctx: &mut Context, arch: AArch64Arch, cc: ConditionCode)
+        -> Result<(), Self::Error>
+    {
+        self.wasm_pop(ctx, arch, T1)?; // rhs
+        self.wasm_pop(ctx, arch, T0)?; // lhs
+        self.cmp(ctx, arch, &reg(T0), &reg(T1))?;
+        self.mov_imm(ctx, arch, &reg(T0), 0)?;
+        self.mov_imm(ctx, arch, &reg(T1), 1)?;
+        self.csel(ctx, arch, cc, &reg(T2), &reg(T1), &reg(T0))?;
+        self.wasm_push(ctx, arch, T2)
+    }
+
+    // ---- branch helper ----
+    fn do_br(&mut self, ctx: &mut Context, arch: AArch64Arch, state: &State, depth: u32)
+        -> Result<(), Self::Error>
+    {
+        let idx = state.if_stack.len().saturating_sub(depth as usize + 1);
+        match state.if_stack[idx] {
+            Endable::Loop { head_lbl } => {
+                self.b_label(ctx, arch, head_lbl)
+            }
+            Endable::Block { end_lbl } | Endable::If { end_lbl, .. } => {
+                self.b_label(ctx, arch, end_lbl)
+            }
+        }
+    }
+
+    /// Handle a single WASM instruction (the inner match).
+    fn handle_insn(
+        &mut self,
+        ctx: &mut Context,
+        arch: AArch64Arch,
+        state: &mut State,
+        func_imports: &[(&str, &str)],
+        op: &Instruction<'_>,
+        target: u32,
+    ) -> Result<(), Self::Error> {
+        if target != state.body {
+            let skip_lbl = *state.body_labels.entry(state.body).or_insert_with(|| {
+                state.label_index += 1;
+                state.label_index - 1
+            });
+            self.b_label(ctx, arch, AArch64Label::Indexed { idx: skip_lbl })?;
+            state.body = target;
+            if let Some(idx) = state.body_labels.remove(&state.body) {
+                self.set_label(ctx, arch, AArch64Label::Indexed { idx })?;
+            }
+        }
+        match op {
+            // ---- constants ----
+            Instruction::I64Const(v) => {
+                self.mov_imm(ctx, arch, &reg(T0), *v as u64)?;
+                self.wasm_push(ctx, arch, T0)
+            }
+            Instruction::I32Const(v) => {
+                self.mov_imm(ctx, arch, &reg(T0), *v as u32 as u64)?;
+                self.wasm_push(ctx, arch, T0)
+            }
+
+            // ---- locals ----
+            Instruction::LocalGet(idx) => {
+                self.load_local(ctx, arch, T0, *idx as usize)?;
+                self.wasm_push(ctx, arch, T0)
+            }
+            Instruction::LocalSet(idx) => {
+                self.wasm_pop(ctx, arch, T0)?;
+                self.store_local(ctx, arch, T0, *idx as usize)
+            }
+            Instruction::LocalTee(idx) => {
+                // peek (don't pop), store
+                self.ldr(ctx, arch, &reg(T0), &mem_base_disp(SP, 0))?;
+                self.store_local(ctx, arch, T0, *idx as usize)
+            }
+
+            // ---- i64 arithmetic ----
+            Instruction::I64Add => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.add(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::I64Sub => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.sub(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::I64Mul => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.mul(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::I64DivU => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.udiv(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::I64DivS => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.sdiv(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::I64RemU => {
+                // rem = a - (a / b) * b
+                self.wasm_pop(ctx, arch, T1)?;
+                self.wasm_pop(ctx, arch, T0)?;
+                self.udiv(ctx, arch, &reg(T2), &reg(T0), &reg(T1))?;
+                self.mul(ctx, arch, &reg(T2), &reg(T2), &reg(T1))?;
+                self.sub(ctx, arch, &reg(T2), &reg(T0), &reg(T2))?;
+                self.wasm_push(ctx, arch, T2)
+            }
+            Instruction::I64RemS => {
+                self.wasm_pop(ctx, arch, T1)?;
+                self.wasm_pop(ctx, arch, T0)?;
+                self.sdiv(ctx, arch, &reg(T2), &reg(T0), &reg(T1))?;
+                self.mul(ctx, arch, &reg(T2), &reg(T2), &reg(T1))?;
+                self.sub(ctx, arch, &reg(T2), &reg(T0), &reg(T2))?;
+                self.wasm_push(ctx, arch, T2)
+            }
+            Instruction::I64And => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.and(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::I64Or  => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.orr(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::I64Xor => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.eor(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::I64Shl => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.lsl(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::I64ShrU => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.lsr(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::I64ShrS => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.asr(c, a, &reg(d), &reg(x), &reg(y))),
+
+            // ---- i32 arithmetic (zero-extend results to 64 bits) ----
+            Instruction::I32Add => {
+                self.wasm_pop(ctx, arch, T1)?;
+                self.wasm_pop(ctx, arch, T0)?;
+                self.add(ctx, arch, &reg32(T2), &reg32(T0), &reg32(T1))?;
+                self.uxt(ctx, arch, &reg(T2), &reg32(T2))?;
+                self.wasm_push(ctx, arch, T2)
+            }
+            Instruction::I32Sub => {
+                self.wasm_pop(ctx, arch, T1)?;
+                self.wasm_pop(ctx, arch, T0)?;
+                self.sub(ctx, arch, &reg32(T2), &reg32(T0), &reg32(T1))?;
+                self.uxt(ctx, arch, &reg(T2), &reg32(T2))?;
+                self.wasm_push(ctx, arch, T2)
+            }
+            Instruction::I32Mul => {
+                self.wasm_pop(ctx, arch, T1)?;
+                self.wasm_pop(ctx, arch, T0)?;
+                self.mul(ctx, arch, &reg32(T2), &reg32(T0), &reg32(T1))?;
+                self.uxt(ctx, arch, &reg(T2), &reg32(T2))?;
+                self.wasm_push(ctx, arch, T2)
+            }
+            Instruction::I32DivU => {
+                self.wasm_pop(ctx, arch, T1)?;
+                self.wasm_pop(ctx, arch, T0)?;
+                self.udiv(ctx, arch, &reg32(T2), &reg32(T0), &reg32(T1))?;
+                self.uxt(ctx, arch, &reg(T2), &reg32(T2))?;
+                self.wasm_push(ctx, arch, T2)
+            }
+            Instruction::I32DivS => {
+                self.wasm_pop(ctx, arch, T1)?;
+                self.wasm_pop(ctx, arch, T0)?;
+                self.sdiv(ctx, arch, &reg32(T2), &reg32(T0), &reg32(T1))?;
+                self.uxt(ctx, arch, &reg(T2), &reg32(T2))?;
+                self.wasm_push(ctx, arch, T2)
+            }
+            Instruction::I32And => self.pop2_push(ctx, arch, |w, c, a, d, x, y| {
+                w.and(c, a, &reg32(d), &reg32(x), &reg32(y))?;
+                w.uxt(c, a, &reg(d), &reg32(d))
+            }),
+            Instruction::I32Or => self.pop2_push(ctx, arch, |w, c, a, d, x, y| {
+                w.orr(c, a, &reg32(d), &reg32(x), &reg32(y))?;
+                w.uxt(c, a, &reg(d), &reg32(d))
+            }),
+            Instruction::I32Xor => self.pop2_push(ctx, arch, |w, c, a, d, x, y| {
+                w.eor(c, a, &reg32(d), &reg32(x), &reg32(y))?;
+                w.uxt(c, a, &reg(d), &reg32(d))
+            }),
+            Instruction::I32Shl => self.pop2_push(ctx, arch, |w, c, a, d, x, y| {
+                w.lsl(c, a, &reg32(d), &reg32(x), &reg32(y))?;
+                w.uxt(c, a, &reg(d), &reg32(d))
+            }),
+            Instruction::I32ShrU => self.pop2_push(ctx, arch, |w, c, a, d, x, y| {
+                w.lsr(c, a, &reg32(d), &reg32(x), &reg32(y))?;
+                w.uxt(c, a, &reg(d), &reg32(d))
+            }),
+            Instruction::I32ShrS => self.pop2_push(ctx, arch, |w, c, a, d, x, y| {
+                w.asr(c, a, &reg32(d), &reg32(x), &reg32(y))?;
+                w.uxt(c, a, &reg(d), &reg32(d))
+            }),
+
+            // ---- comparisons ----
+            Instruction::I64Eqz | Instruction::I32Eqz => {
+                self.wasm_pop(ctx, arch, T0)?;
+                self.cmp(ctx, arch, &reg(T0), &MemArgKind::NoMem(ArgKind::Lit(0)))?;
+                self.mov_imm(ctx, arch, &reg(T0), 0)?;
+                self.mov_imm(ctx, arch, &reg(T1), 1)?;
+                self.csel(ctx, arch, ConditionCode::EQ, &reg(T2), &reg(T1), &reg(T0))?;
+                self.wasm_push(ctx, arch, T2)
+            }
+            Instruction::I64Eq | Instruction::I32Eq => self.cmp_push_bool(ctx, arch, ConditionCode::EQ),
+            Instruction::I64Ne | Instruction::I32Ne => self.cmp_push_bool(ctx, arch, ConditionCode::NE),
+            Instruction::I64LtS | Instruction::I32LtS => self.cmp_push_bool(ctx, arch, ConditionCode::LT),
+            Instruction::I64LtU | Instruction::I32LtU => self.cmp_push_bool(ctx, arch, ConditionCode::LO),
+            Instruction::I64GtS | Instruction::I32GtS => self.cmp_push_bool(ctx, arch, ConditionCode::GT),
+            Instruction::I64GtU | Instruction::I32GtU => self.cmp_push_bool(ctx, arch, ConditionCode::HI),
+            Instruction::I64LeS | Instruction::I32LeS => self.cmp_push_bool(ctx, arch, ConditionCode::LE),
+            Instruction::I64LeU | Instruction::I32LeU => self.cmp_push_bool(ctx, arch, ConditionCode::LS),
+            Instruction::I64GeS | Instruction::I32GeS => self.cmp_push_bool(ctx, arch, ConditionCode::GE),
+            Instruction::I64GeU | Instruction::I32GeU => self.cmp_push_bool(ctx, arch, ConditionCode::HS),
+
+            // ---- memory loads (linear memory) ----
+            Instruction::I64Load(m) => {
+                self.wasm_pop(ctx, arch, T0)?; // address
+                let mem = MemArgKind::Mem {
+                    base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
+                    offset: None,
+                    disp: m.offset as i32,
+                    size: MemorySize::_64,
+                    reg_class: RegisterClass::Gpr,
+                    mode: AddressingMode::Offset,
+                };
+                self.ldr(ctx, arch, &reg(T1), &mem)?;
+                self.wasm_push(ctx, arch, T1)
+            }
+            Instruction::I32Load(m) => {
+                self.wasm_pop(ctx, arch, T0)?;
+                let mem = MemArgKind::Mem {
+                    base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
+                    offset: None,
+                    disp: m.offset as i32,
+                    size: MemorySize::_32,
+                    reg_class: RegisterClass::Gpr,
+                    mode: AddressingMode::Offset,
+                };
+                self.ldr(ctx, arch, &reg32(T1), &mem)?;
+                self.uxt(ctx, arch, &reg(T1), &reg32(T1))?;
+                self.wasm_push(ctx, arch, T1)
+            }
+
+            // ---- memory stores ----
+            Instruction::I64Store(m) => {
+                self.wasm_pop(ctx, arch, T1)?; // value
+                self.wasm_pop(ctx, arch, T0)?; // address
+                let mem = MemArgKind::Mem {
+                    base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
+                    offset: None,
+                    disp: m.offset as i32,
+                    size: MemorySize::_64,
+                    reg_class: RegisterClass::Gpr,
+                    mode: AddressingMode::Offset,
+                };
+                self.str(ctx, arch, &reg(T1), &mem)
+            }
+            Instruction::I32Store(m) => {
+                self.wasm_pop(ctx, arch, T1)?; // value
+                self.wasm_pop(ctx, arch, T0)?; // address
+                let mem = MemArgKind::Mem {
+                    base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
+                    offset: None,
+                    disp: m.offset as i32,
+                    size: MemorySize::_32,
+                    reg_class: RegisterClass::Gpr,
+                    mode: AddressingMode::Offset,
+                };
+                self.str(ctx, arch, &reg32(T1), &mem)
+            }
+
+            // ---- memory.size / memory.grow ----
+            Instruction::MemorySize(_) => {
+                // Load address of __wasm_mem_pages, load 32-bit page count.
+                self.adr_label(ctx, arch, &reg(T0), AArch64Label::External { name: "__wasm_mem_pages" })?;
+                let mem = MemArgKind::Mem {
+                    base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
+                    offset: None,
+                    disp: 0,
+                    size: MemorySize::_32,
+                    reg_class: RegisterClass::Gpr,
+                    mode: AddressingMode::Offset,
+                };
+                self.ldr(ctx, arch, &reg32(T0), &mem)?;
+                self.uxt(ctx, arch, &reg(T0), &reg32(T0))?;
+                self.wasm_push(ctx, arch, T0)
+            }
+            Instruction::MemoryGrow(_) => {
+                // delta is on WASM stack; call via blitz WASM convention.
+                self.adr_label(ctx, arch, &reg(T0), AArch64Label::External { name: "__wasm_memory_grow" })?;
+                self.bl(ctx, arch, &reg(T0))
+            }
+
+            // ---- control flow ----
+            Instruction::Block(_) => {
+                let end_lbl = AArch64Label::Indexed { idx: state.label_index };
+                state.label_index += 1;
+                state.if_stack.push(Endable::Block { end_lbl });
+                Ok(())
+            }
+            Instruction::Loop(_) => {
+                let head_lbl = AArch64Label::Indexed { idx: state.label_index };
+                state.label_index += 1;
+                self.set_label(ctx, arch, head_lbl)?;
+                state.if_stack.push(Endable::Loop { head_lbl });
+                Ok(())
+            }
+            Instruction::If(_) => {
+                let else_lbl = AArch64Label::Indexed { idx: state.label_index };
+                state.label_index += 1;
+                let end_lbl = AArch64Label::Indexed { idx: state.label_index };
+                state.label_index += 1;
+                self.wasm_pop(ctx, arch, T0)?;
+                self.cmp(ctx, arch, &reg(T0), &MemArgKind::NoMem(ArgKind::Lit(0)))?;
+                self.bcond_label(ctx, arch, ConditionCode::EQ, else_lbl)?;
+                state.if_stack.push(Endable::If { else_lbl, end_lbl });
+                Ok(())
+            }
+            Instruction::Else => {
+                if let Some(Endable::If { else_lbl, end_lbl }) = state.if_stack.last().copied() {
+                    self.b_label(ctx, arch, end_lbl)?;
+                    self.set_label(ctx, arch, else_lbl)?;
+                    *state.if_stack.last_mut().unwrap() = Endable::If {
+                        else_lbl: AArch64Label::Indexed { idx: usize::MAX },
+                        end_lbl,
+                    };
+                }
+                Ok(())
+            }
+            Instruction::End => {
+                if let Some(frame) = state.if_stack.pop() {
+                    match frame {
+                        Endable::Block { end_lbl } => self.set_label(ctx, arch, end_lbl)?,
+                        Endable::If { end_lbl, .. } => self.set_label(ctx, arch, end_lbl)?,
+                        Endable::Loop { .. } => {}
+                    }
+                }
+                Ok(())
+            }
+            Instruction::Br(depth) => self.do_br(ctx, arch, state, *depth),
+            Instruction::BrIf(depth) => {
+                let skip = AArch64Label::Indexed { idx: state.label_index };
+                state.label_index += 1;
+                self.wasm_pop(ctx, arch, T0)?;
+                self.cmp(ctx, arch, &reg(T0), &MemArgKind::NoMem(ArgKind::Lit(0)))?;
+                self.bcond_label(ctx, arch, ConditionCode::EQ, skip)?;
+                self.do_br(ctx, arch, state, *depth)?;
+                self.set_label(ctx, arch, skip)
+            }
+            Instruction::BrTable(targets, default) => {
+                self.wasm_pop(ctx, arch, T0)?; // index
+                let mut case_labels = Vec::new();
+                for _ in targets.iter() {
+                    case_labels.push(AArch64Label::Indexed { idx: state.label_index });
+                    state.label_index += 1;
+                }
+                for (i, _) in targets.iter().enumerate() {
+                    self.cmp(ctx, arch, &reg(T0), &MemArgKind::NoMem(ArgKind::Lit(i as u64)))?;
+                    self.bcond_label(ctx, arch, ConditionCode::EQ, case_labels[i])?;
+                }
+                self.do_br(ctx, arch, state, *default)?;
+                for (i, target) in targets.iter().enumerate() {
+                    self.set_label(ctx, arch, case_labels[i])?;
+                    self.do_br(ctx, arch, state, *target)?;
+                }
+                Ok(())
+            }
+
+            // ---- function calls ----
+            Instruction::Call(fn_idx) => {
+                match func_imports.get(*fn_idx as usize) {
+                    Some(("blitz", h)) if h.starts_with("hypercall") => {
+                        // hypercall not implemented
+                    }
+                    _ => {
+                        let fn_idx = *fn_idx - func_imports.len() as u32;
+                        self.adr_label(ctx, arch, &reg(T0), AArch64Label::Func { r#fn: fn_idx })?;
+                        self.bl(ctx, arch, &reg(T0))?;
+                    }
+                }
+                Ok(())
+            }
+
+            Instruction::Return => {
+                // Restore SP from FP, reload FP+LR, return.
+                self.mov(ctx, arch, &reg(SP), &reg(FP))?;
+                self.ldp(ctx, arch, &reg(FP), &reg(LR), &mem_post(SP, 16))?;
+                self.ret(ctx, arch)
+            }
+
+            _ => Ok(()),
+        }
+    }
+
+    /// Handle a `MachOperator` (the outer match, called by the pipeline).
+    fn handle_op<E>(
+        &mut self,
+        ctx: &mut Context,
+        arch: AArch64Arch,
+        state: &mut State,
+        func_imports: &[(&str, &str)],
+        op: &MachOperator<'_>,
+        rewriter: &mut (dyn Reencode<Error = E> + '_),
+        target: u32,
+    ) -> Result<(), Self::Error>
+    where
+        wasm_encoder::reencode::Error<E>: Into<Self::Error>,
+        Self: Sized,
+    {
+        match op {
+            MachOperator::StartFn { id, data } => {
+                state.local_count = data.num_params;
+                state.num_returns = data.num_returns;
+                state.control_depth = data.control_depth;
+
+                // Function label
+                self.set_label(ctx, arch, AArch64Label::Func { r#fn: *id })?;
+
+                // Standard AArch64 prologue: save FP+LR, set FP=SP
+                self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16))?;
+                self.mov(ctx, arch, &reg(FP), &reg(SP))?;
+
+                // Allocate frame for locals + control flow slots
+                let locals_slots = state.local_count as i64 + state.control_depth as i64 * 2 + 2;
+                if locals_slots > 0 {
+                    let size = MemArgKind::NoMem(ArgKind::Lit((locals_slots * 8) as u64));
+                    self.sub(ctx, arch, &reg(SP), &reg(SP), &size)?;
+                }
+                Ok(())
+            }
+
+            MachOperator::Local { count, .. } => {
+                // Zero-initialize new locals on the WASM stack.
+                self.mov_imm(ctx, arch, &reg(T0), 0)?;
+                for _ in 0..*count {
+                    state.local_count += 1;
+                    self.store_local(ctx, arch, T0, state.local_count - 1)?;
+                }
+                Ok(())
+            }
+
+            MachOperator::StartBody => Ok(()),
+            MachOperator::EndBody => Ok(()),
+
+            MachOperator::Instruction { op: insn, .. } => {
+                self.handle_insn(ctx, arch, state, func_imports, insn, target)
+            }
+            MachOperator::Operator { op: Some(op_wasm), .. } => {
+                let insn = rewriter.instruction(op_wasm.clone()).map_err(|e| e.into())?;
+                self.handle_insn(ctx, arch, state, func_imports, &insn, target)
+            }
+            MachOperator::Operator { op: None, .. } => Ok(()),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl<T: Writer<AArch64Label, Context> + ?Sized, Context> WriterExt<Context> for T {}

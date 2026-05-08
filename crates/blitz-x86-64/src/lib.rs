@@ -76,6 +76,7 @@ pub trait Label: portal_solutions_blitz_common::Label<X64Label> {}
 impl<T: portal_solutions_blitz_common::Label<X64Label> + ?Sized> Label for T {}
 
 pub mod fast;
+pub mod sysv;
 /// Naive code generation implementation.
 ///
 /// Contains the naive (straightforward) code generation strategy for x86-64.

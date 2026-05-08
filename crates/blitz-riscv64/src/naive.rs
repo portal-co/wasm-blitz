@@ -1294,6 +1294,43 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 self.mv(ctx, arch, &fp, &saved_fp)?;
                 self.ret(ctx, arch)?;
             }
+            // ---- memory.size ------------------------------------------------
+            // Load the 32-bit `__wasm_mem_pages` global and push as i64.
+            // The concrete writer must resolve RiscvLabel::External symbols.
+            Instruction::MemorySize(_) => {
+                if let Some(ralloc) = state.regalloc.as_mut() {
+                    let it = ralloc.flush();
+                    emit_cmds(self, ctx, arch, it)?;
+                }
+                let dest = Reg(10);
+                // Load address of __wasm_mem_pages into dest.
+                self.jal_label(ctx, arch, &dest, RiscvLabel::External { name: "__wasm_mem_pages" })?;
+                // Dereference: load 32-bit page count, zero-extend to 64 bits.
+                let mem = MemArgKind::Mem {
+                    base: ArgKind::Reg { reg: dest, size: MemorySize::_64 },
+                    offset: None,
+                    disp: 0,
+                    size: MemorySize::_32,
+                    reg_class: RegisterClass::Gpr,
+                };
+                self.ld(ctx, arch, &dest, &mem)?;
+                // Push onto WASM stack.
+                push(self, ctx, arch, dest)?;
+            }
+            // ---- memory.grow ------------------------------------------------
+            // delta is already on the WASM stack top. Call __wasm_memory_grow
+            // using the same WASM calling convention as regular function calls:
+            // the callee pops the return address, accesses delta via its frame
+            // pointer, and pushes old_pages before returning.
+            Instruction::MemoryGrow(_) => {
+                if let Some(ralloc) = state.regalloc.as_mut() {
+                    let it = ralloc.flush();
+                    emit_cmds(self, ctx, arch, it)?;
+                }
+                let fn_reg = Reg(10);
+                self.jal_label(ctx, arch, &fn_reg, RiscvLabel::External { name: "__wasm_memory_grow" })?;
+                self.call(ctx, arch, &fn_reg)?;
+            }
             _ => {}
         }
         Ok(())

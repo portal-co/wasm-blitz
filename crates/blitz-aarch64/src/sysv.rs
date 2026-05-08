@@ -1,0 +1,176 @@
+//! AAPCS64 (AArch64 System V) ABI code generation.
+//!
+//! This module provides a `SysVWriterExt` trait that generates AArch64 functions
+//! following the AAPCS64 standard calling convention, making them directly callable
+//! from C and other System V–conforming code.
+//!
+//! # Calling Convention (AAPCS64)
+//!
+//! - Arguments: X0–X7 (up to 8 integer/pointer arguments)
+//! - Return value: X0 (single), X0 + X1 (pair)
+//! - Callee-saved: X19–X28, X29 (FP), X30 (LR), SP
+//! - Frame: `stp x29, x30, [sp, #-16]!; mov x29, sp`
+//!
+//! The SysV entry code copies X0–X7 into the WASM local frame so that the
+//! naive backend's local-variable handlers work unchanged.  This is the "slower"
+//! path mentioned in docs/abi.md — the overhead is the register-to-stack copy at
+//! the function boundary.
+
+use alloc::vec::Vec;
+extern crate alloc;
+
+use portal_solutions_asm_aarch64::{
+    out::{
+        arg::{AddressingMode, ArgKind, MemArgKind},
+        Writer, WriterCore,
+    },
+    AArch64Arch, RegisterClass,
+};
+use portal_pc_asm_common::types::mem::MemorySize;
+use portal_solutions_blitz_common::{
+    asm::Reg,
+    ops::MachOperator,
+    wasm_encoder::{FuncType, reencode::Reencode},
+};
+
+use crate::naive::{State, WriterExt};
+use crate::AArch64Label;
+use crate::{FP, LR, SP};
+
+fn reg(r: Reg) -> MemArgKind {
+    MemArgKind::NoMem(ArgKind::Reg { reg: r, size: MemorySize::_64 })
+}
+fn mem_pre(base: Reg, disp: i32) -> MemArgKind {
+    MemArgKind::Mem {
+        base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
+        offset: None,
+        disp,
+        size: MemorySize::_64,
+        reg_class: RegisterClass::Gpr,
+        mode: AddressingMode::PreIndex,
+    }
+}
+fn mem_post(base: Reg, disp: i32) -> MemArgKind {
+    MemArgKind::Mem {
+        base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
+        offset: None,
+        disp,
+        size: MemorySize::_64,
+        reg_class: RegisterClass::Gpr,
+        mode: AddressingMode::PostIndex,
+    }
+}
+fn mem_base_disp(base: Reg, disp: i32) -> MemArgKind {
+    MemArgKind::Mem {
+        base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
+        offset: None,
+        disp,
+        size: MemorySize::_64,
+        reg_class: RegisterClass::Gpr,
+        mode: AddressingMode::Offset,
+    }
+}
+
+/// AAPCS64 argument registers in order (X0–X7).
+const ARG_REGS: [Reg; 8] = [
+    Reg(0), Reg(1), Reg(2), Reg(3), Reg(4), Reg(5), Reg(6), Reg(7),
+];
+
+use portal_solutions_blitz_common::wasm_encoder::Instruction;
+
+/// Extension trait for generating AAPCS64-compatible functions.
+///
+/// Delegates all instruction-level code to the naive `WriterExt::handle_insn`;
+/// only the function boundary (StartFn / Return) is different.
+pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Context> {
+    /// Handle an instruction, using the AAPCS64 Return epilogue instead of the naive one.
+    fn sysv_handle_insn(
+        &mut self,
+        ctx: &mut Context,
+        arch: AArch64Arch,
+        state: &mut State,
+        func_imports: &[(&str, &str)],
+        op: &Instruction<'_>,
+        target: u32,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        match op {
+            Instruction::Return => {
+                // AAPCS64 return: pop result into X0, restore frame, ret
+                self.wasm_pop(ctx, arch, Reg(0))?;
+                self.mov(ctx, arch, &reg(SP), &reg(FP))?;
+                self.ldp(ctx, arch, &reg(FP), &reg(LR), &mem_post(SP, 16))?;
+                self.ret(ctx, arch)
+            }
+            other => self.handle_insn(ctx, arch, state, func_imports, other, target),
+        }
+    }
+
+    fn sysv_handle_op<E>(
+        &mut self,
+        ctx: &mut Context,
+        arch: AArch64Arch,
+        state: &mut State,
+        func_imports: &[(&str, &str)],
+        op: &MachOperator<'_>,
+        rewriter: &mut (dyn Reencode<Error = E> + '_),
+        target: u32,
+    ) -> Result<(), Self::Error>
+    where
+        portal_solutions_blitz_common::wasm_encoder::reencode::Error<E>: Into<Self::Error>,
+        Self: Sized,
+    {
+        match op {
+            MachOperator::StartFn { id, data } => {
+                state.local_count = data.num_params;
+                state.num_returns = data.num_returns;
+                state.control_depth = data.control_depth;
+
+                // AAPCS64 function label (different name from naive so both can coexist)
+                self.set_label(ctx, arch, AArch64Label::Indexed { idx: *id as usize + 0x80000000 })?;
+
+                // Standard AAPCS64 prologue
+                self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16))?;
+                self.mov(ctx, arch, &reg(FP), &reg(SP))?;
+
+                // Allocate frame for locals
+                let locals_slots = data.num_params as i64 + state.control_depth as i64 * 2 + 2;
+                if locals_slots > 0 {
+                    let size = MemArgKind::NoMem(ArgKind::Lit((locals_slots * 8) as u64));
+                    self.sub(ctx, arch, &reg(SP), &reg(SP), &size)?;
+                }
+
+                // Copy register arguments into the local frame (FP-relative)
+                for i in 0..data.num_params.min(8) {
+                    let disp = -((i as i32 + 1) * 8);
+                    self.str(ctx, arch, &reg(ARG_REGS[i]), &mem_base_disp(FP, disp))?;
+                }
+                Ok(())
+            }
+
+            // Everything else delegates to SysV instruction handling (returns use AAPCS64 epilogue)
+            MachOperator::Local { count, .. } => {
+                self.mov_imm(ctx, arch, &reg(Reg(9)), 0)?;
+                for _ in 0..*count {
+                    state.local_count += 1;
+                    self.store_local(ctx, arch, Reg(9), state.local_count - 1)?;
+                }
+                Ok(())
+            }
+            MachOperator::StartBody | MachOperator::EndBody => Ok(()),
+            MachOperator::Instruction { op: insn, .. } => {
+                self.sysv_handle_insn(ctx, arch, state, func_imports, insn, target)
+            }
+            MachOperator::Operator { op: Some(op_wasm), .. } => {
+                let insn = rewriter.instruction(op_wasm.clone()).map_err(|e| e.into())?;
+                self.sysv_handle_insn(ctx, arch, state, func_imports, &insn, target)
+            }
+            MachOperator::Operator { op: None, .. } => Ok(()),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl<T: Writer<AArch64Label, Context> + WriterExt<Context> + ?Sized, Context> SysVWriterExt<Context> for T {}

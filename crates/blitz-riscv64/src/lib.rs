@@ -25,6 +25,9 @@ pub enum RiscvLabel {
     Indexed { idx: usize },
     /// A function entry point label.
     Func { r#fn: u32 },
+    /// An external symbol that the linker/loader resolves at runtime.
+    /// Used for `__wasm_mem_pages` and `__wasm_memory_grow`.
+    External { name: &'static str },
 }
 
 impl Display for RiscvLabel {
@@ -32,6 +35,7 @@ impl Display for RiscvLabel {
         match self {
             RiscvLabel::Indexed { idx } => write!(f, "_idx_{idx}"),
             RiscvLabel::Func { r#fn } => write!(f, "f{}", r#fn),
+            RiscvLabel::External { name } => write!(f, "{name}"),
         }
     }
 }
@@ -45,3 +49,4 @@ impl<T: portal_solutions_blitz_common::Label<RiscvLabel> + ?Sized> Label for T {
 /// A minimal, correctness-first implementation will be placed here. For now this
 /// module is a placeholder modeled after the x86-64 backend structure.
 pub mod naive;
+pub mod sysv;

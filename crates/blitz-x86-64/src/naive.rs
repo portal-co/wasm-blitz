@@ -19,17 +19,17 @@ use crate::{
 /// including local variables, control flow, and labels.
 #[derive(Default)]
 pub struct State {
-    local_count: usize,
-    num_returns: usize,
-    control_depth: usize,
-    label_index: usize,
-    if_stack: Vec<Endable>,
-    body: u32,
-    body_labels: BTreeMap<u32, usize>,
+    pub local_count: usize,
+    pub num_returns: usize,
+    pub control_depth: usize,
+    pub label_index: usize,
+    pub if_stack: Vec<Endable>,
+    pub body: u32,
+    pub body_labels: BTreeMap<u32, usize>,
 }
 
 /// Represents a control flow structure that needs an end marker.
-enum Endable {
+pub enum Endable {
     /// A branch target.
     Br,
     /// An if statement with its label index.
