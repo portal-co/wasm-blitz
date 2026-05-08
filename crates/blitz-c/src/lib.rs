@@ -667,6 +667,90 @@ pub trait CWrite: Write {
                 Ok(())
             }
 
+            // ---- memory loads -----------------------------------------------
+            Instruction::I64Load(memarg) => {
+                let off = memarg.offset;
+                write!(self, "tmp={};", pop!(state))?;
+                push(state, self, &format_args!(
+                    "*(uint64_t*)(__wasm_mem+(uint32_t)tmp+{off}ull)"
+                ))
+            }
+            Instruction::I32Load(memarg) => {
+                let off = memarg.offset;
+                write!(self, "tmp={};", pop!(state))?;
+                push(state, self, &format_args!(
+                    "(uint64_t)*(uint32_t*)(__wasm_mem+(uint32_t)tmp+{off}ull)"
+                ))
+            }
+            Instruction::I64Load8U(memarg) | Instruction::I32Load8U(memarg) => {
+                let off = memarg.offset;
+                write!(self, "tmp={};", pop!(state))?;
+                push(state, self, &format_args!(
+                    "(uint64_t)*(__wasm_mem+(uint32_t)tmp+{off}ull)"
+                ))
+            }
+            Instruction::I64Load8S(memarg) | Instruction::I32Load8S(memarg) => {
+                let off = memarg.offset;
+                write!(self, "tmp={};", pop!(state))?;
+                push(state, self, &format_args!(
+                    "(uint64_t)(int64_t)*(int8_t*)(__wasm_mem+(uint32_t)tmp+{off}ull)"
+                ))
+            }
+            Instruction::I64Load16U(memarg) | Instruction::I32Load16U(memarg) => {
+                let off = memarg.offset;
+                write!(self, "tmp={};", pop!(state))?;
+                push(state, self, &format_args!(
+                    "(uint64_t)*(uint16_t*)(__wasm_mem+(uint32_t)tmp+{off}ull)"
+                ))
+            }
+            Instruction::I64Load16S(memarg) | Instruction::I32Load16S(memarg) => {
+                let off = memarg.offset;
+                write!(self, "tmp={};", pop!(state))?;
+                push(state, self, &format_args!(
+                    "(uint64_t)(int64_t)*(int16_t*)(__wasm_mem+(uint32_t)tmp+{off}ull)"
+                ))
+            }
+            Instruction::I64Load32U(memarg) => {
+                let off = memarg.offset;
+                write!(self, "tmp={};", pop!(state))?;
+                push(state, self, &format_args!(
+                    "(uint64_t)*(uint32_t*)(__wasm_mem+(uint32_t)tmp+{off}ull)"
+                ))
+            }
+            Instruction::I64Load32S(memarg) => {
+                let off = memarg.offset;
+                write!(self, "tmp={};", pop!(state))?;
+                push(state, self, &format_args!(
+                    "(uint64_t)(int64_t)*(int32_t*)(__wasm_mem+(uint32_t)tmp+{off}ull)"
+                ))
+            }
+            // ---- memory stores ----------------------------------------------
+            // Pop order: value first (top of stack), then address.
+            Instruction::I64Store(memarg) => {
+                let off = memarg.offset;
+                write!(self, "tmp={};tmp2={};*(uint64_t*)(__wasm_mem+(uint32_t)tmp2+{off}ull)=tmp",
+                    pop!(state), pop!(state))
+            }
+            Instruction::I32Store(memarg) => {
+                let off = memarg.offset;
+                write!(self, "tmp={};tmp2={};*(uint32_t*)(__wasm_mem+(uint32_t)tmp2+{off}ull)=(uint32_t)tmp",
+                    pop!(state), pop!(state))
+            }
+            Instruction::I64Store8(memarg) | Instruction::I32Store8(memarg) => {
+                let off = memarg.offset;
+                write!(self, "tmp={};tmp2={};*(__wasm_mem+(uint32_t)tmp2+{off}ull)=(uint8_t)tmp",
+                    pop!(state), pop!(state))
+            }
+            Instruction::I64Store16(memarg) | Instruction::I32Store16(memarg) => {
+                let off = memarg.offset;
+                write!(self, "tmp={};tmp2={};*(uint16_t*)(__wasm_mem+(uint32_t)tmp2+{off}ull)=(uint16_t)tmp",
+                    pop!(state), pop!(state))
+            }
+            Instruction::I64Store32(memarg) => {
+                let off = memarg.offset;
+                write!(self, "tmp={};tmp2={};*(uint32_t*)(__wasm_mem+(uint32_t)tmp2+{off}ull)=(uint32_t)tmp",
+                    pop!(state), pop!(state))
+            }
             _ => todo!(),
         }?;
         Ok(())
@@ -770,3 +854,11 @@ pub trait CWrite: Write {
 
 /// Blanket implementation of `CWrite` for all `Write` types.
 impl<T: Write + ?Sized> CWrite for T {}
+
+/// Emit the module-level global required for linear memory access.
+///
+/// Call this once, before the first `on_mach` loop, so that `__wasm_mem` is
+/// declared at file scope in the generated C translation unit.
+pub fn c_module_preamble(w: &mut (dyn core::fmt::Write + '_)) -> core::fmt::Result {
+    write!(w, "static uint8_t*__wasm_mem=0;")
+}

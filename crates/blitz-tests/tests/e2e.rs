@@ -24,12 +24,12 @@ use portal_solutions_blitz_common::{
     wasm_encoder::{
         self,
         reencode::RoundtripReencoder,
-        CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction, Module,
-        TypeSection, ValType,
+        CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction, MemorySection,
+        MemoryType, Module, TypeSection, ValType,
     },
 };
-use portal_solutions_blitz_c::{CWrite, State as CState};
-use portal_solutions_blitz_js::{JsWrite, State as JsState};
+use portal_solutions_blitz_c::{c_module_preamble, CWrite, State as CState};
+use portal_solutions_blitz_js::{js_module_preamble, JsWrite, State as JsState};
 
 /// Global counter for unique temp-file names (needed for parallel test runs).
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -274,6 +274,359 @@ fn run_c(c_src: &str, fn_id: u32, args: &[u64], rets: usize) -> Vec<u64> {
 }
 
 
+
+// ---------------------------------------------------------------------------
+// Memory helpers
+// ---------------------------------------------------------------------------
+
+/// Build a WASM module that declares one linear memory page and a single
+/// function.  Used for testing load/store operations.
+fn make_module_with_memory(params: &[ValType], results: &[ValType], instrs: &[Instruction<'_>]) -> Vec<u8> {
+    let mut module = Module::new();
+
+    let mut types = TypeSection::new();
+    types.ty().function(params.iter().cloned(), results.iter().cloned());
+    module.section(&types);
+
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+
+    // One page (64 KiB) of linear memory.
+    let mut memories = MemorySection::new();
+    memories.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    module.section(&memories);
+
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+
+    let mut code = CodeSection::new();
+    let mut func = Function::new([]);
+    for instr in instrs {
+        func.instruction(instr);
+    }
+    func.instruction(&Instruction::Return);
+    func.instruction(&Instruction::End);
+    code.function(&func);
+    module.section(&code);
+
+    module.finish()
+}
+
+/// Compile a WASM module (which may use linear memory) to JS, prepending the
+/// module-level `$mem`/`$mem_dv` globals required for load/store instructions.
+fn compile_js_with_mem(wasm: &[u8]) -> String {
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(wasm);
+
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+
+    let mut out = String::new();
+    js_module_preamble(&mut out).unwrap();
+    let mut state = JsState::default();
+    let mut reencoder = RoundtripReencoder;
+
+    for op in ops {
+        let op = op.unwrap();
+        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &mut state, &op, &mut reencoder)
+            .unwrap();
+    }
+    out
+}
+
+/// Compile a WASM module (which may use linear memory) to C, prepending the
+/// `__wasm_mem` global required for load/store instructions.
+fn compile_c_with_mem(wasm: &[u8]) -> String {
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(wasm);
+
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+
+    let mut out = String::new();
+    c_module_preamble(&mut out).unwrap();
+    let mut state = CState::default();
+    let mut reencoder = RoundtripReencoder;
+
+    for op in ops {
+        let op = op.unwrap();
+        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &mut state, &op, &mut reencoder)
+            .unwrap();
+    }
+    out
+}
+
+/// Run JS with a pre-initialised memory buffer.  `mem_bytes` is written into
+/// `$mem` before the function is called.
+fn run_js_with_mem(js_src: &str, mem_bytes: &[u8], args: &[i64]) -> Vec<i64> {
+    let bytes_js: Vec<String> = mem_bytes.iter().map(|b| b.to_string()).collect();
+    let mem_init = format!("$mem=new Uint8Array([{}]);$mem_dv=new DataView($mem.buffer);", bytes_js.join(","));
+
+    let fn_args: Vec<String> = args.iter().map(|v| format!("{v}n")).collect();
+    let harness = format!(
+        "{mem_init}\nconst __r=$0({});const __n=Array.isArray(__r)?__r:[__r];for(const v of __n)console.log(String(v));",
+        fn_args.join(",")
+    );
+    let code = format!("{js_src}{harness}");
+
+    let out = std::process::Command::new("node")
+        .arg("-e")
+        .arg(&code)
+        .output()
+        .expect("node not found in PATH");
+
+    assert!(
+        out.status.success(),
+        "node exited non-zero.\nstderr: {}\ncode: {}",
+        String::from_utf8_lossy(&out.stderr),
+        code
+    );
+
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.trim().parse::<i64>().expect("expected integer line from node"))
+        .collect()
+}
+
+/// Run C with a pre-initialised memory buffer. `mem_bytes` is written into
+/// `__wasm_mem` before the function is called.
+fn run_c_with_mem(c_src: &str, mem_bytes: &[u8], fn_id: u32, args: &[u64], rets: usize) -> Vec<u64> {
+    use std::io::Write as _;
+
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let dir = std::env::temp_dir();
+    let src_path = dir.join(format!("blitz_mem_{pid}_{seq}.c"));
+    let bin_path = dir.join(format!("blitz_mem_{pid}_{seq}"));
+
+    // Build a main() that initialises __wasm_mem from a byte array.
+    let mem_init: Vec<String> = mem_bytes.iter().map(|b| b.to_string()).collect();
+    let mem_sz = mem_bytes.len().max(1);
+
+    let mut main_body = format!(
+        "int main(){{static uint8_t _mem[{mem_sz}]={{{}}}; __wasm_mem=_mem;uint64_t _args[{}]={{",
+        mem_init.join(","),
+        args.len().max(1)
+    );
+    for (i, &a) in args.iter().enumerate() {
+        if i > 0 { main_body.push(','); }
+        main_body.push_str(&format!("{a}ull"));
+    }
+    if args.is_empty() { main_body.push('0'); }
+    main_body.push_str(&format!("}};uint64_t*_r=fn_{fn_id}(_args);"));
+    for i in 0..rets {
+        main_body.push_str(&format!("printf(\"%llu\\n\",_r[{i}]);"));
+    }
+    main_body.push_str("return 0;}");
+
+    let full_src = format!(
+        "#include<stdint.h>\n#include<string.h>\n#include<stdlib.h>\n#include<stdio.h>\n#define WASM_STACK_SIZE 512\n{c_src}\n{main_body}\n"
+    );
+
+    std::fs::write(&src_path, &full_src).unwrap();
+
+    let compile = std::process::Command::new("cc")
+        .arg(&src_path)
+        .arg("-Wno-unsequenced")
+        .arg("-o")
+        .arg(&bin_path)
+        .output()
+        .expect("cc not found in PATH");
+
+    assert!(
+        compile.status.success(),
+        "C compile failed:\n{}\nsource:\n{}",
+        String::from_utf8_lossy(&compile.stderr),
+        full_src
+    );
+
+    let run = std::process::Command::new(&bin_path)
+        .output()
+        .expect("failed to run compiled binary");
+
+    assert!(run.status.success(), "binary exited non-zero: {}", String::from_utf8_lossy(&run.stderr));
+
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&bin_path);
+
+    String::from_utf8(run.stdout)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.trim().parse::<u64>().expect("expected integer line"))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Memory tests
+// ---------------------------------------------------------------------------
+
+/// i64.store then i64.load at the same address round-trips the value.
+#[test]
+fn test_i64_store_load_js() {
+    // (func (param $addr i32) (param $val i64) (result i64)
+    //   local.get $addr
+    //   local.get $val
+    //   i64.store offset=0
+    //   local.get $addr
+    //   i64.load  offset=0
+    // )
+    use wasm_encoder::MemArg;
+    let memarg = MemArg { offset: 0, align: 3, memory_index: 0 };
+    let wasm = make_module_with_memory(
+        &[ValType::I32, ValType::I64],
+        &[ValType::I64],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I64Store(memarg),
+            Instruction::LocalGet(0),
+            Instruction::I64Load(memarg),
+        ],
+    );
+    let js = compile_js_with_mem(&wasm);
+    // Zero memory, write 42 at offset 8, load it back.
+    let mut mem = vec![0u8; 64];
+    let addr: i64 = 8;
+    let val: i64 = 42;
+    assert_eq!(run_js_with_mem(&js, &mem, &[addr, val]), vec![val]);
+
+    // Round-trip a large value.
+    let val2: i64 = i64::MAX;
+    assert_eq!(run_js_with_mem(&js, &mem, &[addr, val2]), vec![val2]);
+}
+
+#[test]
+fn test_i64_store_load_c() {
+    use wasm_encoder::MemArg;
+    let memarg = MemArg { offset: 0, align: 3, memory_index: 0 };
+    let wasm = make_module_with_memory(
+        &[ValType::I32, ValType::I64],
+        &[ValType::I64],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I64Store(memarg),
+            Instruction::LocalGet(0),
+            Instruction::I64Load(memarg),
+        ],
+    );
+    let c = compile_c_with_mem(&wasm);
+    let mem = vec![0u8; 64];
+    assert_eq!(run_c_with_mem(&c, &mem, 0, &[8, 42], 1), vec![42]);
+    assert_eq!(run_c_with_mem(&c, &mem, 0, &[0, 0xdeadbeef_cafebabe], 1), vec![0xdeadbeef_cafebabe]);
+}
+
+/// i32.store then i32.load round-trips a 32-bit value.
+#[test]
+fn test_i32_store_load_js() {
+    use wasm_encoder::MemArg;
+    let memarg = MemArg { offset: 0, align: 2, memory_index: 0 };
+    let wasm = make_module_with_memory(
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Store(memarg),
+            Instruction::LocalGet(0),
+            Instruction::I32Load(memarg),
+        ],
+    );
+    let js = compile_js_with_mem(&wasm);
+    let mem = vec![0u8; 64];
+    assert_eq!(run_js_with_mem(&js, &mem, &[4, 0xdeadbeef_u32 as i64]), vec![0xdeadbeef_u32 as i64]);
+}
+
+#[test]
+fn test_i32_store_load_c() {
+    use wasm_encoder::MemArg;
+    let memarg = MemArg { offset: 0, align: 2, memory_index: 0 };
+    let wasm = make_module_with_memory(
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Store(memarg),
+            Instruction::LocalGet(0),
+            Instruction::I32Load(memarg),
+        ],
+    );
+    let c = compile_c_with_mem(&wasm);
+    let mem = vec![0u8; 64];
+    assert_eq!(run_c_with_mem(&c, &mem, 0, &[4, 0xdeadbeef], 1), vec![0xdeadbeef]);
+}
+
+/// Non-zero memarg.offset: store at addr=0, load with offset=8 reads the same location.
+#[test]
+fn test_memarg_offset_js() {
+    use wasm_encoder::MemArg;
+    // store with offset=0, load with offset=8 but addr-8
+    let store_arg = MemArg { offset: 0, align: 3, memory_index: 0 };
+    let load_arg  = MemArg { offset: 8, align: 3, memory_index: 0 };
+    let wasm = make_module_with_memory(
+        &[ValType::I64],
+        &[ValType::I64],
+        &[
+            // store val at mem[0]
+            Instruction::I32Const(0),
+            Instruction::LocalGet(0),
+            Instruction::I64Store(store_arg),
+            // load from mem[0+8] using addr=0 and offset=8 → but we stored at 0,
+            // so use addr=0-8 which would be wrong; instead use addr=0 and offset=0 for load.
+            // Simpler: store at addr=8 (I32Const(8)), load at addr=0 offset=8.
+            Instruction::I32Const(8),
+            Instruction::LocalGet(0),
+            Instruction::I64Store(store_arg),
+            Instruction::I32Const(0),
+            Instruction::I64Load(load_arg),
+        ],
+    );
+    let js = compile_js_with_mem(&wasm);
+    let mem = vec![0u8; 64];
+    assert_eq!(run_js_with_mem(&js, &mem, &[99]), vec![99]);
+}
+
+#[test]
+fn test_memarg_offset_c() {
+    use wasm_encoder::MemArg;
+    let store_arg = MemArg { offset: 0, align: 3, memory_index: 0 };
+    let load_arg  = MemArg { offset: 8, align: 3, memory_index: 0 };
+    let wasm = make_module_with_memory(
+        &[ValType::I64],
+        &[ValType::I64],
+        &[
+            Instruction::I32Const(0),
+            Instruction::LocalGet(0),
+            Instruction::I64Store(store_arg),
+            Instruction::I32Const(8),
+            Instruction::LocalGet(0),
+            Instruction::I64Store(store_arg),
+            Instruction::I32Const(0),
+            Instruction::I64Load(load_arg),
+        ],
+    );
+    let c = compile_c_with_mem(&wasm);
+    let mem = vec![0u8; 64];
+    assert_eq!(run_c_with_mem(&c, &mem, 0, &[99], 1), vec![99]);
+}
 
 /// A function that returns an i32 constant should emit a BigInt literal in JS
 /// and a uint64_t cast in C.

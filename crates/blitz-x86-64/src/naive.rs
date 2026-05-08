@@ -487,6 +487,42 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.xchg(ctx, arch, &Reg(2), &Reg(0))?;
                 // self.push(ctx,arch,&Reg(0))?;
             }
+            Instruction::I32Load(memarg) => {
+                self.pop(ctx, arch, &Reg(0))?;
+                self.mov64(ctx, arch, &Reg(1), memarg.offset)?;
+                self.lea(
+                    ctx,
+                    arch,
+                    &Reg(0),
+                    &MemArgKind::Mem {
+                        base: Reg(0),
+                        offset: Some((Reg(1), 0)),
+                        disp: 0,
+                        size: MemorySize::_32,
+                        reg_class: RegisterClass::Gpr,
+                    },
+                )?;
+                self.mov(ctx, arch, &Reg(0), &Reg(0))?;
+                self.push(ctx, arch, &Reg(0))?;
+            }
+            Instruction::I32Store(memarg) => {
+                self.pop(ctx, arch, &Reg(2))?;
+                self.pop(ctx, arch, &Reg(0))?;
+                self.mov64(ctx, arch, &Reg(1), memarg.offset)?;
+                self.lea(
+                    ctx,
+                    arch,
+                    &Reg(0),
+                    &MemArgKind::Mem {
+                        base: Reg(0),
+                        offset: Some((Reg(1), 0)),
+                        disp: 0,
+                        size: MemorySize::_32,
+                        reg_class: RegisterClass::Gpr,
+                    },
+                )?;
+                self.xchg(ctx, arch, &Reg(2), &Reg(0))?;
+            }
             Instruction::LocalGet(local_index) => {
                 self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
                 self.lea(

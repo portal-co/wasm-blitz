@@ -708,6 +708,94 @@ pub trait JsWrite: Write {
                 self.br(sigs, state, *default)?;
                 Ok(())
             }
+            // ---- memory loads -----------------------------------------------
+            // Loads use a one-pop arrow-function IIFE so the evaluated address
+            // is captured in a local `_a` before passing to the DataView method.
+            Instruction::I64Load(memarg) => {
+                let off = memarg.offset;
+                push(state, self, &format_args!(
+                    "((_a=Number({})+{off})=>BigInt.asUintN(64,BigInt($mem_dv.getBigUint64(_a,true))))()",
+                    pop!(state)
+                ))
+            }
+            Instruction::I32Load(memarg) => {
+                let off = memarg.offset;
+                push(state, self, &format_args!(
+                    "BigInt($mem_dv.getUint32(Number({})+{off},true))",
+                    pop!(state)
+                ))
+            }
+            Instruction::I64Load8U(memarg) | Instruction::I32Load8U(memarg) => {
+                let off = memarg.offset;
+                push(state, self, &format_args!(
+                    "BigInt($mem_dv.getUint8(Number({})+{off}))",
+                    pop!(state)
+                ))
+            }
+            Instruction::I64Load8S(memarg) | Instruction::I32Load8S(memarg) => {
+                let off = memarg.offset;
+                push(state, self, &format_args!(
+                    "BigInt($mem_dv.getInt8(Number({})+{off}))",
+                    pop!(state)
+                ))
+            }
+            Instruction::I64Load16U(memarg) | Instruction::I32Load16U(memarg) => {
+                let off = memarg.offset;
+                push(state, self, &format_args!(
+                    "BigInt($mem_dv.getUint16(Number({})+{off},true))",
+                    pop!(state)
+                ))
+            }
+            Instruction::I64Load16S(memarg) | Instruction::I32Load16S(memarg) => {
+                let off = memarg.offset;
+                push(state, self, &format_args!(
+                    "BigInt($mem_dv.getInt16(Number({})+{off},true))",
+                    pop!(state)
+                ))
+            }
+            Instruction::I64Load32U(memarg) => {
+                let off = memarg.offset;
+                push(state, self, &format_args!(
+                    "BigInt($mem_dv.getUint32(Number({})+{off},true))",
+                    pop!(state)
+                ))
+            }
+            Instruction::I64Load32S(memarg) => {
+                let off = memarg.offset;
+                push(state, self, &format_args!(
+                    "BigInt($mem_dv.getInt32(Number({})+{off},true))",
+                    pop!(state)
+                ))
+            }
+            // ---- memory stores ----------------------------------------------
+            // Use the arrow-function-with-defaults pattern (same as binary ops)
+            // so that the two pop expressions don't clobber each other via `tmp`.
+            // Pop order: value first (top of stack), then address.
+            Instruction::I64Store(memarg) => {
+                let off = memarg.offset;
+                write!(self, "((v={},a={})=>$mem_dv.setBigUint64(Number(a)+{off},v,true))()",
+                    pop!(state), pop!(state))
+            }
+            Instruction::I32Store(memarg) => {
+                let off = memarg.offset;
+                write!(self, "((v={},a={})=>$mem_dv.setUint32(Number(a)+{off},Number(v)&0xffffffff,true))()",
+                    pop!(state), pop!(state))
+            }
+            Instruction::I64Store8(memarg) | Instruction::I32Store8(memarg) => {
+                let off = memarg.offset;
+                write!(self, "((v={},a={})=>$mem_dv.setUint8(Number(a)+{off},Number(v)&0xff))()",
+                    pop!(state), pop!(state))
+            }
+            Instruction::I64Store16(memarg) | Instruction::I32Store16(memarg) => {
+                let off = memarg.offset;
+                write!(self, "((v={},a={})=>$mem_dv.setUint16(Number(a)+{off},Number(v)&0xffff,true))()",
+                    pop!(state), pop!(state))
+            }
+            Instruction::I64Store32(memarg) => {
+                let off = memarg.offset;
+                write!(self, "((v={},a={})=>$mem_dv.setUint32(Number(a)+{off},Number(v)&0xffffffff,true))()",
+                    pop!(state), pop!(state))
+            }
             _ => todo!(),
         }?;
         Ok(())
@@ -803,3 +891,11 @@ pub trait JsWrite: Write {
 
 /// Blanket implementation of JsWrite for all types that implement Write.
 impl<T: Write + ?Sized> JsWrite for T {}
+
+/// Emit module-level globals required for linear memory access.
+///
+/// Call this once before the first `on_mach` loop to declare `$mem` and
+/// `$mem_dv` in the generated JavaScript module scope.
+pub fn js_module_preamble(w: &mut (dyn Write + '_)) -> core::fmt::Result {
+    write!(w, "var $mem=new Uint8Array(0);var $mem_dv=new DataView($mem.buffer);")
+}
