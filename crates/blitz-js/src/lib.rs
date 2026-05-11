@@ -906,7 +906,7 @@ pub trait JsWrite: Write {
 /// Blanket implementation of JsWrite for all types that implement Write.
 impl<T: Write + ?Sized> JsWrite for T {}
 
-/// Emit module-level globals required for linear memory access.
+/// Emit module-level globals required for linear memory access (CommonJS / script).
 ///
 /// Call this once before the first `on_mach` loop to declare `$mem` and
 /// `$mem_dv` in the generated JavaScript module scope.
@@ -914,7 +914,15 @@ pub fn js_module_preamble(w: &mut (dyn Write + '_)) -> core::fmt::Result {
     write!(w, "var $mem=new Uint8Array(0);var $mem_dv=new DataView($mem.buffer);")
 }
 
-/// Emit module-scope data-segment initialisation code.
+/// Emit module-level globals required for linear memory access (ES module).
+///
+/// Uses `let` instead of `var` for strict-mode ES module compatibility.
+/// Call this once at the top of an ES module before the first `on_mach` loop.
+pub fn js_module_preamble_esm(w: &mut (dyn Write + '_)) -> core::fmt::Result {
+    write!(w, "let $mem=new Uint8Array(0);let $mem_dv=new DataView($mem.buffer);")
+}
+
+
 ///
 /// Each `(offset, bytes)` pair emits a `$mem.set([...], offset)` call.
 /// This must appear **after** `$mem` has been resized to at least cover
@@ -937,7 +945,7 @@ pub fn js_apply_data_segments(
     Ok(())
 }
 
-/// Emit `var $N;` declarations for each imported function.
+/// Emit `var $N;` declarations for each imported function (CommonJS / script).
 ///
 /// Import indices are 0-based WASM indices. The caller must assign these
 /// variables before invoking any function that calls an import:
@@ -951,12 +959,44 @@ pub fn js_emit_imports(w: &mut (dyn Write + '_), imports: &[(&str, &str)]) -> co
     Ok(())
 }
 
-/// Emit `var <name> = $N;` aliases for each exported function.
+/// Emit ES module import statements for each imported function.
+///
+/// Each import is rendered as:
+/// ```js
+/// import { name as _import_N } from 'module';
+/// let $N = _import_N;
+/// ```
+///
+/// The `_import_N` alias avoids identifier collisions when the same name is
+/// imported from multiple modules.  `$N` is the identifier used by the
+/// compiled WASM body.
+pub fn js_emit_imports_esm(w: &mut (dyn Write + '_), imports: &[(&str, &str)]) -> core::fmt::Result {
+    for (i, (module, name)) in imports.iter().enumerate() {
+        write!(w, "import {{{name} as _import_{i}}} from '{module}';\nlet ${i}=_import_{i};\n")?;
+    }
+    Ok(())
+}
+
+/// Emit `var <name> = $N;` aliases for each exported function (CommonJS / script).
 ///
 /// `wasm_idx` is the full WASM function index (import_count + internal_id).
 pub fn js_emit_exports(w: &mut (dyn Write + '_), exports: &[(u32, &str)]) -> core::fmt::Result {
     for (wasm_idx, name) in exports {
         write!(w, "var {name}=${wasm_idx};\n")?;
+    }
+    Ok(())
+}
+
+/// Emit ES module `export` statements for each exported function.
+///
+/// Generates `export { $N as name };` for each `(wasm_idx, name)` pair.
+/// The `$N` identifiers are the internal function variables emitted by
+/// [`JsWrite::on_mach`]; they are valid JavaScript identifiers.
+///
+/// `wasm_idx` is the full WASM function index (import_count + internal_id).
+pub fn js_emit_exports_esm(w: &mut (dyn Write + '_), exports: &[(u32, &str)]) -> core::fmt::Result {
+    for (wasm_idx, name) in exports {
+        write!(w, "export {{${wasm_idx} as {name}}};\n")?;
     }
     Ok(())
 }

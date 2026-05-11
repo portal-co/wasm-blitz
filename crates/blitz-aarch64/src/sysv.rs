@@ -97,6 +97,26 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         Self: Sized,
     {
         match op {
+            // ---- local access (AAPCS64 FP-relative frame) ------------------
+            // The SysV prologue stores args at [FP - (n+1)*8], which is exactly
+            // the layout that naive's load_local/store_local use, so we can
+            // delegate directly.  Reg(9) = x9, a caller-saved scratch register.
+            Instruction::LocalGet(idx) => {
+                self.load_local(ctx, arch, Reg(9), *idx as usize)?;
+                self.wasm_push(ctx, arch, Reg(9))
+            }
+            Instruction::LocalSet(idx) => {
+                self.wasm_pop(ctx, arch, Reg(9))?;
+                self.store_local(ctx, arch, Reg(9), *idx as usize)
+            }
+            Instruction::LocalTee(idx) => {
+                // Peek at the top of the WASM stack without popping.
+                // SP = Reg(31) in AArch64.
+                self.ldr(ctx, arch, &reg(Reg(9)), &mem_base_disp(Reg(31), 0))?;
+                self.store_local(ctx, arch, Reg(9), *idx as usize)
+            }
+
+            // ---- Return: pop result into X0, AAPCS64 epilogue ---------------
             Instruction::Return => {
                 // AAPCS64 return: pop result into X0, restore frame, ret
                 self.wasm_pop(ctx, arch, Reg(0))?;

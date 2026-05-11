@@ -50,3 +50,5 @@ impl<T: portal_solutions_blitz_common::Label<RiscvLabel> + ?Sized> Label for T {
 /// module is a placeholder modeled after the x86-64 backend structure.
 pub mod naive;
 pub mod sysv;
+/// BackendAbi implementations for RISC-V 64.
+pub mod abi;

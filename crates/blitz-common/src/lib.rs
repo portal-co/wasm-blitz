@@ -101,3 +101,10 @@ pub mod ops;
 ///
 /// Contains various optimization and transformation passes for WASM code.
 pub mod passes;
+
+/// ABI strategy trait and calling-convention marker types.
+///
+/// Provides [`abi::BackendAbi`] and the [`abi::NaiveAbi`] / [`abi::SysVAbi`]
+/// zero-sized marker types.  Backend crates implement the trait with their own
+/// writer-trait bounds.
+pub mod abi;

@@ -74,6 +74,7 @@ impl Display for X64Label {
 pub trait Label: portal_solutions_blitz_common::Label<X64Label> {}
 impl<T: portal_solutions_blitz_common::Label<X64Label> + ?Sized> Label for T {}
 
+pub mod abi;
 pub mod fast;
 pub mod sysv;
 /// Naive code generation implementation.

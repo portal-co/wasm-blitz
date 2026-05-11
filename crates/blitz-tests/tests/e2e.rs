@@ -30,7 +30,6 @@ use portal_solutions_blitz_common::{
 };
 use portal_solutions_blitz_c::{c_emit_data_segments, c_emit_exports, c_emit_import_decls, c_module_preamble, CWrite, State as CState};
 use portal_solutions_blitz_js::{js_apply_data_segments, js_emit_exports, js_emit_imports, js_module_preamble, JsWrite, State as JsState};
-
 /// Global counter for unique temp-file names (needed for parallel test runs).
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -2024,5 +2023,147 @@ fn test_export_c() {
 
     // Should emit an alias function named "f"
     assert!(with_export.contains("uint64_t*f("), "expected export alias in:\n{with_export}");
+}
+
+// ---------------------------------------------------------------------------
+// Tests — ESM output (js_emit_imports_esm / js_emit_exports_esm)
+// ---------------------------------------------------------------------------
+
+/// `js_emit_imports_esm` produces well-formed ES module import statements.
+///
+/// Each import must be a named import from the correct module with an `_import_N`
+/// alias and a matching `let $N = _import_N;` binding that the compiled body
+/// uses when calling imports.
+#[test]
+fn test_esm_imports_structural() {
+    use portal_solutions_blitz_js::js_emit_imports_esm;
+
+    let mut out = String::new();
+    let imports: &[(&str, &str)] = &[
+        ("env", "add_one"),
+        ("math", "sqrt"),
+    ];
+    js_emit_imports_esm(&mut out, imports).unwrap();
+
+    // Import 0: env::add_one
+    assert!(
+        out.contains("import {add_one as _import_0} from 'env';"),
+        "expected ESM import for add_one in:\n{out}"
+    );
+    assert!(
+        out.contains("let $0=_import_0;"),
+        "expected $0 binding in:\n{out}"
+    );
+
+    // Import 1: math::sqrt
+    assert!(
+        out.contains("import {sqrt as _import_1} from 'math';"),
+        "expected ESM import for sqrt in:\n{out}"
+    );
+    assert!(
+        out.contains("let $1=_import_1;"),
+        "expected $1 binding in:\n{out}"
+    );
+}
+
+/// `js_emit_exports_esm` produces well-formed ES module `export` statements.
+///
+/// Each export must be `export { $N as name };` where N is the WASM function
+/// index (import_count + internal_id).
+#[test]
+fn test_esm_exports_structural() {
+    use portal_solutions_blitz_js::js_emit_exports_esm;
+
+    let mut out = String::new();
+    let exports: &[(u32, &str)] = &[(0, "run"), (3, "helper")];
+    js_emit_exports_esm(&mut out, exports).unwrap();
+
+    assert!(
+        out.contains("export {$0 as run};"),
+        "expected `export {{$0 as run}};` in:\n{out}"
+    );
+    assert!(
+        out.contains("export {$3 as helper};"),
+        "expected `export {{$3 as helper}};` in:\n{out}"
+    );
+}
+
+/// `js_module_preamble_esm` emits the memory globals needed for load/store.
+#[test]
+fn test_esm_preamble_structural() {
+    use portal_solutions_blitz_js::js_module_preamble_esm;
+
+    let mut out = String::new();
+    js_module_preamble_esm(&mut out).unwrap();
+
+    assert!(out.contains("$mem"), "expected $mem in preamble:\n{out}");
+    assert!(out.contains("$mem_dv"), "expected $mem_dv in preamble:\n{out}");
+    assert!(out.contains("Uint8Array"), "expected Uint8Array in preamble:\n{out}");
+    assert!(out.contains("DataView"), "expected DataView in preamble:\n{out}");
+}
+
+/// ESM imports/exports are distinct from CJS equivalents.
+///
+/// CJS uses `var $N;` declarations; ESM uses `import` statements.
+/// CJS uses `var name=$N;` aliases; ESM uses `export {$N as name};`.
+#[test]
+fn test_esm_vs_cjs_distinct() {
+    use portal_solutions_blitz_js::{js_emit_imports, js_emit_imports_esm, js_emit_exports, js_emit_exports_esm};
+
+    let imports: &[(&str, &str)] = &[("env", "foo")];
+    let exports: &[(u32, &str)] = &[(0, "bar")];
+
+    let mut cjs_out = String::new();
+    js_emit_imports(&mut cjs_out, imports).unwrap();
+    js_emit_exports(&mut cjs_out, exports).unwrap();
+
+    let mut esm_out = String::new();
+    js_emit_imports_esm(&mut esm_out, imports).unwrap();
+    js_emit_exports_esm(&mut esm_out, exports).unwrap();
+
+    // CJS should use `var $0;` style
+    assert!(cjs_out.contains("var $0;"), "CJS should use var declaration:\n{cjs_out}");
+    // ESM should use `import` statement
+    assert!(esm_out.contains("import {"), "ESM should use import statement:\n{esm_out}");
+
+    // CJS export is an alias assignment
+    assert!(cjs_out.contains("var bar=$0;"), "CJS export should be alias:\n{cjs_out}");
+    // ESM export uses `export` keyword
+    assert!(esm_out.contains("export {$0 as bar};"), "ESM export should use export keyword:\n{esm_out}");
+}
+
+// ---------------------------------------------------------------------------
+// Tests — BackendAbi trait (compile-time / structural)
+// ---------------------------------------------------------------------------
+
+/// Verify that the `BackendAbi` x86-64 `NaiveAbi` and `SysVAbi` types
+/// are publicly accessible and the trait is importable.
+///
+/// This is a compile-time check: if it compiles the types exist and are local.
+#[test]
+fn test_backend_abi_types_x86_64() {
+    use portal_solutions_blitz_x86_64::abi::{NaiveAbi, SysVAbi};
+
+    // ZSTs — just check they can be named and are zero-sized.
+    assert_eq!(core::mem::size_of::<NaiveAbi>(), 0);
+    assert_eq!(core::mem::size_of::<SysVAbi>(), 0);
+}
+
+/// Same compile-time check for AArch64.
+#[test]
+fn test_backend_abi_types_aarch64() {
+    use portal_solutions_blitz_aarch64::abi::{NaiveAbi, SysVAbi};
+
+    assert_eq!(core::mem::size_of::<NaiveAbi>(), 0);
+    assert_eq!(core::mem::size_of::<SysVAbi>(), 0);
+}
+
+/// Same compile-time check for RISC-V 64.
+#[test]
+fn test_backend_abi_types_riscv64() {
+    use portal_solutions_blitz_riscv64::abi::{NaiveAbi, SysVAbi};
+
+    assert_eq!(core::mem::size_of::<NaiveAbi>(), 0);
+    assert_eq!(core::mem::size_of::<SysVAbi>(), 0);
 }
 
