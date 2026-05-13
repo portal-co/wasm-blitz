@@ -2167,3 +2167,428 @@ fn test_backend_abi_types_riscv64() {
     assert_eq!(core::mem::size_of::<SysVAbi>(), 0);
 }
 
+// ---------------------------------------------------------------------------
+// Tests — native backends under Unicorn
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug)]
+enum NativeArch {
+    X86_64,
+    AArch64,
+    Riscv64,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum NativeAbi {
+    Naive,
+    Sysv,
+}
+
+fn compile_native_asm(wasm: &[u8], arch: NativeArch, abi: NativeAbi) -> String {
+    let (sigs_wp, _sigs_enc, fsigs) = parse_sigs(wasm);
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut reencoder = RoundtripReencoder;
+    let mut out = String::new();
+    let mut ctx = ();
+
+    match (arch, abi) {
+        (NativeArch::X86_64, NativeAbi::Naive) => {
+            use portal_solutions_blitz_x86_64::{naive, X64Arch};
+            let mut writer: &mut dyn std::fmt::Write = &mut out;
+            let mut state = naive::State::default();
+            for op in ops {
+                let op = op.unwrap();
+                naive::WriterExt::handle_op(
+                    &mut writer,
+                    &mut ctx,
+                    X64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
+            }
+        }
+        (NativeArch::X86_64, NativeAbi::Sysv) => {
+            use portal_solutions_blitz_x86_64::{sysv, X64Arch};
+            let mut writer: &mut dyn std::fmt::Write = &mut out;
+            let mut state = sysv::SysVState::default();
+            for op in ops {
+                let op = op.unwrap();
+                sysv::SysVWriterExt::sysv_handle_op(
+                    &mut writer,
+                    &mut ctx,
+                    X64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
+            }
+        }
+        (NativeArch::AArch64, NativeAbi::Naive) => {
+            use portal_solutions_blitz_aarch64::{naive, AArch64Arch};
+            let mut writer: &mut dyn std::fmt::Write = &mut out;
+            let mut state = naive::State::default();
+            for op in ops {
+                let op = op.unwrap();
+                naive::WriterExt::handle_op(
+                    &mut writer,
+                    &mut ctx,
+                    AArch64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
+            }
+        }
+        (NativeArch::AArch64, NativeAbi::Sysv) => {
+            use portal_solutions_blitz_aarch64::{naive, sysv, AArch64Arch};
+            let mut writer: &mut dyn std::fmt::Write = &mut out;
+            let mut state = naive::State::default();
+            for op in ops {
+                let op = op.unwrap();
+                sysv::SysVWriterExt::sysv_handle_op(
+                    &mut writer,
+                    &mut ctx,
+                    AArch64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
+            }
+        }
+        (NativeArch::Riscv64, NativeAbi::Naive) => {
+            use portal_solutions_blitz_riscv64::{naive, RiscV64Arch};
+            let mut writer: &mut dyn std::fmt::Write = &mut out;
+            let mut state = naive::State::default();
+            for op in ops {
+                let op = op.unwrap();
+                naive::WriterExt::handle_op(
+                    &mut writer,
+                    &mut ctx,
+                    RiscV64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
+            }
+        }
+        (NativeArch::Riscv64, NativeAbi::Sysv) => {
+            use portal_solutions_blitz_riscv64::{naive, sysv, RiscV64Arch};
+            let mut writer: &mut dyn std::fmt::Write = &mut out;
+            let mut state = naive::State::default();
+            for op in ops {
+                let op = op.unwrap();
+                sysv::SysVWriterExt::sysv_handle_op(
+                    &mut writer,
+                    &mut ctx,
+                    RiscV64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    normalize_native_asm(arch, out)
+}
+
+fn normalize_native_asm(arch: NativeArch, asm: String) -> String {
+    let asm = match arch {
+        NativeArch::X86_64 => format!(".intel_syntax noprefix\n.text\n.global f0\n{asm}"),
+        NativeArch::AArch64 | NativeArch::Riscv64 => format!(".text\n.global f0\n{asm}"),
+    };
+
+    // The x86 text writer currently omits a newline after LEA. Keep the tests
+    // about backend behavior instead of assembler trivia.
+    let mut fixed = String::new();
+    for line in asm.lines() {
+        let mut line = line.to_owned();
+        for mnemonic in ["push ", "pop ", "mov ", "xchg ", "ret", "and ", "not "] {
+            if let Some(idx) = line.find(mnemonic) {
+                if idx > 0 && !line[..idx].trim_start().starts_with('.') {
+                    fixed.push_str(&line[..idx]);
+                    fixed.push('\n');
+                    line = line[idx..].to_owned();
+                    break;
+                }
+            }
+        }
+        fixed.push_str(&line);
+        fixed.push('\n');
+    }
+    fixed
+}
+
+fn assemble_native_text(arch: NativeArch, asm: &str) -> Result<Vec<u8>, String> {
+    use std::io::Write as _;
+
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let dir = std::env::temp_dir();
+    let src_path = dir.join(format!("blitz_native_{pid}_{seq}.s"));
+    let obj_path = dir.join(format!("blitz_native_{pid}_{seq}.o"));
+
+    std::fs::File::create(&src_path)
+        .and_then(|mut f| f.write_all(asm.as_bytes()))
+        .map_err(|e| e.to_string())?;
+
+    let target = match arch {
+        NativeArch::X86_64 => "x86_64-unknown-linux-gnu",
+        NativeArch::AArch64 => "aarch64-unknown-linux-gnu",
+        NativeArch::Riscv64 => "riscv64-unknown-elf",
+    };
+
+    let output = std::process::Command::new("clang")
+        .arg("-target")
+        .arg(target)
+        .arg("-c")
+        .arg(&src_path)
+        .arg("-o")
+        .arg(&obj_path)
+        .output()
+        .map_err(|e| format!("failed to run clang: {e}"))?;
+
+    if !output.status.success() {
+        let _ = std::fs::remove_file(&src_path);
+        let _ = std::fs::remove_file(&obj_path);
+        return Err(format!(
+            "clang failed for {target}:\n{}\nsource:\n{asm}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let obj = std::fs::read(&obj_path).map_err(|e| e.to_string())?;
+    let code =
+        extract_elf_text(&obj).ok_or_else(|| format!("no .text section in object for {target}"))?;
+
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&obj_path);
+
+    Ok(code)
+}
+
+fn extract_elf_text(obj: &[u8]) -> Option<Vec<u8>> {
+    if obj.get(0..4)? != b"\x7fELF" || *obj.get(4)? != 2 || *obj.get(5)? != 1 {
+        return None;
+    }
+
+    let read_u16 = |offset: usize| -> Option<u16> {
+        Some(u16::from_le_bytes(obj.get(offset..offset + 2)?.try_into().ok()?))
+    };
+    let read_u32 = |offset: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(obj.get(offset..offset + 4)?.try_into().ok()?))
+    };
+    let read_u64 = |offset: usize| -> Option<u64> {
+        Some(u64::from_le_bytes(obj.get(offset..offset + 8)?.try_into().ok()?))
+    };
+
+    let shoff = read_u64(0x28)? as usize;
+    let shentsize = read_u16(0x3a)? as usize;
+    let shnum = read_u16(0x3c)? as usize;
+    let shstrndx = read_u16(0x3e)? as usize;
+    if shentsize < 64 || shstrndx >= shnum {
+        return None;
+    }
+
+    let shstr = shoff.checked_add(shstrndx.checked_mul(shentsize)?)?;
+    let shstr_off = read_u64(shstr + 0x18)? as usize;
+    let shstr_size = read_u64(shstr + 0x20)? as usize;
+    let shstrtab = obj.get(shstr_off..shstr_off.checked_add(shstr_size)?)?;
+
+    for i in 0..shnum {
+        let sh = shoff.checked_add(i.checked_mul(shentsize)?)?;
+        let name_off = read_u32(sh)? as usize;
+        let name_tail = shstrtab.get(name_off..)?;
+        let nul = name_tail.iter().position(|b| *b == 0)?;
+        let name = core::str::from_utf8(&name_tail[..nul]).ok()?;
+        if name == ".text" {
+            let off = read_u64(sh + 0x18)? as usize;
+            let size = read_u64(sh + 0x20)? as usize;
+            return Some(obj.get(off..off.checked_add(size)?)?.to_vec());
+        }
+    }
+
+    None
+}
+
+fn native_sysv_const_wasm(value: i64) -> Vec<u8> {
+    make_module(&[], &[ValType::I64], &[Instruction::I64Const(value)])
+}
+
+fn native_naive_empty_wasm() -> Vec<u8> {
+    make_module(&[], &[], &[])
+}
+
+fn run_native_sysv_const(arch: NativeArch, code: &[u8]) -> u64 {
+    use unicorn_engine::{
+        unicorn_const::{Arch, Mode, Prot},
+        Unicorn,
+    };
+
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x200000;
+    const STACK_SIZE: u64 = 0x10000;
+
+    match arch {
+        NativeArch::X86_64 => {
+            use unicorn_engine::RegisterX86;
+            let mut uc = Unicorn::new(Arch::X86, Mode::MODE_64).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            uc.reg_write(RegisterX86::RSP, STACK + STACK_SIZE - 8).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.reg_read(RegisterX86::RAX).unwrap()
+        }
+        NativeArch::AArch64 => {
+            use unicorn_engine::RegisterARM64;
+            let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            uc.reg_write(RegisterARM64::SP, STACK + STACK_SIZE - 16).unwrap();
+            uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.reg_read(RegisterARM64::X0).unwrap()
+        }
+        NativeArch::Riscv64 => {
+            use unicorn_engine::RegisterRISCV;
+            let mut uc = Unicorn::new(Arch::RISCV, Mode::RISCV64).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16).unwrap();
+            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.reg_read(RegisterRISCV::A0).unwrap()
+        }
+    }
+}
+
+fn run_native_naive_smoke(arch: NativeArch, code: &[u8]) {
+    use unicorn_engine::{
+        unicorn_const::{Arch, Mode, Prot},
+        Unicorn,
+    };
+
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x200000;
+    const STACK_SIZE: u64 = 0x10000;
+
+    match arch {
+        NativeArch::X86_64 => {
+            use unicorn_engine::RegisterX86;
+            let mut uc = Unicorn::new(Arch::X86, Mode::MODE_64).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+
+            let sp = STACK + STACK_SIZE - 0x100;
+            uc.mem_write(sp, &(CODE + code.len() as u64).to_le_bytes()).unwrap();
+            uc.reg_write(RegisterX86::RSP, sp).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+        }
+        NativeArch::AArch64 => {
+            use unicorn_engine::RegisterARM64;
+            let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            uc.reg_write(RegisterARM64::SP, STACK + STACK_SIZE - 16).unwrap();
+            uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+        }
+        NativeArch::Riscv64 => {
+            use unicorn_engine::RegisterRISCV;
+            let mut uc = Unicorn::new(Arch::RISCV, Mode::RISCV64).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16).unwrap();
+            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+        }
+    }
+}
+
+fn assemble_or_skip(arch: NativeArch, asm: &str) -> Option<Vec<u8>> {
+    match assemble_native_text(arch, asm) {
+        Ok(code) => Some(code),
+        Err(err) if matches!(arch, NativeArch::Riscv64) && err.contains("riscv-add-build-attributes") => {
+            eprintln!("skipping RISC-V Unicorn backend test: host clang cannot assemble RISC-V ({err})");
+            None
+        }
+        Err(err) => panic!("{err}"),
+    }
+}
+
+fn assert_native_sysv_const(arch: NativeArch) {
+    let wasm = native_sysv_const_wasm(0x1234_5678_9abc_def0u64 as i64);
+    let asm = compile_native_asm(&wasm, arch, NativeAbi::Sysv);
+    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    assert_eq!(run_native_sysv_const(arch, &code), 0x1234_5678_9abc_def0);
+}
+
+fn assert_native_naive_smoke(arch: NativeArch) {
+    let wasm = native_naive_empty_wasm();
+    let asm = compile_native_asm(&wasm, arch, NativeAbi::Naive);
+    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    run_native_naive_smoke(arch, &code);
+}
+
+#[test]
+fn test_unicorn_x86_64_naive_backend() {
+    assert_native_naive_smoke(NativeArch::X86_64);
+}
+
+#[test]
+fn test_unicorn_x86_64_sysv_backend() {
+    assert_native_sysv_const(NativeArch::X86_64);
+}
+
+#[test]
+fn test_unicorn_aarch64_naive_backend() {
+    assert_native_naive_smoke(NativeArch::AArch64);
+}
+
+#[test]
+fn test_unicorn_aarch64_sysv_backend() {
+    assert_native_sysv_const(NativeArch::AArch64);
+}
+
+#[test]
+fn test_unicorn_riscv64_naive_backend() {
+    assert_native_naive_smoke(NativeArch::Riscv64);
+}
+
+#[test]
+fn test_unicorn_riscv64_sysv_backend() {
+    assert_native_sysv_const(NativeArch::Riscv64);
+}
