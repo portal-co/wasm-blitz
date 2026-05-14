@@ -199,9 +199,9 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
         op: &MachOperator<'_>,
         rewriter: &mut (dyn Reencode<Error = E> + '_),
         target: u32,
-    ) -> Result<(), Self::Error>
+    ) -> Result<(), portal_solutions_blitz_common::HandleOpError<E>>
     where
-        wasm_encoder::reencode::Error<E>: Into<Self::Error>,
+        Self::Error: Into<portal_solutions_blitz_common::HandleOpError<E>>,
         Self: Sized,
     {
         use portal_solutions_blitz_common::wasm_encoder;
@@ -212,35 +212,28 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 state.ret_count = data.num_returns;
                 state.local_count = data.num_params;
 
-                // Emit an ExternalLabel-tagged function label for the SysV variant.
-                // Uses a large index offset to avoid collision with naive Func labels.
                 self.set_label(ctx, arch, X64Label::Indexed {
                     idx: *id as usize | (1 << 28),
-                })?;
+                }).map_err(Into::into)?;
 
-                // Standard AMD64 prologue
-                self.push(ctx, arch, &RBP)?;
-                self.mov(ctx, arch, &RBP, &RSP)?;
+                self.push(ctx, arch, &RBP).map_err(Into::into)?;
+                self.mov(ctx, arch, &RBP, &RSP).map_err(Into::into)?;
 
-                // Allocate space: params + potential extra locals
-                // Reserve 16 slots to avoid immediate resizing
                 let frame_sz = (data.num_params + 16) * 8;
-                let frame_sz = (frame_sz + 15) & !15;  // align to 16
-                self.mov64(ctx, arch, &RAX, frame_sz as u64)?;
-                self.sub(ctx, arch, &RSP, &RAX)?;
+                let frame_sz = (frame_sz + 15) & !15;
+                self.mov64(ctx, arch, &RAX, frame_sz as u64).map_err(Into::into)?;
+                self.sub(ctx, arch, &RSP, &RAX).map_err(Into::into)?;
 
-                // Copy argument registers into the rbp-relative local frame
                 for i in 0..data.num_params.min(6) {
-                    self.sysv_store_local(ctx, arch, ARG_REGS[i], i)?;
+                    self.sysv_store_local(ctx, arch, ARG_REGS[i], i).map_err(Into::into)?;
                 }
                 Ok(())
             }
 
             MachOperator::Local { count, .. } => {
-                // Zero-initialize new locals
-                self.mov64(ctx, arch, &RAX, 0)?;
+                self.mov64(ctx, arch, &RAX, 0).map_err(Into::into)?;
                 for _ in 0..*count {
-                    self.sysv_store_local(ctx, arch, RAX, state.local_count)?;
+                    self.sysv_store_local(ctx, arch, RAX, state.local_count).map_err(Into::into)?;
                     state.local_count += 1;
                 }
                 Ok(())
@@ -250,10 +243,12 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
 
             MachOperator::Instruction { op: insn, .. } => {
                 self.sysv_handle_insn(ctx, arch, state, func_imports, insn, target)
+                    .map_err(Into::into)
             }
             MachOperator::Operator { op: Some(op_wasm), .. } => {
-                let insn = rewriter.instruction(op_wasm.clone()).map_err(|e| e.into())?;
+                let insn = rewriter.instruction(op_wasm.clone())?;
                 self.sysv_handle_insn(ctx, arch, state, func_imports, &insn, target)
+                    .map_err(Into::into)
             }
             MachOperator::Operator { op: None, .. } => Ok(()),
             _ => Ok(()),

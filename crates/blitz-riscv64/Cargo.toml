@@ -5,6 +5,11 @@ edition = "2024"
 license.workspace = true
 description.workspace = true
 
+[features]
+# Enable stderr tracing of every handle_op dispatch and regalloc event.
+# Activate with: cargo test --features portal-solutions-blitz-riscv64/log
+log = []
+
 [dependencies]
 portal-solutions-blitz-common = { workspace = true, features = ["asm"] }
 portal-pc-asm-common = { workspace = true }

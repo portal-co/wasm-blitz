@@ -91,10 +91,11 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         op: &MachOperator<'_>,
         rewriter: &mut (dyn Reencode<Error = E> + '_),
         target: u32,
-    ) -> Result<(), Self::Error>
+    ) -> Result<(), portal_solutions_blitz_common::HandleOpError<E>>
     where
-        wasm_encoder::reencode::Error<E>: Into<Self::Error>,
+        Self::Error: Into<portal_solutions_blitz_common::HandleOpError<E>>,
     {
+        use portal_solutions_blitz_common::HandleOpError;
         if target != state.body {
             self.jmp_label(
                 ctx,
@@ -105,10 +106,10 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         return state.label_index - 1;
                     }),
                 },
-            )?;
+            ).map_err(Into::into)?;
             state.body = target;
             if let Some(idx) = state.body_labels.remove(&state.body) {
-                self.set_label(ctx, arch, X64Label::Indexed { idx })?;
+                self.set_label(ctx, arch, X64Label::Indexed { idx }).map_err(Into::into)?;
             }
         }
         //Stack Frame: r&Reg::CTX[&Reg(0)] => local variable frame
@@ -126,7 +127,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 state.local_count = *params;
                 state.num_returns = *num_returns;
                 state.control_depth = *control_depth;
-                self.pop(ctx, arch, &Reg(1))?;
+                self.pop(ctx, arch, &Reg(1)).map_err(Into::into)?;
                 self.lea(
                     ctx,
                     arch,
@@ -138,19 +139,19 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
                     },
-                )?;
-                self.xchg(ctx, arch, &Reg(0), &Reg::CTX)?;
-                self.set_label(ctx, arch, X64Label::Func { r#fn: *id })?;
+                ).map_err(Into::into)?;
+                self.xchg(ctx, arch, &Reg(0), &Reg::CTX).map_err(Into::into)?;
+                self.set_label(ctx, arch, X64Label::Func { r#fn: *id }).map_err(Into::into)?;
             }
             MachOperator::Local { count, ty } => {
                 for _ in 0..*count {
                     state.local_count += 1;
-                    self.push(ctx, arch, &Reg(0))?;
+                    self.push(ctx, arch, &Reg(0)).map_err(Into::into)?;
                 }
             }
             MachOperator::StartBody => {
-                self.push(ctx, arch, &Reg(1))?;
-                self.push(ctx, arch, &Reg(0))?;
+                self.push(ctx, arch, &Reg(1)).map_err(Into::into)?;
+                self.push(ctx, arch, &Reg(0)).map_err(Into::into)?;
                 self.lea(
                     ctx,
                     arch,
@@ -162,17 +163,17 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
                     },
-                )?;
-                self.xchg(ctx, arch, &Reg(0), &Reg::CTX)?;
-                self.push(ctx, arch, &Reg(0))?;
+                ).map_err(Into::into)?;
+                self.xchg(ctx, arch, &Reg(0), &Reg::CTX).map_err(Into::into)?;
+                self.push(ctx, arch, &Reg(0)).map_err(Into::into)?;
                 for _ in 0..state.control_depth {
                     for _ in 0..2 {
-                        self.push(ctx, arch, &Reg(0))?;
+                        self.push(ctx, arch, &Reg(0)).map_err(Into::into)?;
                     }
                 }
             }
             MachOperator::Instruction { op, .. } => {
-                self._handle_op(ctx, arch, state, func_imports, op, target)?
+                self._handle_op(ctx, arch, state, func_imports, op, target).map_err(Into::into)?
             }
             MachOperator::Operator { op, annot } => match match op.as_ref() {
                 None => return Ok(()),
@@ -183,11 +184,13 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     arch,
                     state,
                     func_imports,
-                    &rewriter.instruction(op.clone()).map_err(|e| e.into())?,
+                    &rewriter.instruction(op.clone())?,
                     target,
-                )?,
+                ).map_err(Into::into)?,
             },
-            _ => todo!(),
+            // EndBody and any future meta-ops are no-ops at the assembly level.
+            _ => {}
+
         }
         Ok(())
     }
@@ -599,8 +602,8 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     &MemArgKind::Mem {
                         base: Reg(0),
                         offset: None,
-                        disp: (state.local_count + 3 * 8) as u32,
-                        size: MemorySize::_8,
+                        disp: 0u32.wrapping_sub(8),
+                        size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
                     },
                 )?;
@@ -706,19 +709,21 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
             }
             Instruction::End => {
-                self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
-                // for _ in &Reg(0)..=(*relative_depth) {
-                match state.if_stack.pop().unwrap() {
-                    Endable::Br => {
-                        self.pop(ctx, arch, &Reg(0))?;
-                        self.pop(ctx, arch, &Reg(1))?;
+                // Function-level End (if_stack empty) is a no-op: the function
+                // return path already cleaned up the frame.
+                if let Some(top) = state.if_stack.pop() {
+                    self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
+                    match top {
+                        Endable::Br => {
+                            self.pop(ctx, arch, &Reg(0))?;
+                            self.pop(ctx, arch, &Reg(1))?;
+                        }
+                        Endable::If { idx: i } => {
+                            self.set_label(ctx, arch, X64Label::Indexed { idx: i + 2 })?;
+                        }
                     }
-                    Endable::If { idx: i } => {
-                        self.set_label(ctx, arch, X64Label::Indexed { idx: i + 2 })?;
-                    }
+                    self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
                 }
-                // }
-                self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
             }
             Instruction::Call(function_index) => {
                 match func_imports.get(*function_index as usize) {

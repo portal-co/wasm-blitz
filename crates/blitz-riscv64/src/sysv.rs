@@ -87,7 +87,6 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
         target: u32,
     ) -> Result<(), Self::Error>
     where
-        portal_solutions_blitz_common::wasm_encoder::reencode::Error<E>: Into<Self::Error>,
         Self::Error: From<core::fmt::Error>,
         Self: Sized,
     {
@@ -138,9 +137,9 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
         op: &MachOperator<'_>,
         rewriter: &mut (dyn Reencode<Error = E> + '_),
         target: u32,
-    ) -> Result<(), Self::Error>
+    ) -> Result<(), portal_solutions_blitz_common::HandleOpError<E>>
     where
-        portal_solutions_blitz_common::wasm_encoder::reencode::Error<E>: Into<Self::Error>,
+        Self::Error: Into<portal_solutions_blitz_common::HandleOpError<E>>,
         Self::Error: From<core::fmt::Error>,
         Self: Sized,
     {
@@ -150,33 +149,27 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                 state.num_returns = data.num_returns;
                 state.control_depth = data.control_depth;
 
-                // SysV function label (use offset to differentiate from naive)
                 self.set_label(ctx, arch, RiscvLabel::Indexed {
                     idx: *id as usize | (1 << 28),
-                })?;
+                }).map_err(Into::into)?;
 
-                // Standard RISC-V SysV prologue
-                // Allocate frame: RA + old FP + params
                 let frame_slots = data.num_params + 2 + state.control_depth * 2 + 2;
                 let frame_sz = (frame_slots * 8) as i32;
-                self.addi(ctx, arch, &SP, &SP, -frame_sz)?;
-                // Save RA and old FP
-                self.sd(ctx, arch, &RA, &mem64(SP, frame_sz - 8))?;
-                self.sd(ctx, arch, &FP, &mem64(SP, frame_sz - 16))?;
-                // FP = old SP (top of frame)
-                self.addi(ctx, arch, &FP, &SP, frame_sz)?;
+                self.addi(ctx, arch, &SP, &SP, -frame_sz).map_err(Into::into)?;
+                self.sd(ctx, arch, &RA, &mem64(SP, frame_sz - 8)).map_err(Into::into)?;
+                self.sd(ctx, arch, &FP, &mem64(SP, frame_sz - 16)).map_err(Into::into)?;
+                self.addi(ctx, arch, &FP, &SP, frame_sz).map_err(Into::into)?;
 
-                // Copy argument registers into local frame
                 for i in 0..data.num_params.min(8) {
-                    self.sysv_store_local(ctx, arch, ARG_REGS[i], i)?;
+                    self.sysv_store_local(ctx, arch, ARG_REGS[i], i).map_err(Into::into)?;
                 }
                 Ok(())
             }
 
             MachOperator::Local { count, .. } => {
-                self.li(ctx, arch, &A0, 0)?;
+                self.li(ctx, arch, &A0, 0).map_err(Into::into)?;
                 for _ in 0..*count {
-                    self.sysv_store_local(ctx, arch, A0, state.local_count)?;
+                    self.sysv_store_local(ctx, arch, A0, state.local_count).map_err(Into::into)?;
                     state.local_count += 1;
                 }
                 Ok(())
@@ -186,10 +179,12 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
 
             MachOperator::Instruction { op: insn, .. } => {
                 self.sysv_handle_insn(ctx, arch, state, func_imports, insn, rewriter, target)
+                    .map_err(Into::into)
             }
             MachOperator::Operator { op: Some(op_wasm), .. } => {
-                let insn = rewriter.instruction(op_wasm.clone()).map_err(|e| e.into())?;
+                let insn = rewriter.instruction(op_wasm.clone())?;
                 self.sysv_handle_insn(ctx, arch, state, func_imports, &insn, rewriter, target)
+                    .map_err(Into::into)
             }
             MachOperator::Operator { op: None, .. } => Ok(()),
             _ => Ok(()),

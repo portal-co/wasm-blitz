@@ -15,7 +15,30 @@
 //! Each test is annotated with the bug(s) it exercises.
 
 use std::borrow::Cow;
+use std::fmt::{Display, Write as FmtWrite};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Newtype over `String` used as the text-output backend for native asm tests.
+///
+/// We need a *local* type so that calling `writers!` from each asm crate
+/// (which implements `WriterCore`/`Writer` for it) doesn't violate the orphan
+/// rule.  Using `String` directly would fail: both the trait and the type are
+/// foreign to this crate.
+///
+/// The type also sidesteps the `writer_dispatch!` forwarding impls for
+/// `&mut T`, which are incomplete (they omit instructions like `addi`).
+/// Passing `&mut NativeAsmWriter` directly gives `Self = NativeAsmWriter`
+/// (Sized, with the full `writers!` impl set) rather than
+/// `Self = &mut dyn fmt::Write` (which goes through the limited dispatch).
+struct NativeAsmWriter(String);
+
+impl std::fmt::Write for NativeAsmWriter {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result { self.0.write_str(s) }
+}
+
+portal_solutions_asm_x86_64::writers!(NativeAsmWriter);
+portal_solutions_asm_aarch64::writers!(NativeAsmWriter);
+portal_solutions_asm_riscv64::writers!(NativeAsmWriter);
 
 use portal_solutions_blitz_common::{
     dce_pass,
@@ -2196,127 +2219,79 @@ fn compile_native_asm(wasm: &[u8], arch: NativeArch, abi: NativeAbi) -> String {
     let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
     let ops = dce_pass!(raw_ops);
     let mut reencoder = RoundtripReencoder;
-    let mut out = String::new();
+    let mut out = NativeAsmWriter(String::new());
     let mut ctx = ();
 
     match (arch, abi) {
         (NativeArch::X86_64, NativeAbi::Naive) => {
             use portal_solutions_blitz_x86_64::{naive, X64Arch};
-            let mut writer: &mut dyn std::fmt::Write = &mut out;
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 naive::WriterExt::handle_op(
-                    &mut writer,
-                    &mut ctx,
-                    X64Arch::default(),
-                    &mut state,
-                    &[],
-                    &op,
-                    &mut reencoder,
-                    0,
-                )
-                .unwrap();
+                    &mut out, &mut ctx, X64Arch::default(),
+                    &mut state, &[], &op, &mut reencoder, 0,
+                ).unwrap();
             }
         }
         (NativeArch::X86_64, NativeAbi::Sysv) => {
             use portal_solutions_blitz_x86_64::{sysv, X64Arch};
-            let mut writer: &mut dyn std::fmt::Write = &mut out;
             let mut state = sysv::SysVState::default();
             for op in ops {
                 let op = op.unwrap();
                 sysv::SysVWriterExt::sysv_handle_op(
-                    &mut writer,
-                    &mut ctx,
-                    X64Arch::default(),
-                    &mut state,
-                    &[],
-                    &op,
-                    &mut reencoder,
-                    0,
-                )
-                .unwrap();
+                    &mut out, &mut ctx, X64Arch::default(),
+                    &mut state, &[], &op, &mut reencoder, 0,
+                ).unwrap();
             }
         }
         (NativeArch::AArch64, NativeAbi::Naive) => {
             use portal_solutions_blitz_aarch64::{naive, AArch64Arch};
-            let mut writer: &mut dyn std::fmt::Write = &mut out;
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 naive::WriterExt::handle_op(
-                    &mut writer,
-                    &mut ctx,
-                    AArch64Arch::default(),
-                    &mut state,
-                    &[],
-                    &op,
-                    &mut reencoder,
-                    0,
-                )
-                .unwrap();
+                    &mut out, &mut ctx, AArch64Arch::default(),
+                    &mut state, &[], &op, &mut reencoder, 0,
+                ).unwrap();
             }
         }
         (NativeArch::AArch64, NativeAbi::Sysv) => {
             use portal_solutions_blitz_aarch64::{naive, sysv, AArch64Arch};
-            let mut writer: &mut dyn std::fmt::Write = &mut out;
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 sysv::SysVWriterExt::sysv_handle_op(
-                    &mut writer,
-                    &mut ctx,
-                    AArch64Arch::default(),
-                    &mut state,
-                    &[],
-                    &op,
-                    &mut reencoder,
-                    0,
-                )
-                .unwrap();
+                    &mut out, &mut ctx, AArch64Arch::default(),
+                    &mut state, &[], &op, &mut reencoder, 0,
+                ).unwrap();
             }
         }
         (NativeArch::Riscv64, NativeAbi::Naive) => {
             use portal_solutions_blitz_riscv64::{naive, RiscV64Arch};
-            let mut writer: &mut dyn std::fmt::Write = &mut out;
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 naive::WriterExt::handle_op(
-                    &mut writer,
-                    &mut ctx,
-                    RiscV64Arch::default(),
-                    &mut state,
-                    &[],
-                    &op,
-                    &mut reencoder,
-                    0,
-                )
-                .unwrap();
+                    &mut out, &mut ctx, RiscV64Arch::default(),
+                    &mut state, &[], &op, &mut reencoder, 0,
+                ).unwrap();
             }
         }
         (NativeArch::Riscv64, NativeAbi::Sysv) => {
             use portal_solutions_blitz_riscv64::{naive, sysv, RiscV64Arch};
-            let mut writer: &mut dyn std::fmt::Write = &mut out;
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 sysv::SysVWriterExt::sysv_handle_op(
-                    &mut writer,
-                    &mut ctx,
-                    RiscV64Arch::default(),
-                    &mut state,
-                    &[],
-                    &op,
-                    &mut reencoder,
-                    0,
-                )
-                .unwrap();
+                    &mut out, &mut ctx, RiscV64Arch::default(),
+                    &mut state, &[], &op, &mut reencoder, 0,
+                ).unwrap();
             }
         }
     }
 
-    normalize_native_asm(arch, out)
+    normalize_native_asm(arch, out.0)
 }
 
 fn normalize_native_asm(arch: NativeArch, asm: String) -> String {
@@ -2463,7 +2438,9 @@ fn run_native_sysv_const(arch: NativeArch, code: &[u8]) -> u64 {
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
-            uc.reg_write(RegisterX86::RSP, STACK + STACK_SIZE - 8).unwrap();
+            let rsp = STACK + STACK_SIZE - 8;
+            uc.mem_write(rsp, &(CODE + code.len() as u64).to_le_bytes()).unwrap();
+            uc.reg_write(RegisterX86::RSP, rsp).unwrap();
             uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
             uc.reg_read(RegisterX86::RAX).unwrap()
         }
@@ -2591,4 +2568,209 @@ fn test_unicorn_riscv64_naive_backend() {
 #[test]
 fn test_unicorn_riscv64_sysv_backend() {
     assert_native_sysv_const(NativeArch::Riscv64);
+}
+
+// ---------------------------------------------------------------------------
+// Native backend × make_module_with_memory — compilation smoke
+// ---------------------------------------------------------------------------
+
+/// Verify that a WASM module containing a linear memory section compiles
+/// through every native backend without panicking.  Uses `memory.size` which
+/// is the simplest instruction that exercises the memory-related codegen path.
+fn assert_native_compile_module_with_memory(arch: NativeArch, abi: NativeAbi) {
+    let wasm = make_module_with_memory(&[], &[ValType::I32], &[Instruction::MemorySize(0)]);
+    let asm = compile_native_asm(&wasm, arch, abi);
+    assert!(!asm.trim().is_empty(), "expected non-empty asm output for {arch:?}/{abi:?}");
+}
+
+#[test]
+fn test_native_x86_64_naive_with_memory() {
+    assert_native_compile_module_with_memory(NativeArch::X86_64, NativeAbi::Naive);
+}
+#[test]
+fn test_native_x86_64_sysv_with_memory() {
+    assert_native_compile_module_with_memory(NativeArch::X86_64, NativeAbi::Sysv);
+}
+#[test]
+fn test_native_aarch64_naive_with_memory() {
+    assert_native_compile_module_with_memory(NativeArch::AArch64, NativeAbi::Naive);
+}
+#[test]
+fn test_native_aarch64_sysv_with_memory() {
+    assert_native_compile_module_with_memory(NativeArch::AArch64, NativeAbi::Sysv);
+}
+#[test]
+fn test_native_riscv64_naive_with_memory() {
+    assert_native_compile_module_with_memory(NativeArch::Riscv64, NativeAbi::Naive);
+}
+#[test]
+fn test_native_riscv64_sysv_with_memory() {
+    assert_native_compile_module_with_memory(NativeArch::Riscv64, NativeAbi::Sysv);
+}
+
+// ---------------------------------------------------------------------------
+// Native backend × make_module_with_data — compilation smoke
+// ---------------------------------------------------------------------------
+
+/// Verify a module with active data segments compiles through every backend.
+/// The function reads byte 0 from linear memory (pre-initialised by the data
+/// segment) and zero-extends it to i32.
+fn assert_native_compile_module_with_data(arch: NativeArch, abi: NativeAbi) {
+    use wasm_encoder::MemArg;
+    let data: &[(u32, &[u8])] = &[(0, &[42u8])];
+    let wasm = make_module_with_data(
+        &[],
+        &[ValType::I32],
+        &[Instruction::I32Const(0), Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 })],
+        data,
+    );
+    let asm = compile_native_asm(&wasm, arch, abi);
+    assert!(!asm.trim().is_empty(), "expected non-empty asm output for {arch:?}/{abi:?}");
+}
+
+#[test]
+fn test_native_x86_64_naive_with_data() {
+    assert_native_compile_module_with_data(NativeArch::X86_64, NativeAbi::Naive);
+}
+#[test]
+fn test_native_x86_64_sysv_with_data() {
+    assert_native_compile_module_with_data(NativeArch::X86_64, NativeAbi::Sysv);
+}
+#[test]
+fn test_native_aarch64_naive_with_data() {
+    assert_native_compile_module_with_data(NativeArch::AArch64, NativeAbi::Naive);
+}
+#[test]
+fn test_native_aarch64_sysv_with_data() {
+    assert_native_compile_module_with_data(NativeArch::AArch64, NativeAbi::Sysv);
+}
+#[test]
+fn test_native_riscv64_naive_with_data() {
+    assert_native_compile_module_with_data(NativeArch::Riscv64, NativeAbi::Naive);
+}
+#[test]
+fn test_native_riscv64_sysv_with_data() {
+    assert_native_compile_module_with_data(NativeArch::Riscv64, NativeAbi::Sysv);
+}
+
+// ---------------------------------------------------------------------------
+// Native backend × make_module_with_import — compilation smoke
+// ---------------------------------------------------------------------------
+
+/// Verify a module that calls an imported function compiles through every backend.
+/// Uses the same `env::add_one` import as the JS/C import tests.
+fn assert_native_compile_module_with_import(arch: NativeArch, abi: NativeAbi) {
+    let wasm = make_module_with_import();
+    let (sigs_wp, _sigs_enc, fsigs) = parse_sigs(&wasm);
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(&wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    // One imported function (index 0 = import), one local body (index 1).
+    let import_count = 1u32;
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(
+        &bodies, &fsigs, &sigs_wp, import_count,
+    );
+    let ops = dce_pass!(raw_ops);
+    let mut reencoder = RoundtripReencoder;
+    let mut out = NativeAsmWriter(String::new());
+    let mut ctx = ();
+    let imports: &[(&str, &str)] = &[("env", "add_one")];
+
+    match (arch, abi) {
+        (NativeArch::X86_64, NativeAbi::Naive) => {
+            use portal_solutions_blitz_x86_64::{naive, X64Arch};
+            let mut state = naive::State::default();
+            for op in ops {
+                let op = op.unwrap();
+                naive::WriterExt::handle_op(
+                    &mut out, &mut ctx, X64Arch::default(),
+                    &mut state, imports, &op, &mut reencoder, import_count,
+                ).unwrap();
+            }
+        }
+        (NativeArch::X86_64, NativeAbi::Sysv) => {
+            use portal_solutions_blitz_x86_64::{sysv, X64Arch};
+            let mut state = sysv::SysVState::default();
+            for op in ops {
+                let op = op.unwrap();
+                sysv::SysVWriterExt::sysv_handle_op(
+                    &mut out, &mut ctx, X64Arch::default(),
+                    &mut state, imports, &op, &mut reencoder, import_count,
+                ).unwrap();
+            }
+        }
+        (NativeArch::AArch64, NativeAbi::Naive) => {
+            use portal_solutions_blitz_aarch64::{naive, AArch64Arch};
+            let mut state = naive::State::default();
+            for op in ops {
+                let op = op.unwrap();
+                naive::WriterExt::handle_op(
+                    &mut out, &mut ctx, AArch64Arch::default(),
+                    &mut state, imports, &op, &mut reencoder, import_count,
+                ).unwrap();
+            }
+        }
+        (NativeArch::AArch64, NativeAbi::Sysv) => {
+            use portal_solutions_blitz_aarch64::{naive, sysv, AArch64Arch};
+            let mut state = naive::State::default();
+            for op in ops {
+                let op = op.unwrap();
+                sysv::SysVWriterExt::sysv_handle_op(
+                    &mut out, &mut ctx, AArch64Arch::default(),
+                    &mut state, imports, &op, &mut reencoder, import_count,
+                ).unwrap();
+            }
+        }
+        (NativeArch::Riscv64, NativeAbi::Naive) => {
+            use portal_solutions_blitz_riscv64::{naive, RiscV64Arch};
+            let mut state = naive::State::default();
+            for op in ops {
+                let op = op.unwrap();
+                naive::WriterExt::handle_op(
+                    &mut out, &mut ctx, RiscV64Arch::default(),
+                    &mut state, imports, &op, &mut reencoder, import_count,
+                ).unwrap();
+            }
+        }
+        (NativeArch::Riscv64, NativeAbi::Sysv) => {
+            use portal_solutions_blitz_riscv64::{naive, sysv, RiscV64Arch};
+            let mut state = naive::State::default();
+            for op in ops {
+                let op = op.unwrap();
+                sysv::SysVWriterExt::sysv_handle_op(
+                    &mut out, &mut ctx, RiscV64Arch::default(),
+                    &mut state, imports, &op, &mut reencoder, import_count,
+                ).unwrap();
+            }
+        }
+    }
+    assert!(!out.0.trim().is_empty(), "expected non-empty asm output for {arch:?}/{abi:?}");
+}
+
+#[test]
+fn test_native_x86_64_naive_with_import() {
+    assert_native_compile_module_with_import(NativeArch::X86_64, NativeAbi::Naive);
+}
+#[test]
+fn test_native_x86_64_sysv_with_import() {
+    assert_native_compile_module_with_import(NativeArch::X86_64, NativeAbi::Sysv);
+}
+#[test]
+fn test_native_aarch64_naive_with_import() {
+    assert_native_compile_module_with_import(NativeArch::AArch64, NativeAbi::Naive);
+}
+#[test]
+fn test_native_aarch64_sysv_with_import() {
+    assert_native_compile_module_with_import(NativeArch::AArch64, NativeAbi::Sysv);
+}
+#[test]
+fn test_native_riscv64_naive_with_import() {
+    assert_native_compile_module_with_import(NativeArch::Riscv64, NativeAbi::Naive);
+}
+#[test]
+fn test_native_riscv64_sysv_with_import() {
+    assert_native_compile_module_with_import(NativeArch::Riscv64, NativeAbi::Sysv);
 }

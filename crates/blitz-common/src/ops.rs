@@ -5,9 +5,43 @@
 //! that can be either WASM operators or encoded instructions.
 
 use alloc::boxed::Box;
-use wasm_encoder::Instruction;
+use wasm_encoder::{Instruction, reencode};
 
 use crate::*;
+
+/// Combined error type for backend `handle_op` / `sysv_handle_op` methods.
+///
+/// Backends that emit assembly text have `Self::Error = fmt::Error` for writer
+/// calls, while also needing to propagate re-encoder errors from
+/// `Reencode::instruction`.  This enum unifies both so callers do not need to
+/// constrain `wasm_encoder::reencode::Error<E>: Into<Self::Error>`.
+pub enum HandleOpError<E> {
+    /// An error from a writer method (e.g. `fmt::write!` failing).
+    Fmt(core::fmt::Error),
+    /// An error produced by the WASM re-encoder.
+    Reencode(reencode::Error<E>),
+}
+
+impl<E> core::fmt::Debug for HandleOpError<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            HandleOpError::Fmt(e) => write!(f, "HandleOpError::Fmt({e:?})"),
+            HandleOpError::Reencode(_) => f.write_str("HandleOpError::Reencode(..)"),
+        }
+    }
+}
+
+impl<E> From<core::fmt::Error> for HandleOpError<E> {
+    fn from(e: core::fmt::Error) -> Self {
+        HandleOpError::Fmt(e)
+    }
+}
+
+impl<E> From<reencode::Error<E>> for HandleOpError<E> {
+    fn from(e: reencode::Error<E>) -> Self {
+        HandleOpError::Reencode(e)
+    }
+}
 
 /// Macro for pattern matching on machine operators.
 ///

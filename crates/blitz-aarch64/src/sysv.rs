@@ -137,9 +137,9 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         op: &MachOperator<'_>,
         rewriter: &mut (dyn Reencode<Error = E> + '_),
         target: u32,
-    ) -> Result<(), Self::Error>
+    ) -> Result<(), portal_solutions_blitz_common::HandleOpError<E>>
     where
-        portal_solutions_blitz_common::wasm_encoder::reencode::Error<E>: Into<Self::Error>,
+        Self::Error: Into<portal_solutions_blitz_common::HandleOpError<E>>,
         Self: Sized,
     {
         match op {
@@ -148,44 +148,44 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 state.num_returns = data.num_returns;
                 state.control_depth = data.control_depth;
 
-                // AAPCS64 function label (different name from naive so both can coexist)
-                self.set_label(ctx, arch, AArch64Label::Indexed { idx: *id as usize + 0x80000000 })?;
+                self.set_label(ctx, arch, AArch64Label::Indexed { idx: *id as usize + 0x80000000 })
+                    .map_err(Into::into)?;
 
-                // Standard AAPCS64 prologue
-                self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16))?;
-                self.mov(ctx, arch, &reg(FP), &reg(SP))?;
+                self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16)).map_err(Into::into)?;
+                self.mov(ctx, arch, &reg(FP), &reg(SP)).map_err(Into::into)?;
 
-                // Allocate frame for locals
                 let locals_slots = data.num_params as i64 + state.control_depth as i64 * 2 + 2;
                 if locals_slots > 0 {
                     let size = MemArgKind::NoMem(ArgKind::Lit((locals_slots * 8) as u64));
-                    self.sub(ctx, arch, &reg(SP), &reg(SP), &size)?;
+                    self.sub(ctx, arch, &reg(SP), &reg(SP), &size).map_err(Into::into)?;
                 }
 
-                // Copy register arguments into the local frame (FP-relative)
                 for i in 0..data.num_params.min(8) {
                     let disp = -((i as i32 + 1) * 8);
-                    self.str(ctx, arch, &reg(ARG_REGS[i]), &mem_base_disp(FP, disp))?;
+                    self.str(ctx, arch, &reg(ARG_REGS[i]), &mem_base_disp(FP, disp))
+                        .map_err(Into::into)?;
                 }
                 Ok(())
             }
 
-            // Everything else delegates to SysV instruction handling (returns use AAPCS64 epilogue)
             MachOperator::Local { count, .. } => {
-                self.mov_imm(ctx, arch, &reg(Reg(9)), 0)?;
+                self.mov_imm(ctx, arch, &reg(Reg(9)), 0).map_err(Into::into)?;
                 for _ in 0..*count {
                     state.local_count += 1;
-                    self.store_local(ctx, arch, Reg(9), state.local_count - 1)?;
+                    self.store_local(ctx, arch, Reg(9), state.local_count - 1)
+                        .map_err(Into::into)?;
                 }
                 Ok(())
             }
             MachOperator::StartBody | MachOperator::EndBody => Ok(()),
             MachOperator::Instruction { op: insn, .. } => {
                 self.sysv_handle_insn(ctx, arch, state, func_imports, insn, target)
+                    .map_err(Into::into)
             }
             MachOperator::Operator { op: Some(op_wasm), .. } => {
-                let insn = rewriter.instruction(op_wasm.clone()).map_err(|e| e.into())?;
+                let insn = rewriter.instruction(op_wasm.clone())?;
                 self.sysv_handle_insn(ctx, arch, state, func_imports, &insn, target)
+                    .map_err(Into::into)
             }
             MachOperator::Operator { op: None, .. } => Ok(()),
             _ => Ok(()),

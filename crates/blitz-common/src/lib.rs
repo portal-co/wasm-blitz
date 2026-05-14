@@ -47,7 +47,7 @@ pub use wasm_encoder;
 pub use wasmparser;
 use wasmparser::{BinaryReaderError, FuncType, FunctionBody, Operator, ValType};
 
-pub use crate::ops::MachOperator;
+pub use crate::ops::{HandleOpError, MachOperator};
 
 /// Dead code elimination module.
 ///

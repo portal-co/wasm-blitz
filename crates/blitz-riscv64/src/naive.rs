@@ -2,6 +2,16 @@
 
 #![allow(dead_code)]
 
+/// Feature-gated trace macro.  Enable with `--features portal-solutions-blitz-riscv64/log`.
+#[cfg(feature = "log")]
+macro_rules! trace {
+    ($($arg:tt)*) => { eprintln!("[riscv64-naive] {}", format_args!($($arg)*)) };
+}
+#[cfg(not(feature = "log"))]
+macro_rules! trace {
+    ($($arg:tt)*) => {};
+}
+
 use crate::RiscvLabel;
 use alloc::vec::Vec;
 use portal_solutions_asm_riscv64::ConditionCode;
@@ -134,10 +144,10 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
         target: u32,
     ) -> Result<(), Self::Error>
     where
-        wasm_encoder::reencode::Error<E>: Into<Self::Error>,
         Self::Error: From<core::fmt::Error>,
         Self: Sized,
     {
+        trace!("handle_op_ enter: target={target} body={}", state.body);
         if target != state.body {
             self.jal_label(
                 ctx,
@@ -1206,61 +1216,63 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 self.set_label(ctx, arch, RiscvLabel::Indexed { idx: i })?;
             }
             Instruction::End => {
-                // flush regalloc on end boundary
-                if let Some(ralloc) = state.regalloc.as_mut() {
-                    let it = ralloc.flush();
-                    emit_cmds(self, ctx, arch, it)?;
-                }
-                match state.if_stack.pop().unwrap() {
-                    Endable::Block { idx } => {
-                        self.set_label(ctx, arch, RiscvLabel::Indexed { idx })?;
+                // Function-level End (empty if_stack) is a no-op: the function
+                // return path already cleaned up the frame.
+                if let Some(top) = state.if_stack.pop() {
+                    if let Some(ralloc) = state.regalloc.as_mut() {
+                        let it = ralloc.flush();
+                        emit_cmds(self, ctx, arch, it)?;
                     }
-                    Endable::Loop { idx } => {
-                        // no-op; loop already has label at start
-                        //  self.set_label(ctx,arch, RiscvLabel::Indexed { idx })?;
+                    match top {
+                        Endable::Block { idx } => {
+                            self.set_label(ctx, arch, RiscvLabel::Indexed { idx })?;
+                        }
+                        Endable::Loop { .. } => {}
+                        Endable::If { idx } => {
+                            self.set_label(ctx, arch, RiscvLabel::Indexed { idx: idx + 2 })?;
+                        }
                     }
-                    Endable::If { idx } => {
-                        self.set_label(ctx, arch, RiscvLabel::Indexed { idx: idx + 2 })?;
+                    let control_space = (state.control_depth as i32) * 16;
+                    if control_space > 0 {
+                        self.addi(ctx, arch, &Reg(2), &Reg(2), control_space)?;
                     }
+                    let spmem = MemArgKind::Mem {
+                        base: ArgKind::Reg { reg: Reg(2), size: MemorySize::_64 },
+                        offset: None, disp: 0,
+                        size: MemorySize::_64, reg_class: RegisterClass::Gpr,
+                    };
+                    let tmp = Reg(10);
+                    self.ld(ctx, arch, &tmp, &spmem)?;
+                    self.addi(ctx, arch, &Reg(2), &Reg(2), 8)?;
                 }
-                // restore control stack space if reserved
-                let control_space = (state.control_depth as i32) * 16;
-                if control_space > 0 {
-                    self.addi(ctx, arch, &Reg(2), &Reg(2), control_space)?;
-                }
-                // pop sp marker
-                let spmem = MemArgKind::Mem {
-                    base: ArgKind::Reg {
-                        reg: Reg(2),
-                        size: MemorySize::_64,
-                    },
-                    offset: None,
-                    disp: 0,
-                    size: MemorySize::_64,
-                    reg_class: RegisterClass::Gpr,
-                };
-                let tmp = Reg(10);
-                self.ld(ctx, arch, &tmp, &spmem)?;
-                self.addi(ctx, arch, &Reg(2), &Reg(2), 8)?;
             }
             Instruction::Call(function_index) => {
-                // flush regalloc before call
+                trace!("handle_op_: Call({function_index}) flush start, regalloc={}", state.regalloc.is_some());
                 if let Some(ralloc) = state.regalloc.as_mut() {
-                    let it = ralloc.flush();
-                    emit_cmds(self, ctx, arch, it)?;
+                    let mut n = 0usize;
+                    for cmd in ralloc.flush() {
+                        trace!("handle_op_: Call flush cmd #{n}");
+                        n += 1;
+                        trace!("handle_op_: Call flush cmd #{n} process_cmd start");
+                        riscv_regalloc::process_cmd(self, ctx, arch, &cmd)?;
+                        trace!("handle_op_: Call flush cmd #{n} process_cmd done");
+                    }
+                    trace!("handle_op_: Call flush done ({n} cmds)");
                 }
+                // Use ra (x1) as the link register so the callee can return correctly.
+                // `jal ra, label` is the canonical RISC-V direct call — it jumps to
+                // label and writes (PC+4) into ra.  The previous code used a0 as the
+                // link register and then did `call a0`, which caused a0 to point at
+                // the `call a0` instruction itself, creating an infinite loop.
+                let ra = portal_solutions_blitz_common::asm::Reg(1);
                 match func_imports.get(*function_index as usize) {
                     Some((module, name)) => {
                         let sym = alloc::format!("{module}__{name}");
-                        self.jal_label(ctx, arch, &portal_solutions_blitz_common::asm::Reg(10),
-                            RiscvLabel::External { name: sym })?;
-                        self.call(ctx, arch, &portal_solutions_blitz_common::asm::Reg(10))?;
+                        self.jal_label(ctx, arch, &ra, RiscvLabel::External { name: sym })?;
                     }
                     None => {
                         let idx = *function_index - func_imports.len() as u32;
-                        self.jal_label(ctx, arch, &portal_solutions_blitz_common::asm::Reg(10),
-                            RiscvLabel::Func { r#fn: idx })?;
-                        self.call(ctx, arch, &portal_solutions_blitz_common::asm::Reg(10))?;
+                        self.jal_label(ctx, arch, &ra, RiscvLabel::Func { r#fn: idx })?;
                     }
                 }
             }
@@ -1339,14 +1351,15 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
         state: &mut State,
         func_imports: &[(&str, &str)],
         op: &MachOperator<'_>,
-        _rewriter: &mut (dyn Reencode<Error = E> + '_),
+        rewriter: &mut (dyn Reencode<Error = E> + '_),
         target: u32,
-    ) -> Result<(), Self::Error>
+    ) -> Result<(), portal_solutions_blitz_common::HandleOpError<E>>
     where
-        wasm_encoder::reencode::Error<E>: Into<Self::Error>,
+        Self::Error: Into<portal_solutions_blitz_common::HandleOpError<E>>,
         Self::Error: From<core::fmt::Error>,
         Self: Sized,
     {
+        trace!("handle_op enter: target={target} body={}", state.body);
         if target != state.body {
             self.jal_label(
                 ctx,
@@ -1358,10 +1371,10 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         return state.label_index - 1;
                     }),
                 },
-            )?;
+            ).map_err(Into::into)?;
             state.body = target;
             if let Some(idx) = state.body_labels.remove(&state.body) {
-                self.set_label(ctx, arch, RiscvLabel::Indexed { idx })?;
+                self.set_label(ctx, arch, RiscvLabel::Indexed { idx }).map_err(Into::into)?;
             }
         }
         match op {
@@ -1370,13 +1383,12 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 state.num_returns = data.num_returns;
                 state.control_depth = data.control_depth;
 
-                self.set_label(ctx, arch, RiscvLabel::Func { r#fn: *id })?;
+                self.set_label(ctx, arch, RiscvLabel::Func { r#fn: *id }).map_err(Into::into)?;
 
                 let sp = Reg(2);
                 let fp = Reg(8);
 
-                // push fp
-                self.addi(ctx, arch, &sp, &sp, -8)?;
+                self.addi(ctx, arch, &sp, &sp, -8).map_err(Into::into)?;
                 let push_mem = MemArgKind::Mem {
                     base: ArgKind::Reg {
                         reg: sp,
@@ -1387,20 +1399,17 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     size: MemorySize::_64,
                     reg_class: RegisterClass::Gpr,
                 };
-                self.sd(ctx, arch, &fp, &push_mem)?;
+                self.sd(ctx, arch, &fp, &push_mem).map_err(Into::into)?;
 
-                // set fp = sp
-                self.mv(ctx, arch, &fp, &sp)?;
+                self.mv(ctx, arch, &fp, &sp).map_err(Into::into)?;
 
-                // allocate locals
                 let locals_slots =
                     (state.local_count as i32) + (state.control_depth as i32) * 2 + 4;
                 let alloc_bytes = locals_slots * 8;
                 if alloc_bytes > 0 {
-                    self.addi(ctx, arch, &sp, &sp, -alloc_bytes)?;
+                    self.addi(ctx, arch, &sp, &sp, -alloc_bytes).map_err(Into::into)?;
                 }
 
-                // Ensure regalloc initialized (smoke test)
                 if state.regalloc.is_none() {
                     let r = riscv_regalloc::init_regalloc::<32>(arch);
                     let new = regalloc::RegAlloc {
@@ -1409,26 +1418,23 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     };
                     state.regalloc = Some(new);
 
-                    // Small smoke: push an int register and emit its cmds
                     let (ridx, cmds) = state
                         .regalloc
                         .as_mut()
                         .unwrap()
                         .push(riscv_regalloc::RegKind::Int)
-                        .map_err(|_| core::fmt::Error)?;
-                    emit_cmds(self, ctx, arch, cmds)?;
-                    // emit a simple li into the allocated phys reg
+                        .map_err(|_| portal_solutions_blitz_common::HandleOpError::Fmt(core::fmt::Error))?;
+                    emit_cmds(self, ctx, arch, cmds).map_err(Into::into)?;
                     let phys = Reg(ridx as u8);
-                    self.li(ctx, arch, &phys, 0u64)?;
+                    self.li(ctx, arch, &phys, 0u64).map_err(Into::into)?;
                 }
 
                 Ok(())
             }
             MachOperator::Local { count, ty } => {
                 for _ in 0..*count {
-                    // push x0
                     let sp = Reg(2);
-                    self.addi(ctx, arch, &sp, &sp, -8)?;
+                    self.addi(ctx, arch, &sp, &sp, -8).map_err(Into::into)?;
                     let mem = MemArgKind::Mem {
                         base: ArgKind::Reg {
                             reg: sp,
@@ -1443,16 +1449,15 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         reg: Reg(0),
                         size: MemorySize::_64,
                     };
-                    self.sd(ctx, arch, &zero, &mem)?;
+                    self.sd(ctx, arch, &zero, &mem).map_err(Into::into)?;
                     state.local_count += 1;
                 }
                 Ok(())
             }
             MachOperator::StartBody => {
-                // push sp marker and reserve control slots
                 let sp = Reg(2);
                 let tmp = Reg(10);
-                self.addi(ctx, arch, &sp, &sp, -8)?;
+                self.addi(ctx, arch, &sp, &sp, -8).map_err(Into::into)?;
                 let mem = MemArgKind::Mem {
                     base: ArgKind::Reg {
                         reg: sp,
@@ -1463,28 +1468,34 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     size: MemorySize::_64,
                     reg_class: RegisterClass::Gpr,
                 };
-                self.sd(ctx, arch, &tmp, &mem)?;
+                self.sd(ctx, arch, &tmp, &mem).map_err(Into::into)?;
 
                 let control_space = (state.control_depth as i32) * 16;
                 if control_space > 0 {
-                    self.addi(ctx, arch, &sp, &sp, -control_space)?;
+                    self.addi(ctx, arch, &sp, &sp, -control_space).map_err(Into::into)?;
                 }
                 Ok(())
             }
             MachOperator::Instruction { op, .. } => {
-                self.handle_op_(ctx, arch, state, func_imports, op, _rewriter, target)
+                self.handle_op_(ctx, arch, state, func_imports, op, rewriter, target)
+                    .map_err(Into::into)
             }
             MachOperator::Operator { op, .. } => {
                 if let Some(op) = op {
-                    self.handle_op_(
+                    trace!("handle_op: Operator dispatch start rewriting op");
+                    let insn = rewriter.instruction(op.clone())?;
+                    trace!("handle_op: Operator rewritten, calling handle_op_");
+                    let r = self.handle_op_(
                         ctx,
                         arch,
                         state,
                         func_imports,
-                        &_rewriter.instruction(op.clone()).map_err(|e| e.into())?,
-                        _rewriter,
+                        &insn,
+                        rewriter,
                         target,
-                    )
+                    ).map_err(Into::into);
+                    trace!("handle_op: Operator handle_op_ returned");
+                    r
                 } else {
                     Ok(())
                 }

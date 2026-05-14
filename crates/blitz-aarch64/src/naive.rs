@@ -532,9 +532,9 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         op: &MachOperator<'_>,
         rewriter: &mut (dyn Reencode<Error = E> + '_),
         target: u32,
-    ) -> Result<(), Self::Error>
+    ) -> Result<(), portal_solutions_blitz_common::HandleOpError<E>>
     where
-        wasm_encoder::reencode::Error<E>: Into<Self::Error>,
+        Self::Error: Into<portal_solutions_blitz_common::HandleOpError<E>>,
         Self: Sized,
     {
         match op {
@@ -543,28 +543,24 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 state.num_returns = data.num_returns;
                 state.control_depth = data.control_depth;
 
-                // Function label
-                self.set_label(ctx, arch, AArch64Label::Func { r#fn: *id })?;
+                self.set_label(ctx, arch, AArch64Label::Func { r#fn: *id }).map_err(Into::into)?;
 
-                // Standard AArch64 prologue: save FP+LR, set FP=SP
-                self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16))?;
-                self.mov(ctx, arch, &reg(FP), &reg(SP))?;
+                self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16)).map_err(Into::into)?;
+                self.mov(ctx, arch, &reg(FP), &reg(SP)).map_err(Into::into)?;
 
-                // Allocate frame for locals + control flow slots
                 let locals_slots = state.local_count as i64 + state.control_depth as i64 * 2 + 2;
                 if locals_slots > 0 {
                     let size = MemArgKind::NoMem(ArgKind::Lit((locals_slots * 8) as u64));
-                    self.sub(ctx, arch, &reg(SP), &reg(SP), &size)?;
+                    self.sub(ctx, arch, &reg(SP), &reg(SP), &size).map_err(Into::into)?;
                 }
                 Ok(())
             }
 
             MachOperator::Local { count, .. } => {
-                // Zero-initialize new locals on the WASM stack.
-                self.mov_imm(ctx, arch, &reg(T0), 0)?;
+                self.mov_imm(ctx, arch, &reg(T0), 0).map_err(Into::into)?;
                 for _ in 0..*count {
                     state.local_count += 1;
-                    self.store_local(ctx, arch, T0, state.local_count - 1)?;
+                    self.store_local(ctx, arch, T0, state.local_count - 1).map_err(Into::into)?;
                 }
                 Ok(())
             }
@@ -574,10 +570,12 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
 
             MachOperator::Instruction { op: insn, .. } => {
                 self.handle_insn(ctx, arch, state, func_imports, insn, target)
+                    .map_err(Into::into)
             }
             MachOperator::Operator { op: Some(op_wasm), .. } => {
-                let insn = rewriter.instruction(op_wasm.clone()).map_err(|e| e.into())?;
+                let insn = rewriter.instruction(op_wasm.clone())?;
                 self.handle_insn(ctx, arch, state, func_imports, &insn, target)
+                    .map_err(Into::into)
             }
             MachOperator::Operator { op: None, .. } => Ok(()),
             _ => Ok(()),
