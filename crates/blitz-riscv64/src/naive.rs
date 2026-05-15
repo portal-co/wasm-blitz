@@ -149,20 +149,26 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
     {
         trace!("handle_op_ enter: target={target} body={}", state.body);
         if target != state.body {
-            self.jal_label(
-                ctx,
-                arch,
-                &Reg(0),
-                RiscvLabel::Indexed {
-                    idx: *state.body_labels.entry(state.body).or_insert_with(|| {
-                        state.label_index += 1;
-                        return state.label_index - 1;
-                    }),
-                },
-            )?;
-            state.body = target;
-            if let Some(idx) = state.body_labels.remove(&state.body) {
-                self.set_label(ctx, arch, RiscvLabel::Indexed { idx })?;
+            // First-instruction guard: state.body == 0 is the Default value,
+            // not a real prior body.  See aarch64/naive.rs for the rationale.
+            if state.body == 0 && state.body_labels.is_empty() {
+                state.body = target;
+            } else {
+                self.jal_label(
+                    ctx,
+                    arch,
+                    &Reg(0),
+                    RiscvLabel::Indexed {
+                        idx: *state.body_labels.entry(state.body).or_insert_with(|| {
+                            state.label_index += 1;
+                            return state.label_index - 1;
+                        }),
+                    },
+                )?;
+                state.body = target;
+                if let Some(idx) = state.body_labels.remove(&state.body) {
+                    self.set_label(ctx, arch, RiscvLabel::Indexed { idx })?;
+                }
             }
         }
         use portal_solutions_blitz_common::wasm_encoder::Instruction;
@@ -1312,8 +1318,10 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     emit_cmds(self, ctx, arch, it)?;
                 }
                 let dest = Reg(10);
-                // Load address of __wasm_mem_pages into dest.
-                self.jal_label(ctx, arch, &dest, RiscvLabel::External { name: "__wasm_mem_pages".into() })?;
+                // Load the *address* of __wasm_mem_pages into dest using the
+                // `la` pseudo-instruction.  Using `jal` here would jump to the
+                // data symbol and execute its bytes as instructions.
+                self.la_label(ctx, arch, &dest, RiscvLabel::External { name: "__wasm_mem_pages".into() })?;
                 // Dereference: load 32-bit page count, zero-extend to 64 bits.
                 let mem = MemArgKind::Mem {
                     base: ArgKind::Reg { reg: dest, size: MemorySize::_64 },
@@ -1336,9 +1344,13 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     let it = ralloc.flush();
                     emit_cmds(self, ctx, arch, it)?;
                 }
-                let fn_reg = Reg(10);
-                self.jal_label(ctx, arch, &fn_reg, RiscvLabel::External { name: "__wasm_memory_grow".into() })?;
-                self.call(ctx, arch, &fn_reg)?;
+                // `jal ra, __wasm_memory_grow` is the canonical RISC-V direct
+                // call: it transfers control to the function and stores PC+4
+                // in `ra` for the callee to return through.  Previously this
+                // emitted `jal a0, sym; call a0`, which jumped to the function
+                // and then re-called the now-corrupted a0 (an infinite loop).
+                let ra = Reg(1);
+                self.jal_label(ctx, arch, &ra, RiscvLabel::External { name: "__wasm_memory_grow".into() })?;
             }
             _ => {}
         }
@@ -1361,20 +1373,26 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
     {
         trace!("handle_op enter: target={target} body={}", state.body);
         if target != state.body {
-            self.jal_label(
-                ctx,
-                arch,
-                &Reg(0),
-                RiscvLabel::Indexed {
-                    idx: *state.body_labels.entry(state.body).or_insert_with(|| {
-                        state.label_index += 1;
-                        return state.label_index - 1;
-                    }),
-                },
-            ).map_err(Into::into)?;
-            state.body = target;
-            if let Some(idx) = state.body_labels.remove(&state.body) {
-                self.set_label(ctx, arch, RiscvLabel::Indexed { idx }).map_err(Into::into)?;
+            // First-instruction guard: state.body == 0 is the Default value,
+            // not a real prior body.  See aarch64/naive.rs for the rationale.
+            if state.body == 0 && state.body_labels.is_empty() {
+                state.body = target;
+            } else {
+                self.jal_label(
+                    ctx,
+                    arch,
+                    &Reg(0),
+                    RiscvLabel::Indexed {
+                        idx: *state.body_labels.entry(state.body).or_insert_with(|| {
+                            state.label_index += 1;
+                            return state.label_index - 1;
+                        }),
+                    },
+                ).map_err(Into::into)?;
+                state.body = target;
+                if let Some(idx) = state.body_labels.remove(&state.body) {
+                    self.set_label(ctx, arch, RiscvLabel::Indexed { idx }).map_err(Into::into)?;
+                }
             }
         }
         match op {

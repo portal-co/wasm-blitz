@@ -193,14 +193,26 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         target: u32,
     ) -> Result<(), Self::Error> {
         if target != state.body {
-            let skip_lbl = *state.body_labels.entry(state.body).or_insert_with(|| {
-                state.label_index += 1;
-                state.label_index - 1
-            });
-            self.b_label(ctx, arch, AArch64Label::Indexed { idx: skip_lbl })?;
-            state.body = target;
-            if let Some(idx) = state.body_labels.remove(&state.body) {
-                self.set_label(ctx, arch, AArch64Label::Indexed { idx })?;
+            // On the very first instruction of a function, `state.body` is
+            // still the `Default::default()` value (0) and no body has been
+            // entered yet.  Emitting a skip-jump here would reference a
+            // `_idx_0` label that is never `set_label`'d (because we never
+            // visited body 0), leaving an unresolved branch that on AArch64
+            // assembles to `b .` (jump-to-self / infinite loop).  Detect
+            // the uninitialized case via the empty body_labels map and just
+            // adopt the new target body.
+            if state.body == 0 && state.body_labels.is_empty() {
+                state.body = target;
+            } else {
+                let skip_lbl = *state.body_labels.entry(state.body).or_insert_with(|| {
+                    state.label_index += 1;
+                    state.label_index - 1
+                });
+                self.b_label(ctx, arch, AArch64Label::Indexed { idx: skip_lbl })?;
+                state.body = target;
+                if let Some(idx) = state.body_labels.remove(&state.body) {
+                    self.set_label(ctx, arch, AArch64Label::Indexed { idx })?;
+                }
             }
         }
         match op {

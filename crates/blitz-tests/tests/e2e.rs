@@ -2571,16 +2571,196 @@ fn test_unicorn_riscv64_sysv_backend() {
 }
 
 // ---------------------------------------------------------------------------
-// Native backend × make_module_with_memory — compilation smoke
+// Stubs and helpers for native execution tests
 // ---------------------------------------------------------------------------
 
-/// Verify that a WASM module containing a linear memory section compiles
-/// through every native backend without panicking.  Uses `memory.size` which
-/// is the simplest instruction that exercises the memory-related codegen path.
+/// Data stub that resolves the `__wasm_mem_pages` external used by
+/// `Instruction::MemorySize` codegen.  Defines a 32-bit value of `1` so a
+/// `memory.size` returns 1 (one wasm page).  Format works for all three
+/// architectures since `.int` is honored by GNU/LLVM `clang -c`.
+const STUB_MEM_PAGES: &str = "__wasm_mem_pages:\n.int 1\n";
+
+/// Stub for the `env::add_one` import (mangled `env__add_one`).
+///
+/// Follows the blitz naive WASM calling convention: the caller has pushed the
+/// argument onto the WASM operand stack (which is the hardware stack), then
+/// invoked the stub via a normal architecture call instruction.  The stub
+/// adds 1 to the value at the top of the WASM stack in place and returns,
+/// leaving the result where the caller will pick it up.
+fn import_stub_add_one(arch: NativeArch) -> &'static str {
+    match arch {
+        // x86-64 Intel syntax: pop ra+arg, increment, push result+ra, ret.
+        NativeArch::X86_64 => concat!(
+            "env__add_one:\n",
+            "pop r11\n",
+            "pop rax\n",
+            "inc rax\n",
+            "push rax\n",
+            "push r11\n",
+            "ret\n",
+        ),
+        // AArch64: read [sp] (= arg), +1, write back, ret to lr.
+        NativeArch::AArch64 => concat!(
+            "env__add_one:\n",
+            "ldr x9, [sp]\n",
+            "add x9, x9, #1\n",
+            "str x9, [sp]\n",
+            "ret\n",
+        ),
+        // RISC-V 64: read [sp], +1, write back, ret (= jalr x0, ra, 0).
+        NativeArch::Riscv64 => concat!(
+            "env__add_one:\n",
+            "ld a0, 0(sp)\n",
+            "addi a0, a0, 1\n",
+            "sd a0, 0(sp)\n",
+            "ret\n",
+        ),
+    }
+}
+
+/// WASM linear-memory base address used by native execution tests.
+/// Mapped into Unicorn separately from CODE/STACK.
+const NATIVE_WASM_MEM: u64 = 0x300000;
+
+/// Run sysv-ABI native code in Unicorn with an additional memory region
+/// mapped at `extra_addr`, pre-populated with `extra_data`.  Returns the
+/// sysv return register (rax/x0/a0).
+fn run_native_sysv_with_mem(
+    arch: NativeArch,
+    code: &[u8],
+    extra_addr: u64,
+    extra_data: &[u8],
+) -> u64 {
+    use unicorn_engine::{
+        unicorn_const::{Arch, Mode, Prot},
+        Unicorn,
+    };
+
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x200000;
+    const STACK_SIZE: u64 = 0x10000;
+    const EXTRA_SIZE: u64 = 0x10000;
+
+    match arch {
+        NativeArch::X86_64 => {
+            use unicorn_engine::RegisterX86;
+            let mut uc = Unicorn::new(Arch::X86, Mode::MODE_64).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_map(extra_addr & !0xfff, EXTRA_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            uc.mem_write(extra_addr, extra_data).unwrap();
+            let rsp = STACK + STACK_SIZE - 8;
+            uc.mem_write(rsp, &(CODE + code.len() as u64).to_le_bytes()).unwrap();
+            uc.reg_write(RegisterX86::RSP, rsp).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.reg_read(RegisterX86::RAX).unwrap()
+        }
+        NativeArch::AArch64 => {
+            use unicorn_engine::RegisterARM64;
+            let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_map(extra_addr & !0xfff, EXTRA_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            uc.mem_write(extra_addr, extra_data).unwrap();
+            uc.reg_write(RegisterARM64::SP, STACK + STACK_SIZE - 16).unwrap();
+            uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.reg_read(RegisterARM64::X0).unwrap()
+        }
+        NativeArch::Riscv64 => {
+            use unicorn_engine::RegisterRISCV;
+            let mut uc = Unicorn::new(Arch::RISCV, Mode::RISCV64).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_map(extra_addr & !0xfff, EXTRA_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            uc.mem_write(extra_addr, extra_data).unwrap();
+            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16).unwrap();
+            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.reg_read(RegisterRISCV::A0).unwrap()
+        }
+    }
+}
+
+/// Same as `run_native_naive_smoke`, but also maps an `extra_addr` region.
+fn run_native_naive_smoke_with_mem(
+    arch: NativeArch,
+    code: &[u8],
+    extra_addr: u64,
+    extra_data: &[u8],
+) {
+    use unicorn_engine::{
+        unicorn_const::{Arch, Mode, Prot},
+        Unicorn,
+    };
+
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x200000;
+    const STACK_SIZE: u64 = 0x10000;
+    const EXTRA_SIZE: u64 = 0x10000;
+
+    match arch {
+        NativeArch::X86_64 => {
+            use unicorn_engine::RegisterX86;
+            let mut uc = Unicorn::new(Arch::X86, Mode::MODE_64).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_map(extra_addr & !0xfff, EXTRA_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            uc.mem_write(extra_addr, extra_data).unwrap();
+            let sp = STACK + STACK_SIZE - 0x100;
+            uc.mem_write(sp, &(CODE + code.len() as u64).to_le_bytes()).unwrap();
+            uc.reg_write(RegisterX86::RSP, sp).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+        }
+        NativeArch::AArch64 => {
+            use unicorn_engine::RegisterARM64;
+            let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_map(extra_addr & !0xfff, EXTRA_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            uc.mem_write(extra_addr, extra_data).unwrap();
+            uc.reg_write(RegisterARM64::SP, STACK + STACK_SIZE - 16).unwrap();
+            uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+        }
+        NativeArch::Riscv64 => {
+            use unicorn_engine::RegisterRISCV;
+            let mut uc = Unicorn::new(Arch::RISCV, Mode::RISCV64).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_map(extra_addr & !0xfff, EXTRA_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            uc.mem_write(extra_addr, extra_data).unwrap();
+            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16).unwrap();
+            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Native backend × make_module_with_memory — Unicorn execution
+// ---------------------------------------------------------------------------
+
+/// End-to-end test: a WASM module that returns `memory.size` should assemble
+/// and execute correctly when `__wasm_mem_pages` is provided as a `.int 1`
+/// data stub in the same translation unit.  Sysv backends are checked for
+/// the actual return value (1); naive backends are smoke-tested for no crash.
 fn assert_native_compile_module_with_memory(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_module_with_memory(&[], &[ValType::I32], &[Instruction::MemorySize(0)]);
-    let asm = compile_native_asm(&wasm, arch, abi);
-    assert!(!asm.trim().is_empty(), "expected non-empty asm output for {arch:?}/{abi:?}");
+    let base_asm = compile_native_asm(&wasm, arch, abi);
+    let asm = format!("{base_asm}{STUB_MEM_PAGES}");
+    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    match abi {
+        NativeAbi::Sysv => assert_eq!(run_native_sysv_const(arch, &code), 1,
+            "memory.size should return 1 page for {arch:?} sysv"),
+        NativeAbi::Naive => run_native_naive_smoke(arch, &code),
+    }
 }
 
 #[test]
@@ -2609,23 +2789,40 @@ fn test_native_riscv64_sysv_with_memory() {
 }
 
 // ---------------------------------------------------------------------------
-// Native backend × make_module_with_data — compilation smoke
+// Native backend × make_module_with_data — Unicorn execution
 // ---------------------------------------------------------------------------
 
-/// Verify a module with active data segments compiles through every backend.
-/// The function reads byte 0 from linear memory (pre-initialised by the data
-/// segment) and zero-extends it to i32.
+/// End-to-end test: a WASM module that loads from linear memory should
+/// assemble and execute correctly.  Uses `i32.const $addr; i32.load` against
+/// a known address `NATIVE_WASM_MEM` mapped at run time.  Note we use the
+/// fully-implemented `I32Load` here rather than `I32Load8U`, which is not
+/// yet handled by any native backend (silently falls through, so no load
+/// would actually happen).
+///
+/// We don't emit a wasm data segment because native backends have no runtime
+/// that applies it — the test runner writes the byte directly into the
+/// mapped page instead.
 fn assert_native_compile_module_with_data(arch: NativeArch, abi: NativeAbi) {
     use wasm_encoder::MemArg;
-    let data: &[(u32, &[u8])] = &[(0, &[42u8])];
-    let wasm = make_module_with_data(
+    let wasm = make_module_with_memory(
         &[],
         &[ValType::I32],
-        &[Instruction::I32Const(0), Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 })],
-        data,
+        &[
+            Instruction::I32Const(NATIVE_WASM_MEM as i32),
+            Instruction::I32Load(MemArg { offset: 0, align: 0, memory_index: 0 }),
+        ],
     );
     let asm = compile_native_asm(&wasm, arch, abi);
-    assert!(!asm.trim().is_empty(), "expected non-empty asm output for {arch:?}/{abi:?}");
+    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    let data: [u8; 4] = 42u32.to_le_bytes();
+    match abi {
+        NativeAbi::Sysv => assert_eq!(
+            run_native_sysv_with_mem(arch, &code, NATIVE_WASM_MEM, &data),
+            42,
+            "i32.load should return 42 for {arch:?} sysv",
+        ),
+        NativeAbi::Naive => run_native_naive_smoke_with_mem(arch, &code, NATIVE_WASM_MEM, &data),
+    }
 }
 
 #[test]
@@ -2654,13 +2851,58 @@ fn test_native_riscv64_sysv_with_data() {
 }
 
 // ---------------------------------------------------------------------------
-// Native backend × make_module_with_import — compilation smoke
+// Native backend × make_module_with_import — Unicorn execution
 // ---------------------------------------------------------------------------
 
-/// Verify a module that calls an imported function compiles through every backend.
-/// Uses the same `env::add_one` import as the JS/C import tests.
+/// Build a WASM module that imports `env::add_one : (i64) -> i64` and exports
+/// an internal `() -> i64` function that pushes a constant, calls the import,
+/// and returns its result.
+///
+/// We use a no-parameter outer function (and pass the arg via `i64.const`)
+/// because the native naive backend's `StartFn` prologue mishandles function
+/// parameters: it computes `r0 = ret_addr - params*8` which addresses code,
+/// not the stack.  This test focuses on the import-call mechanism rather
+/// than on parameter passing into the outer function.
+fn make_native_import_module() -> Vec<u8> {
+    let mut module = Module::new();
+
+    // type 0: (i64) -> i64
+    // type 1: ()    -> i64
+    let mut types = TypeSection::new();
+    types.ty().function([ValType::I64], [ValType::I64]);
+    types.ty().function([], [ValType::I64]);
+    module.section(&types);
+
+    let mut imports = wasm_encoder::ImportSection::new();
+    imports.import("env", "add_one", wasm_encoder::EntityType::Function(0));
+    module.section(&imports);
+
+    let mut functions = FunctionSection::new();
+    functions.function(1);
+    module.section(&functions);
+
+    let mut exports = ExportSection::new();
+    exports.export("run", ExportKind::Func, 1);
+    module.section(&exports);
+
+    let mut code = CodeSection::new();
+    let mut func = Function::new([]);
+    func.instruction(&Instruction::I64Const(42));
+    func.instruction(&Instruction::Call(0));
+    func.instruction(&Instruction::Return);
+    func.instruction(&Instruction::End);
+    code.function(&func);
+    module.section(&code);
+
+    module.finish()
+}
+
+/// End-to-end test: a WASM module that calls an imported function should
+/// assemble and execute correctly when the import (`env__add_one`) is
+/// resolved by an in-asm stub that adds 1 to its WASM-stack argument.
+/// Sysv backends are checked for the return value (43 = 42 + 1).
 fn assert_native_compile_module_with_import(arch: NativeArch, abi: NativeAbi) {
-    let wasm = make_module_with_import();
+    let wasm = make_native_import_module();
     let (sigs_wp, _sigs_enc, fsigs) = parse_sigs(&wasm);
     let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
     for payload in wasmparser::Parser::new(0).parse_all(&wasm).flatten() {
@@ -2747,7 +2989,17 @@ fn assert_native_compile_module_with_import(arch: NativeArch, abi: NativeAbi) {
             }
         }
     }
-    assert!(!out.0.trim().is_empty(), "expected non-empty asm output for {arch:?}/{abi:?}");
+    let base_asm = normalize_native_asm(arch, out.0);
+    let asm = format!("{base_asm}{}", import_stub_add_one(arch));
+    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    match abi {
+        NativeAbi::Sysv => assert_eq!(
+            run_native_sysv_const(arch, &code),
+            43,
+            "env::add_one(42) should return 43 for {arch:?} sysv",
+        ),
+        NativeAbi::Naive => run_native_naive_smoke(arch, &code),
+    }
 }
 
 #[test]

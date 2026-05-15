@@ -123,14 +123,19 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
     {
         // Redirect body-skip jump if needed (same as naive _handle_op preamble)
         if target != state.body {
-            let skip_idx = *state.body_labels.entry(state.body).or_insert_with(|| {
-                state.label_index += 1;
-                state.label_index - 1
-            });
-            self.jmp_label(ctx, arch, X64Label::Indexed { idx: skip_idx })?;
-            state.body = target;
-            if let Some(idx) = state.body_labels.remove(&state.body) {
-                self.set_label(ctx, arch, X64Label::Indexed { idx })?;
+            // First-instruction guard: see naive.rs.
+            if state.body == 0 && state.body_labels.is_empty() {
+                state.body = target;
+            } else {
+                let skip_idx = *state.body_labels.entry(state.body).or_insert_with(|| {
+                    state.label_index += 1;
+                    state.label_index - 1
+                });
+                self.jmp_label(ctx, arch, X64Label::Indexed { idx: skip_idx })?;
+                state.body = target;
+                if let Some(idx) = state.body_labels.remove(&state.body) {
+                    self.set_label(ctx, arch, X64Label::Indexed { idx })?;
+                }
             }
         }
 

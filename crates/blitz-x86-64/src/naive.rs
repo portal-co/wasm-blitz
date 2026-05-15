@@ -5,7 +5,7 @@
 
 use alloc::collections::btree_map::BTreeMap;
 use portal_solutions_asm_x86_64::RegisterClass;
-use portal_solutions_asm_x86_64::out::arg::{MemArg, MemArgKind};
+use portal_solutions_asm_x86_64::out::arg::{ArgKind, MemArg, MemArgKind};
 use portal_solutions_blitz_common::wasm_encoder::{self, Instruction, reencode::Reencode};
 
 use crate::{
@@ -97,19 +97,24 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
     {
         use portal_solutions_blitz_common::HandleOpError;
         if target != state.body {
-            self.jmp_label(
-                ctx,
-                arch,
-                X64Label::Indexed {
-                    idx: *state.body_labels.entry(state.body).or_insert_with(|| {
-                        state.label_index += 1;
-                        return state.label_index - 1;
-                    }),
-                },
-            ).map_err(Into::into)?;
-            state.body = target;
-            if let Some(idx) = state.body_labels.remove(&state.body) {
-                self.set_label(ctx, arch, X64Label::Indexed { idx }).map_err(Into::into)?;
+            // First-instruction guard: see comment in `_handle_op` below.
+            if state.body == 0 && state.body_labels.is_empty() {
+                state.body = target;
+            } else {
+                self.jmp_label(
+                    ctx,
+                    arch,
+                    X64Label::Indexed {
+                        idx: *state.body_labels.entry(state.body).or_insert_with(|| {
+                            state.label_index += 1;
+                            return state.label_index - 1;
+                        }),
+                    },
+                ).map_err(Into::into)?;
+                state.body = target;
+                if let Some(idx) = state.body_labels.remove(&state.body) {
+                    self.set_label(ctx, arch, X64Label::Indexed { idx }).map_err(Into::into)?;
+                }
             }
         }
         //Stack Frame: r&Reg::CTX[&Reg(0)] => local variable frame
@@ -204,19 +209,28 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         target: u32,
     ) -> Result<(), Self::Error> {
         if target != state.body {
-            self.jmp_label(
-                ctx,
-                arch,
-                X64Label::Indexed {
-                    idx: *state.body_labels.entry(state.body).or_insert_with(|| {
-                        state.label_index += 1;
-                        return state.label_index - 1;
-                    }),
-                },
-            )?;
-            state.body = target;
-            if let Some(idx) = state.body_labels.remove(&state.body) {
-                self.set_label(ctx, arch, X64Label::Indexed { idx })?;
+            // On the very first instruction `state.body == 0` is the Default
+            // value rather than a real prior body.  Emitting a skip jump
+            // here references a `_idx_0` label that is never set, leaving
+            // a dangling relocation (jump-to-self on AArch64, no-op-fallthrough
+            // on x86 — but no useful skip semantics either way).
+            if state.body == 0 && state.body_labels.is_empty() {
+                state.body = target;
+            } else {
+                self.jmp_label(
+                    ctx,
+                    arch,
+                    X64Label::Indexed {
+                        idx: *state.body_labels.entry(state.body).or_insert_with(|| {
+                            state.label_index += 1;
+                            return state.label_index - 1;
+                        }),
+                    },
+                )?;
+                state.body = target;
+                if let Some(idx) = state.body_labels.remove(&state.body) {
+                    self.set_label(ctx, arch, X64Label::Indexed { idx })?;
+                }
             }
         }
         match op {
@@ -249,7 +263,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     &Reg(0),
                     &MemArgKind::Mem {
                         base: Reg(0),
-                        offset: Some((Reg(1), 0)),
+                        offset: Some((Reg(1), 1)),
                         disp: 0,
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
@@ -270,7 +284,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     &Reg(0),
                     &MemArgKind::Mem {
                         base: Reg(0),
-                        offset: Some((Reg(1), 0)),
+                        offset: Some((Reg(1), 1)),
                         disp: 1,
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
@@ -393,7 +407,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     &Reg(0),
                     &MemArgKind::Mem {
                         base: Reg(0),
-                        offset: Some((Reg(1), 0)),
+                        offset: Some((Reg(1), 1)),
                         disp: 1,
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
@@ -414,7 +428,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     &Reg(0),
                     &MemArgKind::Mem {
                         base: Reg(0),
-                        offset: Some((Reg(1), 0)),
+                        offset: Some((Reg(1), 1)),
                         disp: 1,
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
@@ -434,7 +448,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     &Reg(0),
                     &MemArgKind::Mem {
                         base: Reg(0),
-                        offset: Some((Reg(1), 0)),
+                        offset: Some((Reg(1), 1)),
                         disp: 0,
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
@@ -453,7 +467,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     &Reg(0),
                     &MemArgKind::Mem {
                         base: Reg(0),
-                        offset: Some((Reg(1), 0)),
+                        offset: Some((Reg(1), 1)),
                         disp: 0,
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
@@ -471,13 +485,29 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     &Reg(0),
                     &MemArgKind::Mem {
                         base: Reg(0),
-                        offset: Some((Reg(1), 0)),
+                        offset: Some((Reg(1), 1)),
                         disp: 0,
                         size: MemorySize::_32,
                         reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.mov(ctx, arch, &Reg(0), &Reg(0))?;
+                // Dereference: load 32-bit value into eax (zero-extends to rax).
+                // Previously this was `mov rax, rax`, a register-to-register
+                // no-op that left the *address* in rax instead of loading the
+                // value at that address.
+                let eax = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 });
+                self.mov(
+                    ctx,
+                    arch,
+                    &eax,
+                    &MemArgKind::Mem {
+                        base: Reg(0),
+                        offset: None,
+                        disp: 0,
+                        size: MemorySize::_32,
+                        reg_class: RegisterClass::Gpr,
+                    },
+                )?;
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I32Store(memarg) => {
@@ -490,7 +520,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     &Reg(0),
                     &MemArgKind::Mem {
                         base: Reg(0),
-                        offset: Some((Reg(1), 0)),
+                        offset: Some((Reg(1), 1)),
                         disp: 0,
                         size: MemorySize::_32,
                         reg_class: RegisterClass::Gpr,
@@ -746,10 +776,13 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 // Get address of the pages-count global into Reg(0).
                 self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: "__wasm_mem_pages".into() })?;
                 // Load the 32-bit value (zero-extend to 64 bits).
+                // Dest must be eax (the 32-bit half) for the assembler to accept
+                // `mov eax, dword ptr [rax]` — writing eax auto-zero-extends rax.
+                let eax = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 });
                 self.mov(
                     ctx,
                     arch,
-                    &Reg(0),
+                    &eax,
                     &MemArgKind::Mem {
                         base: Reg(0),
                         offset: None,
