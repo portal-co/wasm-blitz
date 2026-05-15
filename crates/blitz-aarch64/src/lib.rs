@@ -64,3 +64,5 @@ pub mod naive;
 pub mod sysv;
 /// BackendAbi implementations for AArch64.
 pub mod abi;
+/// `wax-core` `InstructionSink` / `OperatorSink` impls for the AArch64 backend.
+pub mod sink;

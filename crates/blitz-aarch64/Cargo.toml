@@ -11,3 +11,6 @@ portal-solutions-asm-aarch64 = { workspace = true }
 portal-solutions-asm-regalloc.workspace = true
 portal-pc-asm-common = { workspace = true }
 portal-solutions-blitz-i4.workspace = true
+wax-core.workspace = true
+wasm-encoder.workspace = true
+wasmparser.workspace = true

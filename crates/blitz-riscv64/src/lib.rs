@@ -52,3 +52,5 @@ pub mod naive;
 pub mod sysv;
 /// BackendAbi implementations for RISC-V 64.
 pub mod abi;
+/// `wax-core` `InstructionSink` / `OperatorSink` impls for the RISC-V 64 backend.
+pub mod sink;

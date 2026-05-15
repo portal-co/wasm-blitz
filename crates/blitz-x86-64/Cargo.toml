@@ -10,3 +10,6 @@ portal-solutions-asm-x86-64 = { workspace = true, features = ["regalloc-integrat
 portal-solutions-asm-regalloc.workspace = true
 portal-solutions-blitz-common = { workspace = true, features = ["asm"] }
 typeid.workspace = true
+wax-core.workspace = true
+wasm-encoder.workspace = true
+wasmparser.workspace = true

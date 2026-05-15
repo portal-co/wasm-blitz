@@ -108,3 +108,9 @@ pub mod passes;
 /// zero-sized marker types.  Backend crates implement the trait with their own
 /// writer-trait bounds.
 pub mod abi;
+
+/// Bridge types connecting `wax-core` instruction sinks to `asm-arch` writers.
+///
+/// Provides [`sink::WaxHandle`] (the wax-core `Context` type) and
+/// [`sink::WasmSink`] (the sink wrapper that holds WASM state).
+pub mod sink;
