@@ -12,7 +12,7 @@ use portal_solutions_blitz_common::{
     asm::Reg,
     asm::common::mem::MemorySize,
     ops::FnData,
-    wasm_encoder::FuncType,
+    wasm_encoder::{Catch, FuncType},
 };
 
 use crate::{X64Label, RSP};
@@ -256,6 +256,44 @@ where
         }
     }
 
+    fn emit_throw(
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: X64Arch,
+        _state: &mut Self::State,
+        _tag_index: u32,
+        _arity: u32,
+    ) -> Result<(), W::Error> {
+        // Throw is handled directly in WriterExt::_handle_op (naive.rs).
+        // This BackendAbi method exists for external callers; internal code
+        // uses the _handle_op match arm which has full state access.
+        todo!("emit_throw via BackendAbi — use _handle_op directly")
+    }
+
+    fn emit_try_table_start(
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: X64Arch,
+        _state: &mut Self::State,
+        _catches: &[Catch],
+        _sigs: &[FuncType],
+        _tags: &[u32],
+    ) -> Result<(), W::Error> {
+        todo!("emit_try_table_start via BackendAbi — use _handle_op directly")
+    }
+
+    fn emit_try_table_end(
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: X64Arch,
+        _state: &mut Self::State,
+        _catches: &[Catch],
+        _sigs: &[FuncType],
+        _tags: &[u32],
+    ) -> Result<(), W::Error> {
+        todo!("emit_try_table_end via BackendAbi — use _handle_op directly")
+    }
+
     fn emit_return(
         w: &mut W,
         ctx: &mut Context,
@@ -455,5 +493,40 @@ where
         w.mov(ctx, arch, &RSP, &RBP)?;
         w.pop(ctx, arch, &RBP)?;
         w.ret(ctx, arch)
+    }
+
+    fn emit_throw(
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: X64Arch,
+        _state: &mut SysVState,
+        _tag_index: u32,
+        _arity: u32,
+    ) -> Result<(), W::Error> {
+        todo!("SysVAbi exception handling requires platform unwinder — deferred; see docs/abi.md")
+    }
+
+    fn emit_try_table_start(
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: X64Arch,
+        _state: &mut SysVState,
+        _catches: &[Catch],
+        _sigs: &[FuncType],
+        _tags: &[u32],
+    ) -> Result<(), W::Error> {
+        todo!("SysVAbi exception handling requires platform unwinder — deferred; see docs/abi.md")
+    }
+
+    fn emit_try_table_end(
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: X64Arch,
+        _state: &mut SysVState,
+        _catches: &[Catch],
+        _sigs: &[FuncType],
+        _tags: &[u32],
+    ) -> Result<(), W::Error> {
+        todo!("SysVAbi exception handling requires platform unwinder — deferred; see docs/abi.md")
     }
 }

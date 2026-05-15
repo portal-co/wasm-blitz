@@ -23,7 +23,7 @@
 //! type information and is the correct replacement call-site.
 
 use crate::ops::FnData;
-use crate::wasm_encoder::FuncType;
+use crate::wasm_encoder::{Catch, FuncType};
 
 // ---------------------------------------------------------------------------
 // Marker ZSTs
@@ -164,5 +164,66 @@ pub trait BackendAbi<W: ?Sized, Context> {
         ctx: &mut Context,
         arch: Self::Arch,
         state: &Self::State,
+    ) -> Result<(), Self::Error>;
+
+    // ---- exception handling ------------------------------------------------
+
+    /// Emit a `throw tag_index` instruction.
+    ///
+    /// Pops `arity` values from the operand stack (into scratch registers or a
+    /// staging area), stores the tag index, and transfers control to the nearest
+    /// matching exception handler.
+    ///
+    /// For `NaiveAbi` the implementation uses static dispatch: it scans the
+    /// compile-time `if_stack` for the innermost `TryTable` frame and emits a
+    /// direct jump to that frame's dispatch stub.  If no handler exists in the
+    /// current function the generated code jumps to `__wasm_exn_propagate`,
+    /// which walks the CTX chain to find a handler in an enclosing call frame.
+    ///
+    /// # SysVAbi (deferred)
+    /// Platform-unwinder-based propagation requires DWARF `.eh_frame` tables and
+    /// `_Unwind_RaiseException`.  This is not yet implemented; see `docs/abi.md`.
+    fn emit_throw(
+        w: &mut W,
+        ctx: &mut Context,
+        arch: Self::Arch,
+        state: &mut Self::State,
+        tag_index: u32,
+        arity: u32,
+    ) -> Result<(), Self::Error>;
+
+    /// Emit the entry of a `try_table` block.
+    ///
+    /// Allocates compile-time label indices for the exit point, the dispatch
+    /// stub, and the post-dispatch fall-through.  Pushes a TryTable frame onto
+    /// the compile-time `if_stack` and emits any run-time preamble (e.g. pushing
+    /// old RSP and exit label onto the CTX stack in `NaiveAbi`).
+    ///
+    /// `catches`, `sigs`, and `tags` are provided so the implementation can
+    /// pre-compute tag arities if needed.
+    fn emit_try_table_start(
+        w: &mut W,
+        ctx: &mut Context,
+        arch: Self::Arch,
+        state: &mut Self::State,
+        catches: &[Catch],
+        sigs: &[FuncType],
+        tags: &[u32],
+    ) -> Result<(), Self::Error>;
+
+    /// Emit the exit (End) of a `try_table` block.
+    ///
+    /// Tears down the CTX-stack TryTable frame for the normal (non-exception)
+    /// path, emits a jump over the dispatch stub, then emits the dispatch stub
+    /// itself (tag comparison + branch to each catch label), and finally places
+    /// the post-dispatch fall-through label.
+    fn emit_try_table_end(
+        w: &mut W,
+        ctx: &mut Context,
+        arch: Self::Arch,
+        state: &mut Self::State,
+        catches: &[Catch],
+        sigs: &[FuncType],
+        tags: &[u32],
     ) -> Result<(), Self::Error>;
 }

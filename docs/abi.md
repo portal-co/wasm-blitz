@@ -353,3 +353,185 @@ Given a module with:
 - Internal function 0 (WASM index 1) exported as `"run"` → assembly label `run`,
   C alias `uint64_t* run(...)`, JS alias `var run=$1;`
 
+---
+
+## Exception Handling ABI
+
+Implements the [WebAssembly Exception Handling proposal](https://github.com/WebAssembly/exception-handling).
+
+### Supported instructions
+
+| Instruction | Status |
+|-------------|--------|
+| `throw { tag_index }` | Implemented (all backends) |
+| `try_table { catches }` with `Catch::One` | Implemented |
+| `try_table { catches }` with `Catch::All` | Implemented |
+| `throw_ref` | Deferred — see **exnref deferral** below |
+| `Catch::OneRef` / `Catch::AllRef` | Deferred — see **exnref deferral** below |
+
+---
+
+### JS backend (`crates/blitz-js/src/lib.rs`)
+
+Exception handling maps directly to JavaScript `try`/`catch`/`throw`:
+
+**`throw { tag_index }`** (arity = number of tag params):
+```javascript
+throw {__wasm_tag: <tag_index>n, __wasm_vals: [<pop arity values>]};
+```
+
+**`try_table { catches }`** (block label `lN`):
+```javascript
+lN: try {
+  /* body */
+} catch(__wasm_e) {
+  // Catch::One { tag, label }:
+  if (__wasm_e?.__wasm_tag === <tag>n) { <push vals>; {break l<label>;} }
+  // Catch::All { label }:
+  { {break l<label>;} }
+  throw __wasm_e;  // no match — rethrow
+}
+```
+
+`Frame::TryTable` acts like `Frame::Block` for `br`: branching out emits `break lN`.
+
+---
+
+### C backend (`crates/blitz-c/src/lib.rs`)
+
+Uses POSIX `setjmp`/`longjmp` for non-local control flow. Module-level globals
+(emitted by `c_module_preamble`):
+
+```c
+#include <setjmp.h>
+typedef struct { uint32_t tag; uint64_t vals[64]; int nvals; } __wasm_exn_t;
+static __wasm_exn_t __wasm_exn;           /* current in-flight exception */
+static jmp_buf __wasm_exn_jmp[64];        /* handler stack */
+static int __wasm_exn_d = -1;             /* active handler depth (-1 = none) */
+```
+
+**`throw { tag_index }`** (arity N):
+```c
+__wasm_exn.tag = <tag>; __wasm_exn.nvals = N;
+__wasm_exn.vals[0] = <pop>; /* ... for each value */
+if (__wasm_exn_d >= 0) longjmp(__wasm_exn_jmp[__wasm_exn_d], 1);
+abort();  /* no handler — trap */
+```
+
+**`try_table { catches }`** (exit label `blk_e_N`):
+```c
+{ __wasm_exn_d++;
+  if (!setjmp(__wasm_exn_jmp[__wasm_exn_d])) {
+    /* body */
+    __wasm_exn_d--;   /* normal exit */
+  } else { __wasm_exn_d--;
+    /* Catch::One { tag, label }: */
+    if (__wasm_exn.tag == <tag>) { <push vals>; goto blk_e_<label>; }
+    /* Catch::All { label }: */
+    { goto blk_e_<label>; }
+    if (__wasm_exn_d >= 0) longjmp(__wasm_exn_jmp[__wasm_exn_d], 1); abort();
+  }
+  blk_e_N: ; }
+```
+
+`br` targeting a `TryTable` frame emits `__wasm_exn_d--; goto blk_e_N;` to
+clean up the handler depth before jumping out of the try body.
+
+**Important:** `catch_all` must target a label whose block type is `Empty`
+(provides 0 values). Targeting a block with a non-empty result type is a WASM
+type error. Use an outer `Block(Empty)` wrapper and push the result value after
+both blocks exit.
+
+---
+
+### NaiveAbi native backends (x86-64, AArch64, RISC-V 64)
+
+Exception handling for the NaiveAbi custom calling convention uses the **CTX
+stack** — the same mechanism used for control flow block frames. Platform
+unwinding (`_Unwind_RaiseException` / DWARF) is **not** used; see *SysVAbi
+deferral* below.
+
+#### CTX stack layout for `try_table`
+
+On `try_table` entry, three words are pushed onto the CTX stack (after
+`xchg RSP ↔ CTX`):
+
+```
+[CTX+0]  dispatch_label_addr   ← address of the exception dispatch stub
+[CTX+8]  old_RSP               ← operand stack to restore when catch fires
+[CTX+16] TRYTABLE_SENTINEL     ← 0xE4C3_E4C3_E4C3_E4C3 (identifies TryTable frames)
+```
+
+#### `throw` — NaiveAbi
+
+1. Pop `arity` values from the operand stack into scratch registers (Reg(3)..Reg(2+arity)).
+2. Save `tag_index` into a context-relative slot.
+3. Walk the CTX stack backward looking for a `TRYTABLE_SENTINEL` frame.
+4. On match: restore `RSP` from `old_RSP`, jump to `dispatch_label_addr`.
+5. If CTX stack exhausted: load the **caller's saved CTX** (stored at a fixed
+   offset in the current frame base) and continue scanning — this is the
+   **cross-function propagation** path.
+6. If the root frame is reached with no handler: call `__wasm_unhandled_exception`
+   (traps with `ud2` / `unimp` / `ebreak`).
+
+#### `try_table` start — NaiveAbi
+
+```asm
+lea_label r0, <dispatch_idx>   ; dispatch handler address
+mov r2, RSP                     ; save current operand stack pointer
+xchg RSP, CTX
+push TRYTABLE_SENTINEL
+push r2                          ; old_RSP
+push r0                          ; dispatch label
+xchg RSP, CTX
+<exit_label>:                    ; fall-through to body
+```
+
+#### `try_table` end — NaiveAbi
+
+Normal exit (no exception): pops the three CTX slots and falls through to the
+exit label (same pattern as `Block`):
+
+```asm
+xchg RSP, CTX
+pop r0   ; dispatch label (discard)
+pop r1   ; old_RSP (discard)
+pop r0   ; TRYTABLE_SENTINEL (discard)
+xchg RSP, CTX
+<exit_label>:   ; placed here
+```
+
+#### Exception dispatch stub — NaiveAbi
+
+Placed at `dispatch_idx` label. Compares the saved tag index against each
+`Catch::One { tag }` clause; on match, restores the operand stack (from
+`old_RSP`), pushes exception values, and jumps to the catch target label via
+the standard `br`-style CTX restore + jump. `Catch::All` always matches.
+
+---
+
+### SysVAbi deferral
+
+SysVAbi exception handling is **not implemented**. It requires DWARF `.eh_frame`
+personality routines and `_Unwind_RaiseException` integration, which is
+non-trivial and architecturally independent work.
+
+All `BackendAbi` exception methods on SysVAbi variants panic with:
+```
+todo!("SysVAbi exception handling requires platform unwinder — deferred; see docs/abi.md")
+```
+
+---
+
+### exnref deferral
+
+The `exnref` type and associated instructions are **not implemented**:
+
+- `throw_ref` → `todo!("exnref deferred")`
+- `Catch::OneRef` → `todo!("exnref catch deferred")`
+- `Catch::AllRef` → `todo!("exnref catch deferred")`
+
+These require first-class `exnref` values on the WASM stack, which in turn
+need reference type support in the value representation. Deferred until
+reference types land in the type system.
+

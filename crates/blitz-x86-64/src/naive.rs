@@ -6,7 +6,7 @@
 use alloc::collections::btree_map::BTreeMap;
 use portal_solutions_asm_x86_64::RegisterClass;
 use portal_solutions_asm_x86_64::out::arg::{ArgKind, MemArg, MemArgKind};
-use portal_solutions_blitz_common::wasm_encoder::{self, Instruction, reencode::Reencode};
+use portal_solutions_blitz_common::wasm_encoder::{self, Catch, FuncType, Instruction, reencode::Reencode};
 
 use crate::{
     out::{Writer, arg::Arg},
@@ -28,12 +28,28 @@ pub struct State {
     pub body_labels: BTreeMap<u32, usize>,
 }
 
+/// Magic sentinel pushed onto the CTX stack to mark a TryTable frame.
+/// Chosen to be unlikely to occur as a real label address.
+pub const TRYTABLE_SENTINEL: u64 = 0xE4C3_E4C3_E4C3_E4C3;
+
 /// Represents a control flow structure that needs an end marker.
 pub enum Endable {
     /// A branch target.
     Br,
     /// An if statement with its label index.
     If { idx: usize },
+    /// A try_table block.
+    ///
+    /// `exit_idx`          — label placed at the start of the body (branch target for `br N`).
+    /// `dispatch_idx`      — label for the exception dispatch stub (jumped to by `throw`).
+    /// `after_dispatch_idx`— label placed after the dispatch stub (normal fall-through exit).
+    /// `catches`           — catch clauses, cloned from the TryTable instruction.
+    TryTable {
+        exit_idx: usize,
+        dispatch_idx: usize,
+        after_dispatch_idx: usize,
+        catches: alloc::boxed::Box<[Catch]>,
+    },
 }
 
 /// Extension trait for x86-64 code writers.
@@ -88,6 +104,8 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         arch: X64Arch,
         state: &mut State,
         func_imports: &[(&str, &str)],
+        sigs: &[FuncType],
+        tags: &[u32],
         op: &MachOperator<'_>,
         rewriter: &mut (dyn Reencode<Error = E> + '_),
         target: u32,
@@ -178,7 +196,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 }
             }
             MachOperator::Instruction { op, .. } => {
-                self._handle_op(ctx, arch, state, func_imports, op, target).map_err(Into::into)?
+                self._handle_op(ctx, arch, state, func_imports, sigs, tags, op, target).map_err(Into::into)?
             }
             MachOperator::Operator { op, annot } => match match op.as_ref() {
                 None => return Ok(()),
@@ -189,6 +207,8 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     arch,
                     state,
                     func_imports,
+                    sigs,
+                    tags,
                     &rewriter.instruction(op.clone())?,
                     target,
                 ).map_err(Into::into)?,
@@ -205,6 +225,8 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         arch: X64Arch,
         state: &mut State,
         func_imports: &[(&str, &str)],
+        sigs: &[FuncType],
+        tags: &[u32],
         op: &Instruction<'_>,
         target: u32,
     ) -> Result<(), Self::Error> {
@@ -751,9 +773,107 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         Endable::If { idx: i } => {
                             self.set_label(ctx, arch, X64Label::Indexed { idx: i + 2 })?;
                         }
+                        Endable::TryTable { exit_idx: _, dispatch_idx, after_dispatch_idx, catches } => {
+                            // Normal fall-through: pop CTX frame (same as Block).
+                            self.pop(ctx, arch, &Reg(0))?;  // exit_label
+                            self.pop(ctx, arch, &Reg(1))?;  // old_RSP
+                            self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
+                            // Jump over dispatch stub.
+                            self.jmp_label(ctx, arch, X64Label::Indexed { idx: after_dispatch_idx })?;
+
+                            // Dispatch stub: entered when throw jumps here.
+                            self.set_label(ctx, arch, X64Label::Indexed { idx: dispatch_idx })?;
+                            // Restore operand stack to TryTable entry RSP.
+                            // The CTX frame still has old_RSP; re-read from CTX stack.
+                            self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
+                            self.pop(ctx, arch, &Reg(0))?;  // exit_label (discard)
+                            self.pop(ctx, arch, &Reg(1))?;  // old_RSP
+                            self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
+                            self.mov(ctx, arch, &RSP, &Reg(1))?;  // restore operand RSP
+                            // r2 = thrown tag index (set by Throw instruction).
+                            for catch in catches.iter() {
+                                match catch {
+                                    Catch::One { tag, label } => {
+                                        let arity = if (*tag as usize) < tags.len() {
+                                            sigs[tags[*tag as usize] as usize].params().len()
+                                        } else { 0 };
+                                        let skip_lbl = state.label_index;
+                                        state.label_index += 1;
+                                        self.mov64(ctx, arch, &Reg(0), *tag as u64)?;
+                                        self.cmp(ctx, arch, &Reg(2), &Reg(0))?;
+                                        self.jcc_label(ctx, arch, ConditionCode::NE, X64Label::Indexed { idx: skip_lbl })?;
+                                        // Tag matched: push exception values (r3..r(2+arity))
+                                        for i in (0..arity).rev() {
+                                            self.push(ctx, arch, &Reg(3 + i as u8))?;
+                                        }
+                                        self.br(ctx, arch, state, *label)?;
+                                        self.set_label(ctx, arch, X64Label::Indexed { idx: skip_lbl })?;
+                                    }
+                                    Catch::All { label } => {
+                                        self.br(ctx, arch, state, *label)?;
+                                    }
+                                    Catch::OneRef { .. } | Catch::AllRef { .. } => {
+                                        // exnref deferred — fall through to unhandled
+                                    }
+                                }
+                            }
+                            // No catch matched: propagate via CTX chain.
+                            self.lea_label(ctx, arch, &Reg(0), X64Label::External {
+                                name: alloc::format!("__wasm_exn_propagate"),
+                            })?;
+                            self.jmp(ctx, arch, &Reg(0))?;
+                            self.set_label(ctx, arch, X64Label::Indexed { idx: after_dispatch_idx })?;
+                            return Ok(());
+                        }
                     }
                     self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
                 }
+            }
+            // ---- exception handling ------------------------------------------
+            Instruction::Throw(tag_index) => {
+                let arity = if (*tag_index as usize) < tags.len() {
+                    sigs[tags[*tag_index as usize] as usize].params().len()
+                } else { 0 };
+                // Tag index → r2; exception values → r3, r4, r5 (up to arity 3).
+                self.mov64(ctx, arch, &Reg(2), *tag_index as u64)?;
+                for i in 0..arity.min(3) {
+                    self.pop(ctx, arch, &Reg(3 + i as u8))?;
+                }
+                // Static dispatch: jump to innermost TryTable's dispatch stub if present.
+                if let Some(dispatch_idx) = state.if_stack.iter().rev().find_map(|e| match e {
+                    Endable::TryTable { dispatch_idx, .. } => Some(*dispatch_idx),
+                    _ => None,
+                }) {
+                    self.jmp_label(ctx, arch, X64Label::Indexed { idx: dispatch_idx })?;
+                } else {
+                    // No intra-function handler: propagate via CTX chain.
+                    self.lea_label(ctx, arch, &Reg(0), X64Label::External {
+                        name: alloc::format!("__wasm_exn_propagate"),
+                    })?;
+                    self.jmp(ctx, arch, &Reg(0))?;
+                }
+            }
+            Instruction::ThrowRef => todo!("exnref deferred"),
+            // ---- TryTable block ---------------------------------------------
+            Instruction::TryTable(blockty, catches) => {
+                let exit_idx = state.label_index;
+                let dispatch_idx = state.label_index + 1;
+                let after_dispatch_idx = state.label_index + 2;
+                state.label_index += 3;
+                state.if_stack.push(Endable::TryTable {
+                    exit_idx,
+                    dispatch_idx,
+                    after_dispatch_idx,
+                    catches: catches.iter().cloned().collect::<alloc::vec::Vec<_>>().into_boxed_slice(),
+                });
+                // Push CTX frame (same as Block): old_RSP + exit_label.
+                self.lea_label(ctx, arch, &Reg(0), X64Label::Indexed { idx: exit_idx })?;
+                self.mov(ctx, arch, &Reg(1), &RSP)?;
+                self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
+                self.push(ctx, arch, &Reg(1))?;  // old_RSP
+                self.push(ctx, arch, &Reg(0))?;  // exit_label
+                self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
+                self.set_label(ctx, arch, X64Label::Indexed { idx: exit_idx })?;
             }
             Instruction::Call(function_index) => {
                 match func_imports.get(*function_index as usize) {

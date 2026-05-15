@@ -11,7 +11,7 @@ use portal_solutions_blitz_common::{
     abi::BackendAbi,
     asm::Reg,
     ops::FnData,
-    wasm_encoder::FuncType,
+    wasm_encoder::{Catch, FuncType},
 };
 
 use crate::RiscvLabel;
@@ -188,6 +188,16 @@ where
         w.addi(ctx, arch, &SP, &SP, 8)?;
         w.jalr(ctx, arch, &Reg(0), &RA, 0)
     }
+
+    fn emit_throw(_w: &mut W, _ctx: &mut Context, _arch: RiscV64Arch, _state: &mut NaiveState, _tag_index: u32, _arity: u32) -> Result<(), W::Error> {
+        todo!("emit_throw via BackendAbi — use handle_op_ directly")
+    }
+    fn emit_try_table_start(_w: &mut W, _ctx: &mut Context, _arch: RiscV64Arch, _state: &mut NaiveState, _catches: &[Catch], _sigs: &[FuncType], _tags: &[u32]) -> Result<(), W::Error> {
+        todo!("emit_try_table_start via BackendAbi — use handle_op_ directly")
+    }
+    fn emit_try_table_end(_w: &mut W, _ctx: &mut Context, _arch: RiscV64Arch, _state: &mut NaiveState, _catches: &[Catch], _sigs: &[FuncType], _tags: &[u32]) -> Result<(), W::Error> {
+        todo!("emit_try_table_end via BackendAbi — use handle_op_ directly")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -358,5 +368,15 @@ where
         w.ld(ctx, arch, &FP, &mem64(FP, 0))?;
         w.addi(ctx, arch, &SP, &SP, 16)?;
         w.jalr(ctx, arch, &Reg(0), &RA, 0)
+    }
+
+    fn emit_throw(_w: &mut W, _ctx: &mut Context, _arch: RiscV64Arch, _state: &mut NaiveState, _tag_index: u32, _arity: u32) -> Result<(), W::Error> {
+        todo!("SysVAbi exception handling requires platform unwinder — deferred; see docs/abi.md")
+    }
+    fn emit_try_table_start(_w: &mut W, _ctx: &mut Context, _arch: RiscV64Arch, _state: &mut NaiveState, _catches: &[Catch], _sigs: &[FuncType], _tags: &[u32]) -> Result<(), W::Error> {
+        todo!("SysVAbi exception handling requires platform unwinder — deferred; see docs/abi.md")
+    }
+    fn emit_try_table_end(_w: &mut W, _ctx: &mut Context, _arch: RiscV64Arch, _state: &mut NaiveState, _catches: &[Catch], _sigs: &[FuncType], _tags: &[u32]) -> Result<(), W::Error> {
+        todo!("SysVAbi exception handling requires platform unwinder — deferred; see docs/abi.md")
     }
 }

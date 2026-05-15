@@ -163,6 +163,9 @@ enum Frame {
     /// `If` is like `Block` for branching purposes: `br N` that targets an `if`
     /// frame is a forward exit out of the if/else body.
     If(BlockType),
+    /// `TryTable` acts like `Block` for branching (`br N` exits forward).
+    /// Stores the catch clauses so they can be emitted at the matching `End`.
+    TryTable(BlockType, alloc::vec::Vec<portal_solutions_blitz_common::wasm_encoder::Catch>),
 }
 
 /// Trait for writing JavaScript code for WASM operations.
@@ -266,7 +269,7 @@ pub trait JsWrite: Write {
             .unwrap();
         let idx = idx + 1;
         match frame {
-            Frame::Block(blockty) | Frame::If(blockty) => {
+            Frame::Block(blockty) | Frame::If(blockty) | Frame::TryTable(blockty, _) => {
                 let result_count = match blockty {
                     portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
                     portal_solutions_blitz_common::wasm_encoder::BlockType::Result(_) => 1,
@@ -352,6 +355,7 @@ pub trait JsWrite: Write {
         &mut self,
         sigs: &[FuncType],
         fsigs: &[u32],
+        tags: &[u32],
         func_imports: &[(&str, &str)],
         state: &mut State,
         op: &Instruction<'_>,
@@ -642,6 +646,47 @@ pub trait JsWrite: Write {
                 write!(self, "}}else{{")
             }
             Instruction::End => {
+                // Peek first: TryTable's catch dispatch uses `br` which needs the TryTable
+                // frame still on the stack so label depths are computed correctly.
+                // After the dispatch is emitted, the frame is popped.
+                if let Some(Frame::TryTable(blockty, catches)) = state.stack.last() {
+                    let blockty = blockty.clone();
+                    let catches = catches.clone();
+                    // Close try body and open catch block.
+                    write!(self, "}}catch(__wasm_e){{")?;
+                    for catch in &catches {
+                        match catch {
+                            portal_solutions_blitz_common::wasm_encoder::Catch::One { tag, label } => {
+                                let arity = if (*tag as usize) < tags.len() {
+                                    sigs[tags[*tag as usize] as usize].params().len()
+                                } else { 0 };
+                                write!(self, "if(__wasm_e?.__wasm_tag==={}n){{", tag)?;
+                                for i in 0..arity {
+                                    write!(self, "{};", DisplayFn(&|f| push(state, f, &format_args!("__wasm_e.__wasm_vals[{i}]"))))?;
+                                }
+                                write!(self, "{}}}", DisplayFn(&|f| f.br(sigs, state, *label)))?;
+                            }
+                            portal_solutions_blitz_common::wasm_encoder::Catch::All { label } => {
+                                write!(self, "{{{}}}", DisplayFn(&|f| f.br(sigs, state, *label)))?;
+                            }
+                            portal_solutions_blitz_common::wasm_encoder::Catch::OneRef { .. }
+                            | portal_solutions_blitz_common::wasm_encoder::Catch::AllRef { .. } => {
+                                todo!("exnref catch deferred")
+                            }
+                        }
+                    }
+                    write!(self, "throw __wasm_e;}}")?;
+                    if let Some(o) = state.opt() {
+                        let mut o = o.lock();
+                        o.depth = match blockty {
+                            portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
+                            portal_solutions_blitz_common::wasm_encoder::BlockType::Result(_) => 1,
+                            portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => sigs[f as usize].results().len(),
+                        };
+                    }
+                    state.stack.pop();
+                    return Ok(());
+                }
                 let s = match state.stack.pop() {
                     Some(s) => s,
                     // Function-level end (implicit outer block) — no frame to close.
@@ -684,6 +729,7 @@ pub trait JsWrite: Write {
                             };
                         }
                     }
+                    Frame::TryTable(..) => unreachable!("TryTable handled before pop"),
                 }
                 Ok(())
             }
@@ -810,6 +856,39 @@ pub trait JsWrite: Write {
                     pop!(state)
                 ))
             }
+            // ---- exception handling -----------------------------------------
+            Instruction::Throw(tag_index) => {
+                let arity = if (*tag_index as usize) < tags.len() {
+                    sigs[tags[*tag_index as usize] as usize].params().len()
+                } else {
+                    0
+                };
+                write!(self, "throw{{__wasm_tag:{}n,__wasm_vals:[", tag_index)?;
+                for i in 0..arity {
+                    if i > 0 { write!(self, ",")?; }
+                    write!(self, "{}", pop!(state))?;
+                }
+                write!(self, "]}}")
+            }
+            Instruction::TryTable(blockty, catches) => {
+                state.stack.push(Frame::TryTable(
+                    blockty.clone(),
+                    catches.iter().cloned().collect(),
+                ));
+                if let Some(o) = state.opt() {
+                    let mut o = o.lock();
+                    o.depth = match blockty {
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::Result(_) => 0,
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => {
+                            sigs[*f as usize].params().len()
+                        }
+                    };
+                }
+                // Begin labeled try block; catch dispatch emitted at matching End.
+                write!(self, "l{}:try{{", state.stack.len())
+            }
+            Instruction::ThrowRef => todo!("exnref deferred"),
             _ => todo!(),
         }?;
         Ok(())
@@ -833,6 +912,7 @@ pub trait JsWrite: Write {
         &mut self,
         sigs: &[FuncType],
         fsigs: &[u32],
+        tags: &[u32],
         func_imports: &[(&str, &str)],
         state: &mut State,
         m: &MachOperator<'_, Annot>,
@@ -882,7 +962,7 @@ pub trait JsWrite: Write {
             }
             MachOperator::StartBody => Ok(()),
             MachOperator::Instruction { op, annot } => {
-                self.on_op(sigs, fsigs, func_imports, state, op)?;
+                self.on_op(sigs, fsigs, tags, func_imports, state, op)?;
                 write!(self, ";")?;
                 Ok(())
             }
@@ -893,7 +973,7 @@ pub trait JsWrite: Write {
                 let Ok(op) = r.instruction(op.clone()) else {
                     return Ok(());
                 };
-                self.on_op(sigs, fsigs, func_imports, state, &op)?;
+                self.on_op(sigs, fsigs, tags, func_imports, state, &op)?;
                 write!(self, ";")?;
                 Ok(())
             }

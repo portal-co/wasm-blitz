@@ -182,6 +182,9 @@ enum Frame {
     /// `If` is like `Block` for branching purposes: `br N` that targets an `if`
     /// frame is a forward exit out of the if/else body.
     If(BlockType),
+    /// `TryTable` acts like `Block` for forward branching.
+    /// Stores catch clauses for emission at the matching `End`.
+    TryTable(BlockType, alloc::vec::Vec<portal_solutions_blitz_common::wasm_encoder::Catch>),
 }
 
 // ---------------------------------------------------------------------------
@@ -275,6 +278,8 @@ pub trait CWrite: Write {
             Frame::Block(_) | Frame::If(_) => write!(self, "goto blk_e_{label};"),
             // BUG FIX vs JS: Loop branch is a *back*-edge (continue), not a break.
             Frame::Loop(_) => write!(self, "goto lp_s_{label};"),
+            // Exiting a try_table must clean up the setjmp depth counter.
+            Frame::TryTable(_, _) => write!(self, "__wasm_exn_d--;goto blk_e_{label};"),
         }
     }
 
@@ -288,6 +293,7 @@ pub trait CWrite: Write {
         &mut self,
         sigs: &[FuncType],
         fsigs: &[u32],
+        tags: &[u32],
         _func_imports: &[(&str, &str)],
         state: &mut State,
         op: &Instruction<'_>,
@@ -589,6 +595,47 @@ pub trait CWrite: Write {
             Instruction::Else => write!(self, "}}else{{"),
 
             Instruction::End => {
+                // TryTable: handle early (before pop) so `br` inside catches sees the
+                // TryTable frame in the stack and computes label depths correctly.
+                if let Some(Frame::TryTable(blockty, catches)) = state.stack.last() {
+                    let blockty = blockty.clone();
+                    let catches = catches.clone();
+                    let label = state.stack.len();
+                    write!(self, "__wasm_exn_d--;}}else{{__wasm_exn_d--;")?;
+                    for catch in &catches {
+                        match catch {
+                            portal_solutions_blitz_common::wasm_encoder::Catch::One { tag, label: catch_label } => {
+                                let arity = if (*tag as usize) < tags.len() {
+                                    sigs[tags[*tag as usize] as usize].params().len()
+                                } else { 0 };
+                                write!(self, "if(__wasm_exn.tag=={tag}u){{")?;
+                                for i in 0..arity {
+                                    write!(self, "{};", DisplayFn(&|f| push(state, f, &format_args!("__wasm_exn.vals[{i}]"))))?;
+                                }
+                                write!(self, "{}}}", DisplayFn(&|f| f.br(sigs, state, *catch_label)))?;
+                            }
+                            portal_solutions_blitz_common::wasm_encoder::Catch::All { label: catch_label } => {
+                                write!(self, "{{{}}}", DisplayFn(&|f| f.br(sigs, state, *catch_label)))?;
+                            }
+                            portal_solutions_blitz_common::wasm_encoder::Catch::OneRef { .. }
+                            | portal_solutions_blitz_common::wasm_encoder::Catch::AllRef { .. } => {
+                                todo!("exnref catch deferred")
+                            }
+                        }
+                    }
+                    write!(self, "if(__wasm_exn_d>=0)longjmp(__wasm_exn_jmp[__wasm_exn_d],1);abort();")?;
+                    write!(self, "}}blk_e_{label}:;}}")?;
+                    if let Some(o) = state.opt() {
+                        let mut o = o.lock();
+                        o.depth = match blockty {
+                            BlockType::Empty => 0,
+                            BlockType::Result(_) => 1,
+                            BlockType::FunctionType(f) => sigs[f as usize].results().len(),
+                        };
+                    }
+                    state.stack.pop();
+                    return Ok(());
+                }
                 // Retrieve the label *before* popping so we can emit it.
                 let label = state.stack.len();
                 let frame = match state.stack.pop() {
@@ -640,6 +687,7 @@ pub trait CWrite: Write {
                         // Emit exit label so `goto blk_e_{label}` can target it.
                         write!(self, "blk_e_{label}:;}}")
                     }
+                    Frame::TryTable(..) => unreachable!("TryTable handled before pop"),
                 }
             }
 
@@ -756,11 +804,43 @@ pub trait CWrite: Write {
                 push(state, self, &format_args!("(uint64_t)__wasm_mem_pages"))
             }
             Instruction::MemoryGrow(_) => {
-                write!(self, "tmp={};", pop!(state))?;
+                write!(self, "tmp=(uint32_t){};", pop!(state))?;
                 push(state, self, &format_args!(
                     "(uint64_t)__wasm_memory_grow((uint32_t)tmp,&__wasm_mem,&__wasm_mem_pages)"
                 ))
             }
+            // ---- exception handling -----------------------------------------
+            Instruction::Throw(tag_index) => {
+                let arity = if (*tag_index as usize) < tags.len() {
+                    sigs[tags[*tag_index as usize] as usize].params().len()
+                } else {
+                    0
+                };
+                write!(self, "__wasm_exn.tag={tag_index}u;__wasm_exn.nvals={arity};")?;
+                for i in (0..arity).rev() {
+                    write!(self, "__wasm_exn.vals[{i}]={};", pop!(state))?;
+                }
+                write!(self, "if(__wasm_exn_d>=0)longjmp(__wasm_exn_jmp[__wasm_exn_d],1);abort()")
+            }
+            Instruction::TryTable(blockty, catches) => {
+                state.stack.push(Frame::TryTable(
+                    blockty.clone(),
+                    catches.iter().cloned().collect(),
+                ));
+                if let Some(o) = state.opt() {
+                    let mut o = o.lock();
+                    o.depth = match blockty {
+                        BlockType::Empty => 0,
+                        BlockType::Result(_) => 0,
+                        BlockType::FunctionType(f) => sigs[*f as usize].params().len(),
+                    };
+                }
+                // `!setjmp` → normal path (no exception) runs the body.
+                // At End we emit the else{dispatch}blk_e_N:;} suffix.
+                let _ = state.stack.len(); // label index for blk_e is computed at End
+                write!(self, "{{__wasm_exn_d++;if(!setjmp(__wasm_exn_jmp[__wasm_exn_d])){{")
+            }
+            Instruction::ThrowRef => todo!("exnref deferred"),
             _ => todo!(),
         }?;
         Ok(())
@@ -781,6 +861,7 @@ pub trait CWrite: Write {
         &mut self,
         sigs: &[FuncType],
         fsigs: &[u32],
+        tags: &[u32],
         func_imports: &[(&str, &str)],
         state: &mut State,
         m: &MachOperator<'_, Annot>,
@@ -831,7 +912,7 @@ pub trait CWrite: Write {
             }
 
             MachOperator::Instruction { op, annot: _ } => {
-                self.on_op(sigs, fsigs, func_imports, state, op)?;
+                self.on_op(sigs, fsigs, tags, func_imports, state, op)?;
                 write!(self, ";")?;
                 Ok(())
             }
@@ -843,7 +924,7 @@ pub trait CWrite: Write {
                 let Ok(op) = r.instruction(op.clone()) else {
                     return Ok(());
                 };
-                self.on_op(sigs, fsigs, func_imports, state, &op)?;
+                self.on_op(sigs, fsigs, tags, func_imports, state, &op)?;
                 write!(self, ";")?;
                 Ok(())
             }
@@ -878,7 +959,12 @@ impl<T: Write + ?Sized> CWrite for T {}
 pub fn c_module_preamble(w: &mut (dyn core::fmt::Write + '_)) -> core::fmt::Result {
     write!(
         w,
-        "static uint8_t*__wasm_mem=0;\
+        "#include <setjmp.h>\n\
+         typedef struct{{uint32_t tag;uint64_t vals[64];int nvals;}}__wasm_exn_t;\
+         static __wasm_exn_t __wasm_exn;\
+         static jmp_buf __wasm_exn_jmp[64];\
+         static int __wasm_exn_d=-1;\
+         static uint8_t*__wasm_mem=0;\
          static uint32_t __wasm_mem_pages=0;\
          extern uint32_t __wasm_memory_grow(uint32_t delta,uint8_t**mem,uint32_t*pages);"
     )

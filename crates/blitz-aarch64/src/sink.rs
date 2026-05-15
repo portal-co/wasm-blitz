@@ -58,12 +58,16 @@ where
             self.0.func_imports.iter().map(|(m, n)| (m.clone(), n.clone())).collect();
         let imports: alloc::vec::Vec<(&str, &str)> =
             imports_owned.iter().map(|(m, n)| (m.as_str(), n.as_str())).collect();
+        let sigs_owned: alloc::vec::Vec<_> = self.0.sigs.clone();
+        let tags_owned: alloc::vec::Vec<u32> = self.0.tags.clone();
         let mach = MachOperator::Operator { op: Some(op.clone()), annot: () };
         ctx.writer.handle_op(
             &mut ctx.asm_ctx,
             self.0.arch,
             &mut self.0.state,
             &imports,
+            &sigs_owned,
+            &tags_owned,
             &mach,
             &mut RoundtripReencoder,
             self.0.target,
@@ -90,12 +94,16 @@ where
             self.0.func_imports.iter().map(|(m, n)| (m.clone(), n.clone())).collect();
         let imports: alloc::vec::Vec<(&str, &str)> =
             imports_owned.iter().map(|(m, n)| (m.as_str(), n.as_str())).collect();
+        let sigs_owned: alloc::vec::Vec<_> = self.0.sigs.clone();
+        let tags_owned: alloc::vec::Vec<u32> = self.0.tags.clone();
         let mach = MachOperator::Instruction { op: insn.clone(), annot: () };
         ctx.writer.handle_op(
             &mut ctx.asm_ctx,
             self.0.arch,
             &mut self.0.state,
             &imports,
+            &sigs_owned,
+            &tags_owned,
             &mach,
             &mut RoundtripReencoder,
             self.0.target,

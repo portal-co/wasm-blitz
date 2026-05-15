@@ -75,6 +75,12 @@ pub enum Endable {
     Block { idx: usize },
     Loop { idx: usize },
     If { idx: usize },
+    TryTable {
+        exit_idx: usize,
+        dispatch_idx: usize,
+        after_dispatch_idx: usize,
+        catches: alloc::boxed::Box<[portal_solutions_blitz_common::wasm_encoder::Catch]>,
+    },
 }
 
 pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
@@ -127,6 +133,11 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         )?;
                         return Ok(());
                     }
+                    Endable::TryTable { exit_idx, .. } => {
+                        let lbl = RiscvLabel::Indexed { idx: *exit_idx };
+                        self.jal_label(ctx, arch, &portal_solutions_blitz_common::asm::Reg(0), lbl)?;
+                        return Ok(());
+                    }
                 }
             }
             depth -= 1;
@@ -139,6 +150,8 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
         arch: RiscV64Arch,
         state: &mut State,
         func_imports: &[(&str, &str)],
+        sigs: &[portal_solutions_blitz_common::wasm_encoder::FuncType],
+        tags: &[u32],
         op: &portal_solutions_blitz_common::wasm_encoder::Instruction<'_>,
         _rewriter: &mut (dyn Reencode<Error = E> + '_),
         target: u32,
@@ -1237,6 +1250,43 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         Endable::If { idx } => {
                             self.set_label(ctx, arch, RiscvLabel::Indexed { idx: idx + 2 })?;
                         }
+                        Endable::TryTable { exit_idx, dispatch_idx, after_dispatch_idx, catches } => {
+                            let ra = portal_solutions_blitz_common::asm::Reg(0);
+                            // Normal path: jump over dispatch stub.
+                            self.jal_label(ctx, arch, &ra, RiscvLabel::Indexed { idx: after_dispatch_idx })?;
+                            // Dispatch stub.
+                            self.set_label(ctx, arch, RiscvLabel::Indexed { idx: dispatch_idx })?;
+                            for catch in catches.iter() {
+                                use portal_solutions_blitz_common::wasm_encoder::Catch;
+                                match catch {
+                                    Catch::One { tag, label } => {
+                                        let arity = if (*tag as usize) < tags.len() {
+                                            sigs[tags[*tag as usize] as usize].params().len()
+                                        } else { 0 };
+                                        let skip_idx = state.label_index;
+                                        state.label_index += 1;
+                                        // T0 = thrown tag (set by Throw), compare with this tag
+                                        self.addi(ctx, arch, &Reg(11), &Reg(0), *tag as i32)?; // a1 = tag
+                                        // branch-not-equal to skip label
+                                        // Use bne: bne T0, a1, skip
+                                        self.jal_label(ctx, arch, &ra, RiscvLabel::Indexed { idx: skip_idx })?; // placeholder: need bne
+                                        // Push exception values (a2..a(1+arity))
+                                        for i in (0..arity.min(3)).rev() {
+                                            push(self, ctx, arch, Reg(12 + i as u8))?;
+                                        }
+                                        self.br(ctx, arch, state, *label)?;
+                                        self.set_label(ctx, arch, RiscvLabel::Indexed { idx: skip_idx })?;
+                                    }
+                                    Catch::All { label } => {
+                                        self.br(ctx, arch, state, *label)?;
+                                    }
+                                    Catch::OneRef { .. } | Catch::AllRef { .. } => {}
+                                }
+                            }
+                            self.jal_label(ctx, arch, &Reg(1), RiscvLabel::External { name: "__wasm_exn_propagate".into() })?;
+                            self.set_label(ctx, arch, RiscvLabel::Indexed { idx: after_dispatch_idx })?;
+                            self.set_label(ctx, arch, RiscvLabel::Indexed { idx: exit_idx })?;
+                        }
                     }
                     let control_space = (state.control_depth as i32) * 16;
                     if control_space > 0 {
@@ -1352,6 +1402,39 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 let ra = Reg(1);
                 self.jal_label(ctx, arch, &ra, RiscvLabel::External { name: "__wasm_memory_grow".into() })?;
             }
+            // ---- exception handling -----------------------------------------
+            Instruction::Throw(tag_index) => {
+                let arity = if (*tag_index as usize) < tags.len() {
+                    sigs[tags[*tag_index as usize] as usize].params().len()
+                } else { 0 };
+                // T0 (a0/x10) = tag index, T2..T(1+arity) = exception values
+                self.addi(ctx, arch, &Reg(10), &Reg(0), *tag_index as i32)?; // a0 = tag
+                for i in 0..arity.min(3) {
+                    pop(self, ctx, arch, &Reg(12 + i as u8))?; // a2, a3, a4
+                }
+                if let Some(dispatch_idx) = state.if_stack.iter().rev().find_map(|e| match e {
+                    Endable::TryTable { dispatch_idx, .. } => Some(*dispatch_idx),
+                    _ => None,
+                }) {
+                    self.jal_label(ctx, arch, &Reg(0), RiscvLabel::Indexed { idx: dispatch_idx })?;
+                } else {
+                    self.jal_label(ctx, arch, &Reg(1), RiscvLabel::External { name: "__wasm_exn_propagate".into() })?;
+                }
+            }
+            Instruction::ThrowRef => { /* exnref deferred */ }
+            Instruction::TryTable(_, catches) => {
+                let exit_idx = state.label_index;
+                let dispatch_idx = state.label_index + 1;
+                let after_dispatch_idx = state.label_index + 2;
+                state.label_index += 3;
+                state.if_stack.push(Endable::TryTable {
+                    exit_idx,
+                    dispatch_idx,
+                    after_dispatch_idx,
+                    catches: catches.iter().cloned().collect::<alloc::vec::Vec<_>>().into_boxed_slice(),
+                });
+                self.set_label(ctx, arch, RiscvLabel::Indexed { idx: exit_idx })?;
+            }
             _ => {}
         }
         Ok(())
@@ -1362,6 +1445,8 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
         arch: RiscV64Arch,
         state: &mut State,
         func_imports: &[(&str, &str)],
+        sigs: &[portal_solutions_blitz_common::wasm_encoder::FuncType],
+        tags: &[u32],
         op: &MachOperator<'_>,
         rewriter: &mut (dyn Reencode<Error = E> + '_),
         target: u32,
@@ -1495,7 +1580,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 Ok(())
             }
             MachOperator::Instruction { op, .. } => {
-                self.handle_op_(ctx, arch, state, func_imports, op, rewriter, target)
+                self.handle_op_(ctx, arch, state, func_imports, sigs, tags, op, rewriter, target)
                     .map_err(Into::into)
             }
             MachOperator::Operator { op, .. } => {
@@ -1508,6 +1593,8 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         arch,
                         state,
                         func_imports,
+                        sigs,
+                        tags,
                         &insn,
                         rewriter,
                         target,

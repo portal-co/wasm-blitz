@@ -123,7 +123,7 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
             }
 
             // Everything else: naive handler
-            other => self.handle_op_(ctx, arch, state, func_imports, other, rewriter, target),
+            other => self.handle_op_(ctx, arch, state, func_imports, &[], &[], other, rewriter, target),
         }
     }
 

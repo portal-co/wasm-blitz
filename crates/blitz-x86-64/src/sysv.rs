@@ -184,7 +184,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                     body: state.body,
                     body_labels: core::mem::take(&mut state.body_labels),
                 };
-                let result = self._handle_op(ctx, arch, &mut naive_state, func_imports, other, target);
+                let result = self._handle_op(ctx, arch, &mut naive_state, func_imports, &[], &[], other, target);
                 state.label_index = naive_state.label_index;
                 state.if_stack = naive_state.if_stack;
                 state.body = naive_state.body;

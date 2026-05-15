@@ -386,7 +386,10 @@ pub fn control_depth(a: &FunctionBody<'_>) -> usize {
     let mut max: usize = 0;
     for op in a.get_operators_reader().into_iter().flatten().flatten() {
         match op {
-            Operator::Block { .. } | Operator::Loop { .. } | Operator::If { .. } => {
+            Operator::Block { .. }
+            | Operator::Loop { .. }
+            | Operator::If { .. }
+            | Operator::TryTable { .. } => {
                 cur += 1;
                 max = max.max(cur);
             }

@@ -47,8 +47,8 @@ use portal_solutions_blitz_common::{
     wasm_encoder::{
         self,
         reencode::RoundtripReencoder,
-        CodeSection, DataSection, ExportKind, ExportSection, Function, FunctionSection, Instruction,
-        MemorySection, MemoryType, Module, TypeSection, ValType,
+        Catch, CodeSection, DataSection, ExportKind, ExportSection, Function, FunctionSection,
+        Instruction, MemorySection, MemoryType, Module, TagSection, TagType, TypeSection, ValType,
     },
 };
 use portal_solutions_blitz_c::{c_emit_data_segments, c_emit_exports, c_emit_import_decls, c_module_preamble, CWrite, State as CState};
@@ -161,7 +161,7 @@ fn compile_js(wasm: &[u8]) -> String {
 
     for op in ops {
         let op = op.unwrap();
-        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &mut state, &op, &mut reencoder)
+        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder)
             .unwrap();
     }
     out
@@ -187,7 +187,7 @@ fn compile_c(wasm: &[u8]) -> String {
 
     for op in ops {
         let op = op.unwrap();
-        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &mut state, &op, &mut reencoder)
+        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder)
             .unwrap();
     }
     out
@@ -367,7 +367,7 @@ fn compile_js_with_mem(wasm: &[u8]) -> String {
 
     for op in ops {
         let op = op.unwrap();
-        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &mut state, &op, &mut reencoder)
+        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder)
             .unwrap();
     }
     out
@@ -395,7 +395,7 @@ fn compile_c_with_mem(wasm: &[u8]) -> String {
 
     for op in ops {
         let op = op.unwrap();
-        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &mut state, &op, &mut reencoder)
+        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder)
             .unwrap();
     }
     out
@@ -1512,7 +1512,7 @@ fn compile_c_with_data(wasm: &[u8], segments: &[(u32, &[u8])]) -> String {
     let mut reencoder = RoundtripReencoder;
     for op in ops {
         let op = op.unwrap();
-        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &mut state, &op, &mut reencoder).unwrap();
+        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
     }
     out
 }
@@ -1886,7 +1886,7 @@ fn compile_js_with_imports_exports(wasm: &[u8]) -> String {
     let mut reencoder = RoundtripReencoder;
     for op in ops {
         let op = op.unwrap();
-        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &imports_ref, &mut state, &op, &mut reencoder)
+        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &imports_ref, &mut state, &op, &mut reencoder)
             .unwrap();
     }
 
@@ -1927,7 +1927,7 @@ fn compile_c_with_imports_exports(wasm: &[u8]) -> String {
     let mut reencoder = RoundtripReencoder;
     for op in ops {
         let op = op.unwrap();
-        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &imports_ref, &mut state, &op, &mut reencoder)
+        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &imports_ref, &mut state, &op, &mut reencoder)
             .unwrap();
     }
 
@@ -2230,7 +2230,7 @@ fn compile_native_asm(wasm: &[u8], arch: NativeArch, abi: NativeAbi) -> String {
                 let op = op.unwrap();
                 naive::WriterExt::handle_op(
                     &mut out, &mut ctx, X64Arch::default(),
-                    &mut state, &[], &op, &mut reencoder, 0,
+                    &mut state, &[], &[], &[], &op, &mut reencoder, 0,
                 ).unwrap();
             }
         }
@@ -2252,7 +2252,7 @@ fn compile_native_asm(wasm: &[u8], arch: NativeArch, abi: NativeAbi) -> String {
                 let op = op.unwrap();
                 naive::WriterExt::handle_op(
                     &mut out, &mut ctx, AArch64Arch::default(),
-                    &mut state, &[], &op, &mut reencoder, 0,
+                    &mut state, &[], &[], &[], &op, &mut reencoder, 0,
                 ).unwrap();
             }
         }
@@ -2274,7 +2274,7 @@ fn compile_native_asm(wasm: &[u8], arch: NativeArch, abi: NativeAbi) -> String {
                 let op = op.unwrap();
                 naive::WriterExt::handle_op(
                     &mut out, &mut ctx, RiscV64Arch::default(),
-                    &mut state, &[], &op, &mut reencoder, 0,
+                    &mut state, &[], &[], &[], &op, &mut reencoder, 0,
                 ).unwrap();
             }
         }
@@ -2929,7 +2929,7 @@ fn assert_native_compile_module_with_import(arch: NativeArch, abi: NativeAbi) {
                 let op = op.unwrap();
                 naive::WriterExt::handle_op(
                     &mut out, &mut ctx, X64Arch::default(),
-                    &mut state, imports, &op, &mut reencoder, import_count,
+                    &mut state, imports, &[], &[], &op, &mut reencoder, import_count,
                 ).unwrap();
             }
         }
@@ -2951,7 +2951,7 @@ fn assert_native_compile_module_with_import(arch: NativeArch, abi: NativeAbi) {
                 let op = op.unwrap();
                 naive::WriterExt::handle_op(
                     &mut out, &mut ctx, AArch64Arch::default(),
-                    &mut state, imports, &op, &mut reencoder, import_count,
+                    &mut state, imports, &[], &[], &op, &mut reencoder, import_count,
                 ).unwrap();
             }
         }
@@ -2973,7 +2973,7 @@ fn assert_native_compile_module_with_import(arch: NativeArch, abi: NativeAbi) {
                 let op = op.unwrap();
                 naive::WriterExt::handle_op(
                     &mut out, &mut ctx, RiscV64Arch::default(),
-                    &mut state, imports, &op, &mut reencoder, import_count,
+                    &mut state, imports, &[], &[], &op, &mut reencoder, import_count,
                 ).unwrap();
             }
         }
@@ -3026,3 +3026,280 @@ fn test_native_riscv64_naive_with_import() {
 fn test_native_riscv64_sysv_with_import() {
     assert_native_compile_module_with_import(NativeArch::Riscv64, NativeAbi::Sysv);
 }
+
+// ---------------------------------------------------------------------------
+// Exception handling helpers
+// ---------------------------------------------------------------------------
+
+/// Build a WASM module with:
+/// - type 0: `tag_params → []`  (exception tag payload type)
+/// - type 1: `fn_params → fn_results`  (function type)
+/// - tag 0: type 0
+/// - function 0: type 1, with the given instructions
+fn make_module_with_tag(
+    tag_params: &[ValType],
+    fn_params: &[ValType],
+    fn_results: &[ValType],
+    instrs: &[Instruction<'_>],
+) -> Vec<u8> {
+    let mut module = Module::new();
+
+    let mut types = TypeSection::new();
+    // type 0 — exception tag payload (params only, no results)
+    types.ty().function(tag_params.iter().cloned(), []);
+    // type 1 — function signature
+    types.ty().function(fn_params.iter().cloned(), fn_results.iter().cloned());
+    module.section(&types);
+
+    let mut functions = FunctionSection::new();
+    functions.function(1); // function uses type 1
+    module.section(&functions);
+
+    // TagSection order: Type → Function → Tag → Export → Code (wasmparser Order enum).
+    let mut tags = TagSection::new();
+    tags.tag(TagType { kind: wasm_encoder::TagKind::Exception, func_type_idx: 0 });
+    module.section(&tags);
+
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+
+    let mut code = CodeSection::new();
+    let mut func = Function::new([]);
+    for instr in instrs {
+        func.instruction(instr);
+    }
+    func.instruction(&Instruction::Return);
+    func.instruction(&Instruction::End);
+    code.function(&func);
+    module.section(&code);
+
+    module.finish()
+}
+
+/// Parse exception tag section: returns `Vec<u32>` mapping tag index → type index.
+fn parse_tags(wasm: &[u8]) -> Vec<u32> {
+    let mut result = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::TagSection(reader) = payload {
+            for tag in reader.into_iter().flatten() {
+                result.push(tag.func_type_idx);
+            }
+        }
+    }
+    result
+}
+
+/// Compile `wasm` bytes (which may contain a tag section) to JavaScript.
+fn compile_js_exc(wasm: &[u8]) -> String {
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(wasm);
+    let tags = parse_tags(wasm);
+
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+
+    let mut out = String::new();
+    let mut state = JsState::default();
+    let mut reencoder = RoundtripReencoder;
+
+    for op in ops {
+        let op = op.unwrap();
+        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &tags, &[], &mut state, &op, &mut reencoder)
+            .unwrap();
+    }
+    out
+}
+
+/// Compile `wasm` bytes (which may contain a tag section) to C.
+fn compile_c_exc(wasm: &[u8]) -> String {
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(wasm);
+    let tags = parse_tags(wasm);
+
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+
+    let mut out = String::new();
+    let mut state = CState::default();
+    let mut reencoder = RoundtripReencoder;
+
+    let mut preamble = String::new();
+    c_module_preamble(&mut preamble).unwrap();
+    out.push_str(&preamble);
+
+    for op in ops {
+        let op = op.unwrap();
+        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &tags, &[], &mut state, &op, &mut reencoder)
+            .unwrap();
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Exception execution tests
+// ---------------------------------------------------------------------------
+
+/// Test: throw tag0 (i64 value 99) caught by catch{tag0}, returns 99.
+#[test]
+fn test_throw_catch_matching_tag_js() {
+    // fn(): i64  — push 99, throw tag0, return unreachable; catch returns the value
+    let wasm = make_module_with_tag(
+        &[ValType::I64],     // tag params: one i64
+        &[],                  // fn params: none
+        &[ValType::I64],      // fn results: one i64
+        &[
+            // try_table { catch{tag0, label=1} } (label 1 = outer block)
+            Instruction::Block(wasm_encoder::BlockType::Result(ValType::I64)),
+            Instruction::TryTable(
+                wasm_encoder::BlockType::Empty,
+                Cow::Borrowed(&[Catch::One { tag: 0, label: 1 }]),
+            ),
+            Instruction::I64Const(99),
+            Instruction::Throw(0),
+            Instruction::End,  // end try_table
+            Instruction::I64Const(0), // unreachable normal exit
+            Instruction::End,  // end block
+        ],
+    );
+    let js = compile_js_exc(&wasm);
+    let result = run_js(&js, &[]);
+    assert_eq!(result, vec![99]);
+}
+
+#[test]
+fn test_throw_catch_matching_tag_c() {
+    let wasm = make_module_with_tag(
+        &[ValType::I64],
+        &[],
+        &[ValType::I64],
+        &[
+            Instruction::Block(wasm_encoder::BlockType::Result(ValType::I64)),
+            Instruction::TryTable(
+                wasm_encoder::BlockType::Empty,
+                Cow::Borrowed(&[Catch::One { tag: 0, label: 1 }]),
+            ),
+            Instruction::I64Const(99),
+            Instruction::Throw(0),
+            Instruction::End,
+            Instruction::I64Const(0),
+            Instruction::End,
+        ],
+    );
+    let c = compile_c_exc(&wasm);
+    let result = run_c(&c, 0, &[], 1);
+    assert_eq!(result, vec![99]);
+}
+
+/// Test: throw inside try_table with catch_all, catch_all is taken.
+///
+/// catch_all provides 0 values, so its target label must have empty result type.
+/// We use an outer Block(Empty) as the catch_all target (label 1), then push 1
+/// after the block exits (both catch and normal paths converge there).
+#[test]
+fn test_throw_catch_all_js() {
+    let wasm = make_module_with_tag(
+        &[ValType::I64],   // tag params: one i64
+        &[],
+        &[ValType::I64],
+        &[
+            Instruction::Block(wasm_encoder::BlockType::Empty),  // label 1 (empty target for catch_all)
+            Instruction::TryTable(
+                wasm_encoder::BlockType::Empty,
+                Cow::Borrowed(&[Catch::All { label: 1 }]),  // catch_all → exit outer empty block
+            ),
+            Instruction::I64Const(42),
+            Instruction::Throw(0),
+            Instruction::End,        // end try_table
+            Instruction::Br(0),      // normal path: exit outer block (dead code since throw always fires)
+            Instruction::End,        // end outer block
+            Instruction::I64Const(1), // both paths converge here; return 1 to signal catch_all was taken
+        ],
+    );
+    let js = compile_js_exc(&wasm);
+    let result = run_js(&js, &[]);
+    assert_eq!(result, vec![1]);
+}
+
+#[test]
+fn test_throw_catch_all_c() {
+    let wasm = make_module_with_tag(
+        &[ValType::I64],
+        &[],
+        &[ValType::I64],
+        &[
+            Instruction::Block(wasm_encoder::BlockType::Empty),
+            Instruction::TryTable(
+                wasm_encoder::BlockType::Empty,
+                Cow::Borrowed(&[Catch::All { label: 1 }]),
+            ),
+            Instruction::I64Const(42),
+            Instruction::Throw(0),
+            Instruction::End,
+            Instruction::Br(0),
+            Instruction::End,
+            Instruction::I64Const(1),
+        ],
+    );
+    let c = compile_c_exc(&wasm);
+    let result = run_c(&c, 0, &[], 1);
+    assert_eq!(result, vec![1]);
+}
+
+/// Test: no throw — try_table normal exit returns the expected value.
+#[test]
+fn test_no_throw_normal_exit_js() {
+    let wasm = make_module_with_tag(
+        &[ValType::I64],
+        &[],
+        &[ValType::I64],
+        &[
+            Instruction::Block(wasm_encoder::BlockType::Result(ValType::I64)),
+            Instruction::TryTable(
+                wasm_encoder::BlockType::Result(ValType::I64),
+                Cow::Borrowed(&[Catch::All { label: 1 }]),
+            ),
+            Instruction::I64Const(77),
+            Instruction::End, // end try_table — value 77 propagates out of block
+            Instruction::End, // end block
+        ],
+    );
+    let js = compile_js_exc(&wasm);
+    let result = run_js(&js, &[]);
+    assert_eq!(result, vec![77]);
+}
+
+#[test]
+fn test_no_throw_normal_exit_c() {
+    let wasm = make_module_with_tag(
+        &[ValType::I64],
+        &[],
+        &[ValType::I64],
+        &[
+            Instruction::Block(wasm_encoder::BlockType::Result(ValType::I64)),
+            Instruction::TryTable(
+                wasm_encoder::BlockType::Result(ValType::I64),
+                Cow::Borrowed(&[Catch::All { label: 1 }]),
+            ),
+            Instruction::I64Const(77),
+            Instruction::End,
+            Instruction::End,
+        ],
+    );
+    let c = compile_c_exc(&wasm);
+    let result = run_c(&c, 0, &[], 1);
+    assert_eq!(result, vec![77]);
+}
+

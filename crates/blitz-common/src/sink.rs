@@ -12,6 +12,7 @@
 
 use crate::abi::BackendAbi;
 use crate::ops::FnData;
+use crate::wasm_encoder::FuncType;
 use alloc::{string::String, vec::Vec};
 
 // ---------------------------------------------------------------------------
@@ -65,6 +66,10 @@ pub struct WasmSink<State, Arch> {
     pub arch: Arch,
     /// Import table: each entry is `(module, name)` for an imported function.
     pub func_imports: Vec<(String, String)>,
+    /// Function-type table (all types in the module), used by exception dispatch.
+    pub sigs: Vec<FuncType>,
+    /// Exception tag table: maps tag index → function-type index in `sigs`.
+    pub tags: Vec<u32>,
     /// Current function index, updated by `start_fn`.
     pub target: u32,
 }
@@ -75,6 +80,8 @@ impl<State: Default, Arch: Copy + Default> WasmSink<State, Arch> {
             state: State::default(),
             arch,
             func_imports: Vec::new(),
+            sigs: Vec::new(),
+            tags: Vec::new(),
             target: 0,
         }
     }
@@ -127,6 +134,16 @@ impl<State, Arch: Copy> WasmSink<State, Arch> {
         Abi: BackendAbi<W, AsmCtx, State = State, Arch = Arch>,
     {
         Abi::emit_return(&mut ctx.writer, &mut ctx.asm_ctx, self.arch, &self.state)
+    }
+
+    /// Borrow the stored function-type table.
+    pub fn sigs_ref(&self) -> &[FuncType] {
+        &self.sigs
+    }
+
+    /// Borrow the stored exception tag table (tag index → type index).
+    pub fn tags_ref(&self) -> &[u32] {
+        &self.tags
     }
 
     /// Build a temporary `Vec<(&str, &str)>` from the stored import table.

@@ -21,7 +21,7 @@ use portal_solutions_asm_aarch64::out::arg::MemArg;
 use portal_solutions_blitz_common::{
     asm::Reg,
     ops::{FnData, MachOperator},
-    wasm_encoder::{self, FuncType, Instruction, reencode::Reencode},
+    wasm_encoder::{self, Catch, FuncType, Instruction, reencode::Reencode},
     wasmparser::Operator,
 };
 
@@ -50,6 +50,11 @@ pub enum Endable {
     Block { end_lbl: AArch64Label },
     Loop  { head_lbl: AArch64Label },
     If    { else_lbl: AArch64Label, end_lbl: AArch64Label },
+    TryTable {
+        end_lbl: AArch64Label,
+        dispatch_lbl: AArch64Label,
+        catches: alloc::boxed::Box<[Catch]>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +178,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
     {
         let idx = state.if_stack.len().saturating_sub(depth as usize + 1);
         match state.if_stack[idx].clone() {
+            Endable::TryTable { end_lbl, .. } => self.b_label(ctx, arch, end_lbl),
             Endable::Loop { head_lbl } => {
                 self.b_label(ctx, arch, head_lbl)
             }
@@ -189,6 +195,8 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         arch: AArch64Arch,
         state: &mut State,
         func_imports: &[(&str, &str)],
+        sigs: &[FuncType],
+        tags: &[u32],
         op: &Instruction<'_>,
         target: u32,
     ) -> Result<(), Self::Error> {
@@ -473,8 +481,76 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                         Endable::Block { end_lbl } => self.set_label(ctx, arch, end_lbl)?,
                         Endable::If { end_lbl, .. } => self.set_label(ctx, arch, end_lbl)?,
                         Endable::Loop { .. } => {}
+                        Endable::TryTable { end_lbl, dispatch_lbl, catches } => {
+                            let after_lbl = AArch64Label::Indexed { idx: state.label_index };
+                            state.label_index += 1;
+                            // Normal path: jump past dispatch stub.
+                            self.b_label(ctx, arch, after_lbl.clone())?;
+                            // Dispatch stub.
+                            self.set_label(ctx, arch, dispatch_lbl)?;
+                            for catch in catches.iter() {
+                                match catch {
+                                    Catch::One { tag, label } => {
+                                        let arity = if (*tag as usize) < tags.len() {
+                                            sigs[tags[*tag as usize] as usize].params().len()
+                                        } else { 0 };
+                                        let skip_lbl = AArch64Label::Indexed { idx: state.label_index };
+                                        state.label_index += 1;
+                                        self.mov_imm(ctx, arch, &reg(T1), *tag as u64)?;
+                                        self.cmp(ctx, arch, &reg(T0), &reg(T1))?;
+                                        self.bcond_label(ctx, arch, ConditionCode::NE, skip_lbl.clone())?;
+                                        // Push exception values from x11, x12, x13 (arity 1, 2, 3)
+                                        for i in (0..arity.min(3)).rev() {
+                                            self.wasm_push(ctx, arch, Reg(11 + i as u8))?;
+                                        }
+                                        self.do_br(ctx, arch, state, *label)?;
+                                        self.set_label(ctx, arch, skip_lbl)?;
+                                    }
+                                    Catch::All { label } => {
+                                        self.do_br(ctx, arch, state, *label)?;
+                                    }
+                                    Catch::OneRef { .. } | Catch::AllRef { .. } => {}
+                                }
+                            }
+                            self.adr_label(ctx, arch, &reg(T0), AArch64Label::External { name: "__wasm_exn_propagate".into() })?;
+                            self.bl(ctx, arch, &reg(T0))?;
+                            self.set_label(ctx, arch, after_lbl)?;
+                            self.set_label(ctx, arch, end_lbl)?;
+                        }
                     }
                 }
+                Ok(())
+            }
+            // ---- exception handling -----------------------------------------
+            Instruction::Throw(tag_index) => {
+                let arity = if (*tag_index as usize) < tags.len() {
+                    sigs[tags[*tag_index as usize] as usize].params().len()
+                } else { 0 };
+                self.mov_imm(ctx, arch, &reg(T0), *tag_index as u64)?; // tag in T0
+                for i in 0..arity.min(3) {
+                    self.wasm_pop(ctx, arch, Reg(11 + i as u8))?; // x11, x12, x13 for values
+                }
+                if let Some(dispatch_lbl) = state.if_stack.iter().rev().find_map(|e| match e {
+                    Endable::TryTable { dispatch_lbl, .. } => Some(dispatch_lbl.clone()),
+                    _ => None,
+                }) {
+                    self.b_label(ctx, arch, dispatch_lbl)
+                } else {
+                    self.adr_label(ctx, arch, &reg(T1), AArch64Label::External { name: "__wasm_exn_propagate".into() })?;
+                    self.bl(ctx, arch, &reg(T1))
+                }
+            }
+            Instruction::ThrowRef => todo!("exnref deferred"),
+            Instruction::TryTable(_, catches) => {
+                let dispatch_lbl = AArch64Label::Indexed { idx: state.label_index };
+                state.label_index += 1;
+                let end_lbl = AArch64Label::Indexed { idx: state.label_index };
+                state.label_index += 1;
+                state.if_stack.push(Endable::TryTable {
+                    end_lbl,
+                    dispatch_lbl,
+                    catches: catches.iter().cloned().collect::<alloc::vec::Vec<_>>().into_boxed_slice(),
+                });
                 Ok(())
             }
             Instruction::Br(depth) => self.do_br(ctx, arch, state, *depth),
@@ -541,6 +617,8 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         arch: AArch64Arch,
         state: &mut State,
         func_imports: &[(&str, &str)],
+        sigs: &[FuncType],
+        tags: &[u32],
         op: &MachOperator<'_>,
         rewriter: &mut (dyn Reencode<Error = E> + '_),
         target: u32,
@@ -581,12 +659,12 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             MachOperator::EndBody => Ok(()),
 
             MachOperator::Instruction { op: insn, .. } => {
-                self.handle_insn(ctx, arch, state, func_imports, insn, target)
+                self.handle_insn(ctx, arch, state, func_imports, sigs, tags, insn, target)
                     .map_err(Into::into)
             }
             MachOperator::Operator { op: Some(op_wasm), .. } => {
                 let insn = rewriter.instruction(op_wasm.clone())?;
-                self.handle_insn(ctx, arch, state, func_imports, &insn, target)
+                self.handle_insn(ctx, arch, state, func_imports, sigs, tags, &insn, target)
                     .map_err(Into::into)
             }
             MachOperator::Operator { op: None, .. } => Ok(()),

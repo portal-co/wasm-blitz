@@ -124,7 +124,7 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 self.ldp(ctx, arch, &reg(FP), &reg(LR), &mem_post(SP, 16))?;
                 self.ret(ctx, arch)
             }
-            other => self.handle_insn(ctx, arch, state, func_imports, other, target),
+            other => self.handle_insn(ctx, arch, state, func_imports, &[], &[], other, target),
         }
     }
 
