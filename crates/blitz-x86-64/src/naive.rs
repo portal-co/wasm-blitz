@@ -6,6 +6,7 @@
 use alloc::collections::btree_map::BTreeMap;
 use portal_solutions_asm_x86_64::RegisterClass;
 use portal_solutions_asm_x86_64::out::arg::{ArgKind, MemArg, MemArgKind};
+use portal_solutions_blitz_common::ops::TracingHooks;
 use portal_solutions_blitz_common::wasm_encoder::{self, Catch, FuncType, Instruction, reencode::Reencode};
 
 use crate::{
@@ -26,6 +27,10 @@ pub struct State {
     pub if_stack: Vec<Endable>,
     pub body: u32,
     pub body_labels: BTreeMap<u32, usize>,
+    /// Carried from `StartFn` to `StartBody` so tracing can be emitted after
+    /// the function-entry label is placed (ensuring every call — linear or
+    /// via label-jump — passes through the counter and specialisation check).
+    pub tracing: Option<TracingHooks>,
 }
 
 /// Magic sentinel pushed onto the CTX stack to mark a TryTable frame.
@@ -82,6 +87,71 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
         self.mov(ctx, arch, &RSP, &Reg(1))?;
         self.jmp(ctx, arch, &Reg(0))?;
+        Ok(())
+    }
+
+    /// Emit the optional tracing preamble at a function boundary.
+    ///
+    /// # Placement
+    /// - **NaiveAbi**: call from `emit_start_body` / the `StartBody` handler,
+    ///   *after* the function-entry label has been placed.  Use `scratch = Reg(2)`
+    ///   (RDX); Reg(0)/Reg(1) hold old-CTX and return-addr needed by StartBody.
+    /// - **SysVAbi**: call from inside the `StartFn` handler, *after* `set_label`
+    ///   but *before* `push rbp`.  Use `scratch = Reg(0)` (RAX); SysV arg
+    ///   registers (Reg 1/2/6/7/8/9) are untouched.
+    ///
+    /// The tail-jump transfers control to the outer-JIT specialisation with the
+    /// current register/stack state fully intact for the ABI in question.
+    fn emit_trace_preamble(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        label_index: &mut usize,
+        scratch: Reg,
+        tracing: Option<&TracingHooks>,
+    ) -> Result<(), Self::Error> {
+        let hooks = match tracing {
+            Some(h) => h,
+            None => return Ok(()),
+        };
+
+        // 1. Increment invocation counter: [counter] += 1 (non-atomic, approximate).
+        let counter_addr = hooks.counter as u64;
+        self.mov64(ctx, arch, &scratch, counter_addr)?;
+        self.add(
+            ctx,
+            arch,
+            &MemArgKind::Mem {
+                base: ArgKind::Reg { reg: scratch, size: MemorySize::_64 },
+                offset: None,
+                disp: 0,
+                size: MemorySize::_64,
+                reg_class: RegisterClass::Gpr,
+            },
+            &MemArgKind::NoMem(ArgKind::Lit(1)),
+        )?;
+
+        // 2. Load specialisation fn-ptr; tail-jump if non-null.
+        let spec_addr = hooks.specialization as u64;
+        self.mov64(ctx, arch, &scratch, spec_addr)?;
+        self.mov(
+            ctx,
+            arch,
+            &scratch,
+            &MemArgKind::Mem {
+                base: ArgKind::Reg { reg: scratch, size: MemorySize::_64 },
+                offset: None,
+                disp: 0,
+                size: MemorySize::_64,
+                reg_class: RegisterClass::Gpr,
+            },
+        )?;
+        let body_idx = *label_index;
+        *label_index += 1;
+        self.cmp0(ctx, arch, &scratch)?;
+        self.jcc_label(ctx, arch, ConditionCode::E, X64Label::Indexed { idx: body_idx })?;
+        self.jmp(ctx, arch, &scratch)?;
+        self.set_label(ctx, arch, X64Label::Indexed { idx: body_idx })?;
         Ok(())
     }
 
@@ -144,12 +214,14 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         num_params: params,
                         num_returns,
                         control_depth,
+                        tracing,
                         ..
                     },
             } => {
                 state.local_count = *params;
                 state.num_returns = *num_returns;
                 state.control_depth = *control_depth;
+                state.tracing = *tracing;
                 self.pop(ctx, arch, &Reg(1)).map_err(Into::into)?;
                 self.lea(
                     ctx,
@@ -173,6 +245,13 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 }
             }
             MachOperator::StartBody => {
+                // Trace preamble runs here — after the function-entry label has
+                // been placed — so every call (linear or via label-jump) is counted.
+                // Reg(0) and Reg(1) hold old-CTX and return-addr respectively; use
+                // Reg(2) (RDX) as scratch to leave them intact for the pushes below.
+                let tracing = state.tracing;
+                let label_idx = &mut state.label_index;
+                self.emit_trace_preamble(ctx, arch, label_idx, Reg(2), tracing.as_ref()).map_err(Into::into)?;
                 self.push(ctx, arch, &Reg(1)).map_err(Into::into)?;
                 self.push(ctx, arch, &Reg(0)).map_err(Into::into)?;
                 self.lea(

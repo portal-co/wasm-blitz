@@ -14,6 +14,7 @@ use portal_solutions_blitz_common::{
     ops::FnData,
     wasm_encoder::{Catch, FuncType},
 };
+use portal_solutions_asm_x86_64::out::arg::ArgKind;
 
 use crate::{X64Label, RSP};
 use crate::naive::WriterExt as NaiveWriterExt;
@@ -64,6 +65,9 @@ where
         state.local_count = data.num_params;
         state.num_returns = data.num_returns;
         state.control_depth = data.control_depth;
+        // Store tracing hooks; the preamble is emitted in emit_start_body so
+        // it runs after the function-entry label is placed (every call path).
+        state.tracing = data.tracing;
         w.pop(ctx, arch, &Reg(1))?;
         w.lea(
             ctx,
@@ -97,6 +101,11 @@ where
         arch: X64Arch,
         state: &mut Self::State,
     ) -> Result<(), W::Error> {
+        // Emit tracing preamble here so every call-path (linear + label-jump)
+        // is instrumented. Use Reg(2) (RDX) as scratch; Reg(0)/Reg(1) hold
+        // old-CTX and return-addr that are consumed by the pushes below.
+        let tracing = state.tracing;
+        w.emit_trace_preamble(ctx, arch, &mut state.label_index, Reg(2), tracing.as_ref())?;
         w.push(ctx, arch, &Reg(1))?;
         w.push(ctx, arch, &Reg(0))?;
         w.lea(
@@ -357,6 +366,11 @@ where
         w.set_label(ctx, arch, X64Label::Indexed {
             idx: id as usize | (1 << 28),
         })?;
+
+        // Trace preamble: after label, before frame setup so the tail-jump
+        // delivers SysV arg registers (RDI/RSI/…) intact to the outer JIT.
+        // Scratch: RAX (Reg(0)) — not a SysV argument register.
+        w.emit_trace_preamble(ctx, arch, &mut state.label_index, RAX, data.tracing.as_ref())?;
 
         // Standard AMD64 prologue
         w.push(ctx, arch, &RBP)?;

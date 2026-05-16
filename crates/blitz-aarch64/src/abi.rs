@@ -105,6 +105,10 @@ where
 
         w.set_label(ctx, arch, AArch64Label::Func { r#fn: id })?;
 
+        // Trace preamble: after label, before frame setup.
+        // Scratch: T0 (x9) + T1 (x10) — caller-saved, not NaiveAbi arg regs.
+        w.emit_trace_preamble(ctx, arch, &mut state.label_index, T0, data.tracing.as_ref())?;
+
         // Standard AArch64 prologue: save FP+LR, set FP=SP
         w.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16))?;
         w.mov(ctx, arch, &reg(FP), &reg(SP))?;
@@ -248,6 +252,11 @@ where
         w.set_label(ctx, arch, AArch64Label::Indexed {
             idx: id as usize + 0x80000000,
         })?;
+
+        // Trace preamble: after label, before frame setup so AAPCS64 arg regs
+        // (X0–X7) are delivered intact to the outer-JIT specialisation.
+        // Scratch: T0 (x9) + T1 (x10) — caller-saved, not AAPCS64 arg regs.
+        w.emit_trace_preamble(ctx, arch, &mut state.label_index, T0, data.tracing.as_ref())?;
 
         // Standard AAPCS64 prologue
         w.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16))?;

@@ -77,6 +77,10 @@ where
 
         w.set_label(ctx, arch, RiscvLabel::Func { r#fn: id })?;
 
+        // Trace preamble: after label, before frame setup.
+        // Scratch: t0 (Reg(5)) + t1 (Reg(6)) — caller-saved.
+        w.emit_trace_preamble(ctx, arch, &mut state.label_index, Reg(5), data.tracing.as_ref())?;
+
         // Standard RISC-V prologue: save FP and set up frame
         w.addi(ctx, arch, &SP, &SP, -8)?;
         w.sd(ctx, arch, &FP, &mem64(SP, 0))?;
@@ -228,6 +232,11 @@ where
         w.set_label(ctx, arch, RiscvLabel::Indexed {
             idx: id as usize | (1 << 28),
         })?;
+
+        // Trace preamble: after label, before frame setup so SysV arg regs
+        // (a0–a7, Reg 10–17) are intact for the outer-JIT tail-jump.
+        // Scratch: t0 (Reg(5)) + t1 (Reg(6)) — caller-saved, not arg regs.
+        w.emit_trace_preamble(ctx, arch, &mut state.label_index, Reg(5), data.tracing.as_ref())?;
 
         // Standard RISC-V SysV prologue
         let frame_slots = data.num_params + 2 + state.control_depth * 2 + 2;

@@ -191,6 +191,7 @@ pub fn mach_operators<'a, 'b, Annot: FromWasmInfo, E: From<BinaryReaderError>>(
                         num_params: sig.params().len(),
                         num_returns: sig.results().len(),
                         control_depth: control_depth(a),
+                        tracing: None,
                     },
                 }]
                 .into_iter()
@@ -228,11 +229,42 @@ pub fn mach_operators<'a, 'b, Annot: FromWasmInfo, E: From<BinaryReaderError>>(
         .flatten();
 }
 
+/// Tracing and outer-JIT specialization hooks embedded into the generated function prologue.
+///
+/// Both pointers are baked as 64-bit immediates into the generated machine code at
+/// compile time; the outer JIT reads/writes through them at runtime.  The caller must
+/// keep the pointed-to storage alive for the entire lifetime of the generated code.
+///
+/// # Safety
+/// Raw pointers — caller is responsible for alignment, validity, and any required
+/// synchronisation with the outer JIT.
+#[derive(Debug, Clone, Copy)]
+pub struct TracingHooks {
+    /// Pointer to this function's `u64` invocation counter.
+    ///
+    /// The generated prologue performs a non-atomic load → increment → store on
+    /// every function entry.  Approximate counting is intentional; the outer JIT
+    /// does not need exact values.
+    pub counter: *mut u64,
+    /// Pointer to this function's specialization fn-pointer slot.
+    ///
+    /// At runtime the generated prologue loads `*specialization`.  If the value is
+    /// non-null it is treated as a function pointer and control is transferred there
+    /// via a tail-jump (no frame has been set up yet, so the caller's register/stack
+    /// state is fully intact for whichever ABI is in use).
+    pub specialization: *const *const (),
+}
+
+// SAFETY: the outer JIT that owns and writes these slots is responsible for
+// any required memory ordering; blitz only embeds the addresses.
+unsafe impl Send for TracingHooks {}
+unsafe impl Sync for TracingHooks {}
+
 /// Metadata about a WASM function.
 ///
 /// Contains information needed by code generators about the function's
 /// signature and structure.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct FnData {
     /// Number of parameters the function accepts.
@@ -241,7 +273,19 @@ pub struct FnData {
     pub num_returns: usize,
     /// Maximum nesting depth of control flow structures in the function.
     pub control_depth: usize,
+    /// Optional tracing/specialization hooks.  `None` → no tracing code emitted
+    /// (zero overhead on the fast path).
+    pub tracing: Option<TracingHooks>,
 }
+
+impl PartialEq for FnData {
+    fn eq(&self, other: &Self) -> bool {
+        self.num_params == other.num_params
+            && self.num_returns == other.num_returns
+            && self.control_depth == other.control_depth
+    }
+}
+impl Eq for FnData {}
 
 /// A machine-level operation in the compilation pipeline.
 ///

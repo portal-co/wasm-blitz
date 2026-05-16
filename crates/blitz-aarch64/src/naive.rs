@@ -20,7 +20,7 @@ use portal_pc_asm_common::types::mem::MemorySize;
 use portal_solutions_asm_aarch64::out::arg::MemArg;
 use portal_solutions_blitz_common::{
     asm::Reg,
-    ops::{FnData, MachOperator},
+    ops::{FnData, MachOperator, TracingHooks},
     wasm_encoder::{self, Catch, FuncType, Instruction, reencode::Reencode},
     wasmparser::Operator,
 };
@@ -42,6 +42,9 @@ pub struct State {
     pub if_stack: Vec<Endable>,
     pub body: u32,
     pub body_labels: BTreeMap<u32, usize>,
+    /// Carried from `StartFn` to `StartBody` so the tracing preamble is emitted
+    /// after the function-entry label, ensuring every call-path is instrumented.
+    pub tracing: Option<TracingHooks>,
 }
 
 /// Represents a control-flow frame.
@@ -610,6 +613,47 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         }
     }
 
+    /// Emit the optional tracing preamble.
+    ///
+    /// - **NaiveAbi**: call from `StartBody` after the function-entry label.
+    ///   Use `scratch = T0` (x9); FP and LR hold frame/return-addr.
+    /// - **SysVAbi**: call from `StartFn` after `set_label`, before frame setup.
+    ///   Use `scratch = T0` (x9); SysV arg regs (x0–x7) are untouched.
+    fn emit_trace_preamble(
+        &mut self,
+        ctx: &mut Context,
+        arch: AArch64Arch,
+        label_index: &mut usize,
+        scratch: Reg,
+        tracing: Option<&TracingHooks>,
+    ) -> Result<(), Self::Error> {
+        let hooks = match tracing {
+            Some(h) => h,
+            None => return Ok(()),
+        };
+
+        let scratch2 = Reg(scratch.0 + 1); // T1, one register above scratch
+
+        // 1. Increment counter: load → add 1 → store.
+        let counter_addr = hooks.counter as u64;
+        self.mov_imm(ctx, arch, &reg(scratch), counter_addr)?;
+        self.ldr(ctx, arch, &reg(scratch2), &mem_base_disp(scratch, 0))?;
+        self.add(ctx, arch, &reg(scratch2), &reg(scratch2), &MemArgKind::NoMem(ArgKind::Lit(1)))?;
+        self.str(ctx, arch, &reg(scratch2), &mem_base_disp(scratch, 0))?;
+
+        // 2. Load specialisation fn-ptr; tail-jump if non-null.
+        let spec_addr = hooks.specialization as u64;
+        self.mov_imm(ctx, arch, &reg(scratch), spec_addr)?;
+        self.ldr(ctx, arch, &reg(scratch), &mem_base_disp(scratch, 0))?;
+        self.cmp(ctx, arch, &reg(scratch), &MemArgKind::NoMem(ArgKind::Lit(0)))?;
+        let body_idx = *label_index;
+        *label_index += 1;
+        self.bcond_label(ctx, arch, ConditionCode::EQ, AArch64Label::Indexed { idx: body_idx })?;
+        self.br(ctx, arch, &reg(scratch))?;
+        self.set_label(ctx, arch, AArch64Label::Indexed { idx: body_idx })?;
+        Ok(())
+    }
+
     /// Handle a `MachOperator` (the outer match, called by the pipeline).
     fn handle_op<E>(
         &mut self,
@@ -634,6 +678,11 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 state.control_depth = data.control_depth;
 
                 self.set_label(ctx, arch, AArch64Label::Func { r#fn: *id }).map_err(Into::into)?;
+
+                // Trace preamble: after the entry label, before frame setup.
+                // Every call path (jal + linear) passes through here.
+                // Scratch: T0 (x9) + T1 (x10) — caller-saved, not NaiveAbi arg regs.
+                self.emit_trace_preamble(ctx, arch, &mut state.label_index, T0, data.tracing.as_ref()).map_err(Into::into)?;
 
                 self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16)).map_err(Into::into)?;
                 self.mov(ctx, arch, &reg(FP), &reg(SP)).map_err(Into::into)?;

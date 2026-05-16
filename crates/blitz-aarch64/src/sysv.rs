@@ -29,7 +29,7 @@ use portal_solutions_asm_aarch64::{
 use portal_pc_asm_common::types::mem::MemorySize;
 use portal_solutions_blitz_common::{
     asm::Reg,
-    ops::MachOperator,
+    ops::{MachOperator, TracingHooks},
     wasm_encoder::{FuncType, reencode::Reencode},
 };
 
@@ -149,6 +149,12 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 state.control_depth = data.control_depth;
 
                 self.set_label(ctx, arch, AArch64Label::Indexed { idx: *id as usize + 0x80000000 })
+                    .map_err(Into::into)?;
+
+                // Trace preamble: after label, before frame setup so SysV arg
+                // regs (X0–X7) are delivered intact to the outer-JIT specialisation.
+                // Scratch: x9 (T0) + x10 (T1) — caller-saved, not arg regs.
+                self.emit_trace_preamble(ctx, arch, &mut state.label_index, Reg(9), data.tracing.as_ref())
                     .map_err(Into::into)?;
 
                 self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16)).map_err(Into::into)?;

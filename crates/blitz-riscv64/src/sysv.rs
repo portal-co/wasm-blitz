@@ -22,7 +22,7 @@ use portal_solutions_asm_riscv64::RiscV64Arch;
 use portal_solutions_asm_riscv64::out::Writer;
 use portal_solutions_blitz_common::{
     asm::Reg,
-    ops::MachOperator,
+    ops::{MachOperator, TracingHooks},
     wasm_encoder::{Instruction, reencode::Reencode},
 };
 use portal_pc_asm_common::types::mem::MemorySize;
@@ -152,6 +152,12 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                 self.set_label(ctx, arch, RiscvLabel::Indexed {
                     idx: *id as usize | (1 << 28),
                 }).map_err(Into::into)?;
+
+                // Trace preamble: after label, before frame setup so SysV arg
+                // regs (a0–a7, Reg 10–17) are intact for the outer-JIT tail-jump.
+                // Scratch: t0 (Reg(5)) + t1 (Reg(6)) — caller-saved, not arg regs.
+                self.emit_trace_preamble(ctx, arch, &mut state.label_index, Reg(5), data.tracing.as_ref())
+                    .map_err(Into::into)?;
 
                 let frame_slots = data.num_params + 2 + state.control_depth * 2 + 2;
                 let frame_sz = (frame_slots * 8) as i32;

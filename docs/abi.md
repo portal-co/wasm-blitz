@@ -523,6 +523,87 @@ todo!("SysVAbi exception handling requires platform unwinder — deferred; see d
 
 ---
 
+---
+
+## Tracing / Outer-JIT Handoff
+
+### Overview
+
+Setting `FnData.tracing = Some(TracingHooks { counter, specialization })` causes the
+code generator to emit a short preamble at every function entry point.  The preamble
+is injected **after** the function-entry label and **before** any frame setup, so:
+
+- The invocation counter is incremented on every call.
+- If the outer JIT writes a non-null function pointer into the specialisation slot, the
+  generated code performs a **tail-jump** to that pointer instead of running the
+  baseline body.
+
+The tail-jump is a bare indirect branch — no frame has been set up, so the outer JIT's
+specialised function receives exactly the same caller state as the baseline function
+would have.
+
+### `TracingHooks` (defined in `blitz-common/src/ops.rs`)
+
+```rust
+pub struct TracingHooks {
+    /// Pointer to this function's u64 invocation counter.
+    pub counter: *mut u64,
+    /// Pointer to this function's specialisation fn-pointer slot.
+    /// If `*specialisation` is non-null the generated prologue tail-jumps there.
+    pub specialization: *const *const (),
+}
+```
+
+Both pointers are baked as 64-bit immediates into the generated code at compile time.
+The caller must keep the storage alive for the lifetime of the generated code.
+
+### Emitted instruction sequence (pseudo-code)
+
+```
+; 1. Non-atomic counter increment
+   load  scratch, &counter
+   load  tmp,     [scratch]
+   tmp  += 1
+   store [scratch], tmp
+
+; 2. Specialisation check + optional tail-jump
+   load  scratch, &specialization
+   load  scratch, [scratch]          ; scratch = *specialization
+   if scratch == 0: jump body        ; null → run baseline
+   jump  scratch                     ; non-null → tail-jump to outer JIT
+body:
+   ; ... normal frame setup continues ...
+```
+
+### Architecture / ABI specifics
+
+| Backend   | ABI     | Scratch reg(s) | Preamble position in `handle_op` |
+|-----------|---------|----------------|----------------------------------|
+| x86-64    | NaiveAbi | Reg(2) (RDX)  | `StartBody`, before push Reg(1)/Reg(0) |
+| x86-64    | SysVAbi  | Reg(0) (RAX)  | `StartFn`, after `set_label`, before `push rbp` |
+| AArch64   | NaiveAbi | x9+x10 (T0/T1)| `StartFn`, after `set_label`, before `stp FP,LR` |
+| AArch64   | SysVAbi  | x9+x10 (T0/T1)| `StartFn`, after `set_label`, before `stp FP,LR` |
+| RISC-V 64 | NaiveAbi | t0+t1 (Reg 5/6)| `StartFn`, after `set_label`, before `addi sp,sp,-8` |
+| RISC-V 64 | SysVAbi  | t0+t1 (Reg 5/6)| `StartFn`, after `set_label`, before `addi sp,sp,-N` |
+
+**x86-64 NaiveAbi note**: the function-entry label (`Func{fn}`) is placed *after* the
+`pop rcx / lea rax / xchg CTX` sequence.  The trace preamble lives in `StartBody`
+(which immediately follows the label) so that both the initial linear-execution path
+and all label-jump call paths pass through the counter and specialisation check.
+Scratch register Reg(2) (RDX) is used to avoid clobbering Reg(0) (old CTX) and
+Reg(1) (return address), which are consumed by the `push` instructions in `StartBody`.
+
+### Outer-JIT specialisation contract
+
+The outer JIT's specialised function must be entered with the same register/stack state
+that the baseline function has at the preamble position:
+
+- **NaiveAbi (x86-64)**: Reg(0) = old CTX, Reg(1) = return address, CTX = frame ptr,
+  RSP = WASM operand stack.
+- **SysVAbi (x86-64)**: SysV arg registers (RDI/RSI/RDX/RCX/R8/R9) intact, no frame set up.
+- **AArch64 (both ABIs)**: LR = return addr, SP = caller stack/WASM stack, X0–X7 intact.
+- **RISC-V 64 (both ABIs)**: RA = return addr, A0–A7 intact, no frame set up.
+
 ### exnref deferral
 
 The `exnref` type and associated instructions are **not implemented**:

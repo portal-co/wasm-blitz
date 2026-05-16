@@ -34,7 +34,7 @@ use portal_solutions_asm_x86_64::{
 use portal_solutions_blitz_common::{
     asm::Reg,
     asm::common::mem::MemorySize,
-    ops::{FnData, MachOperator},
+    ops::{FnData, MachOperator, TracingHooks},
     wasm_encoder::{self, FuncType, Instruction, reencode::Reencode},
 };
 
@@ -183,6 +183,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                     if_stack: core::mem::take(&mut state.if_stack),
                     body: state.body,
                     body_labels: core::mem::take(&mut state.body_labels),
+                    tracing: None,
                 };
                 let result = self._handle_op(ctx, arch, &mut naive_state, func_imports, &[], &[], other, target);
                 state.label_index = naive_state.label_index;
@@ -220,6 +221,13 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 self.set_label(ctx, arch, X64Label::Indexed {
                     idx: *id as usize | (1 << 28),
                 }).map_err(Into::into)?;
+
+                // Trace preamble: between the entry label and frame setup so the
+                // tail-jump to the outer JIT delivers args in registers untouched.
+                // Scratch: RAX (Reg(0)) — not a SysV argument register.
+                self.emit_trace_preamble(
+                    ctx, arch, &mut state.label_index, RAX, data.tracing.as_ref(),
+                ).map_err(Into::into)?;
 
                 self.push(ctx, arch, &RBP).map_err(Into::into)?;
                 self.mov(ctx, arch, &RBP, &RSP).map_err(Into::into)?;
