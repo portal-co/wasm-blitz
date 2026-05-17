@@ -23,13 +23,13 @@ use portal_solutions_asm_riscv64::out::Writer;
 use portal_solutions_blitz_common::{
     asm::Reg,
     ops::{MachOperator, TracingHooks},
-    wasm_encoder::{Instruction, reencode::Reencode},
+    wasm_encoder::{Instruction, reencode::{self as reencode, Reencode}},
 };
 use portal_pc_asm_common::types::mem::MemorySize;
 use portal_solutions_asm_riscv64::{RegisterClass, out::arg::{ArgKind, MemArgKind}};
 
 use crate::RiscvLabel;
-use crate::naive::{State, WriterExt as NaiveExt, push, pop};
+use crate::naive::{State, WriterExt as NaiveExt, flush_regalloc, push, pop, pop_regalloc_to};
 
 // Argument registers in RISC-V psABI order: a0–a7
 const ARG_REGS: [Reg; 8] = [
@@ -62,7 +62,12 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
     fn sysv_load_local(&mut self, ctx: &mut Context, arch: RiscV64Arch, dest: Reg, n: usize)
         -> Result<(), Self::Error>
     {
-        // Local n at [fp - (n+1)*8]
+        // Frame layout (from FP downward):
+        //   [FP-8]  = local 0    ← same as naive, regalloc-compatible
+        //   [FP-16] = local 1
+        //   ...
+        //   [SP+8]  = saved old-FP  ← bottom of frame
+        //   [SP+0]  = saved RA
         let disp = -((n as i32 + 1) * 8);
         self.ld(ctx, arch, &dest, &mem64(FP, disp))
     }
@@ -87,39 +92,46 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
         target: u32,
     ) -> Result<(), Self::Error>
     where
-        Self::Error: From<core::fmt::Error>,
         Self: Sized,
     {
         match op {
-            // Local access: use FP-relative frame
-            Instruction::LocalGet(n) => {
-                self.sysv_load_local(ctx, arch, A0, *n as usize)?;
-                push(self, ctx, arch, A0)
-            }
-            Instruction::LocalSet(n) => {
-                pop(self, ctx, arch, &A0)?;
-                self.sysv_store_local(ctx, arch, A0, *n as usize)
-            }
-            Instruction::LocalTee(n) => {
-                // Peek at top of WASM stack without popping
-                self.ld(ctx, arch, &A0, &mem64(SP, 0))?;
-                self.sysv_store_local(ctx, arch, A0, *n as usize)
+            // Local access: delegate to naive which uses regalloc with [FP-(n+1)*8] offsets.
+            // SysV frame places locals at the same offsets, so this is correct.
+            Instruction::LocalGet(_) | Instruction::LocalSet(_) | Instruction::LocalTee(_) => {
+                self.handle_op_(ctx, arch, state, func_imports, &[], &[], op, rewriter, target)
             }
 
-            // Return: pop result into a0, then restore and ret
+            // Return: always emit RISC-V SysV epilogue.
+            // flush_regalloc spills any register-held values to the memory stack,
+            // after which they are readable with the normal memory pop.
             Instruction::Return => {
+                // Use pop_regalloc_to: pops from regalloc (if active) or memory stack.
+                if state.num_returns > 0 {
+                    pop_regalloc_to(self, ctx, arch, state, A0)?;
+                }
+                if state.num_returns > 1 {
+                    pop_regalloc_to(self, ctx, arch, state, A1)?;
+                }
+                flush_regalloc(self, ctx, arch, state)?;
+                // Restore: RA at [FP - frame_sz + 0], old-FP at [FP - frame_sz + 8]
+                self.addi(ctx, arch, &SP, &FP, -state.sysv_frame_sz)?;
+                self.ld(ctx, arch, &RA, &mem64(SP, 0))?;
+                self.ld(ctx, arch, &FP, &mem64(SP, 8))?;
+                self.jalr(ctx, arch, &Reg(0), &RA, 0)
+            }
+            // Function-level End (empty if_stack) acts as implicit return.
+            Instruction::End if state.if_stack.is_empty() => {
+                flush_regalloc(self, ctx, arch, state)?;
                 if state.num_returns > 0 {
                     pop(self, ctx, arch, &A0)?;
                 }
                 if state.num_returns > 1 {
                     pop(self, ctx, arch, &A1)?;
                 }
-                // Epilogue: restore SP, RA, FP
-                self.mv(ctx, arch, &SP, &FP)?;
-                self.ld(ctx, arch, &RA, &mem64(FP, -8))?;  // restored RA
-                self.ld(ctx, arch, &FP, &mem64(FP, 0))?;   // restored old FP
-                self.addi(ctx, arch, &SP, &SP, 16)?;        // pop saved RA+FP
-                self.jalr(ctx, arch, &Reg(0), &RA, 0)       // ret
+                self.addi(ctx, arch, &SP, &FP, -state.sysv_frame_sz)?;
+                self.ld(ctx, arch, &RA, &mem64(SP, 0))?;
+                self.ld(ctx, arch, &FP, &mem64(SP, 8))?;
+                self.jalr(ctx, arch, &Reg(0), &RA, 0)
             }
 
             // Everything else: naive handler
@@ -128,7 +140,7 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
     }
 
     /// Handle a `MachOperator` using the RISC-V SysV ABI.
-    fn sysv_handle_op<E>(
+    fn sysv_handle_op<E, Err>(
         &mut self,
         ctx: &mut Context,
         arch: RiscV64Arch,
@@ -137,10 +149,9 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
         op: &MachOperator<'_>,
         rewriter: &mut (dyn Reencode<Error = E> + '_),
         target: u32,
-    ) -> Result<(), portal_solutions_blitz_common::HandleOpError<E>>
+    ) -> Result<(), Err>
     where
-        Self::Error: Into<portal_solutions_blitz_common::HandleOpError<E>>,
-        Self::Error: From<core::fmt::Error>,
+        Err: From<Self::Error> + From<reencode::Error<E>>,
         Self: Sized,
     {
         match op {
@@ -151,31 +162,38 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
 
                 self.set_label(ctx, arch, RiscvLabel::Indexed {
                     idx: *id as usize | (1 << 28),
-                }).map_err(Into::into)?;
+                }).map_err(Err::from)?;
 
                 // Trace preamble: after label, before frame setup so SysV arg
                 // regs (a0–a7, Reg 10–17) are intact for the outer-JIT tail-jump.
                 // Scratch: t0 (Reg(5)) + t1 (Reg(6)) — caller-saved, not arg regs.
                 self.emit_trace_preamble(ctx, arch, &mut state.label_index, Reg(5), data.tracing.as_ref())
-                    .map_err(Into::into)?;
+                    .map_err(Err::from)?;
 
+                // Frame layout (from FP downward):
+                //   [FP-(1*8)]  = local 0   ← same offsets as naive, regalloc-compatible
+                //   [FP-(2*8)]  = local 1
+                //   ...
+                //   [SP+8] = saved old-FP   ← bottom two slots for callee-saves
+                //   [SP+0] = saved RA
                 let frame_slots = data.num_params + 2 + state.control_depth * 2 + 2;
                 let frame_sz = (frame_slots * 8) as i32;
-                self.addi(ctx, arch, &SP, &SP, -frame_sz).map_err(Into::into)?;
-                self.sd(ctx, arch, &RA, &mem64(SP, frame_sz - 8)).map_err(Into::into)?;
-                self.sd(ctx, arch, &FP, &mem64(SP, frame_sz - 16)).map_err(Into::into)?;
-                self.addi(ctx, arch, &FP, &SP, frame_sz).map_err(Into::into)?;
+                state.sysv_frame_sz = frame_sz;
+                self.addi(ctx, arch, &SP, &SP, -frame_sz).map_err(Err::from)?;
+                self.sd(ctx, arch, &RA, &mem64(SP, 0)).map_err(Err::from)?;
+                self.sd(ctx, arch, &FP, &mem64(SP, 8)).map_err(Err::from)?;
+                self.addi(ctx, arch, &FP, &SP, frame_sz).map_err(Err::from)?;
 
                 for i in 0..data.num_params.min(8) {
-                    self.sysv_store_local(ctx, arch, ARG_REGS[i], i).map_err(Into::into)?;
+                    self.sysv_store_local(ctx, arch, ARG_REGS[i], i).map_err(Err::from)?;
                 }
                 Ok(())
             }
 
             MachOperator::Local { count, .. } => {
-                self.li(ctx, arch, &A0, 0).map_err(Into::into)?;
+                self.li(ctx, arch, &A0, 0).map_err(Err::from)?;
                 for _ in 0..*count {
-                    self.sysv_store_local(ctx, arch, A0, state.local_count).map_err(Into::into)?;
+                    self.sysv_store_local(ctx, arch, A0, state.local_count).map_err(Err::from)?;
                     state.local_count += 1;
                 }
                 Ok(())
@@ -185,12 +203,12 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
 
             MachOperator::Instruction { op: insn, .. } => {
                 self.sysv_handle_insn(ctx, arch, state, func_imports, insn, rewriter, target)
-                    .map_err(Into::into)
+                    .map_err(Err::from)
             }
             MachOperator::Operator { op: Some(op_wasm), .. } => {
                 let insn = rewriter.instruction(op_wasm.clone())?;
                 self.sysv_handle_insn(ctx, arch, state, func_imports, &insn, rewriter, target)
-                    .map_err(Into::into)
+                    .map_err(Err::from)
             }
             MachOperator::Operator { op: None, .. } => Ok(()),
             _ => Ok(()),

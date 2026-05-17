@@ -35,7 +35,7 @@ use portal_solutions_blitz_common::{
     asm::Reg,
     asm::common::mem::MemorySize,
     ops::{FnData, MachOperator, TracingHooks},
-    wasm_encoder::{self, FuncType, Instruction, reencode::Reencode},
+    wasm_encoder::{self, FuncType, Instruction, reencode::{self as reencode, Reencode}},
 };
 
 use crate::{X64Label, RSP};
@@ -65,6 +65,28 @@ fn mem64(base: Reg, disp: u32) -> MemArgKind {
     }
 }
 
+/// One entry in the SysV control-flow stack (no CTX required).
+#[derive(Clone, Copy)]
+pub enum SysVCtrl {
+    /// `loop`: label at the top (already set); `Br` jumps back.
+    Loop(usize),
+    /// `block`: label at the exit (not yet set); `Br` jumps forward, `End` sets it.
+    Block(usize),
+    /// `if`: labels `base`, `base+1` (else), `base+2` (after). `else_seen` tracks Else.
+    If { base: usize, else_seen: bool },
+}
+
+impl SysVCtrl {
+    /// The label that a `Br` targeting this block should jump to.
+    fn br_target(self) -> usize {
+        match self {
+            SysVCtrl::Loop(top) => top,
+            SysVCtrl::Block(exit) => exit,
+            SysVCtrl::If { base, .. } => base + 2,
+        }
+    }
+}
+
 /// State tracker for System V x86-64 code generation.
 #[derive(Default)]
 pub struct SysVState {
@@ -73,6 +95,7 @@ pub struct SysVState {
     pub local_count: usize,
     pub label_index: usize,
     pub if_stack: Vec<crate::naive::Endable>,
+    pub ctrl_stack: Vec<SysVCtrl>,
     pub body: u32,
     pub body_labels: BTreeMap<u32, usize>,
 }
@@ -155,26 +178,173 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 self.sysv_store_local(ctx, arch, RAX, *n as usize)
             }
 
-            // ---- Return: pop result into rax, then standard epilogue ----
+            // ---- Return: always emit SysV epilogue regardless of block depth ----
             Instruction::Return => {
-                // Pop single result (if any) into rax
-                if state.ret_count > 0 {
-                    self.pop(ctx, arch, &RAX)?;
-                }
-                // Second return value into rdx (for 2-return functions)
-                if state.ret_count > 1 {
-                    self.pop(ctx, arch, &Reg(2))?;  // rdx
-                }
-                // Standard x86-64 epilogue
-                self.mov(ctx, arch, &RSP, &RBP)?;  // rsp = rbp
-                self.pop(ctx, arch, &RBP)?;         // pop rbp
+                if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
+                if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
+                self.mov(ctx, arch, &RSP, &RBP)?;
+                self.pop(ctx, arch, &RBP)?;
+                self.ret(ctx, arch)
+            }
+            // ---- Function-level End (empty ctrl_stack) ----
+            Instruction::End if state.if_stack.is_empty() => {
+                if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
+                if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
+                self.mov(ctx, arch, &RSP, &RBP)?;
+                self.pop(ctx, arch, &RBP)?;
                 self.ret(ctx, arch)
             }
 
-            // ---- Everything else: naive _handle_op ----
+            // ---- Control flow — CTX-free (no naive delegation) ----
+
+            Instruction::Loop(_) => {
+                let i = state.label_index;
+                state.label_index += 1;
+                self.set_label(ctx, arch, X64Label::Indexed { idx: i })?;
+                state.if_stack.push(crate::naive::Endable::Br);
+                state.ctrl_stack.push(SysVCtrl::Loop(i));
+                Ok(())
+            }
+            Instruction::Block(_) => {
+                let i = state.label_index;
+                state.label_index += 1;
+                state.if_stack.push(crate::naive::Endable::Br);
+                state.ctrl_stack.push(SysVCtrl::Block(i));
+                Ok(())
+            }
+            Instruction::If(_) => {
+                let i = state.label_index;
+                state.label_index += 3;
+                self.pop(ctx, arch, &RAX)?;
+                self.cmp0(ctx, arch, &RAX)?;
+                self.jcc_label(ctx, arch, ConditionCode::E, X64Label::Indexed { idx: i + 1 })?;
+                self.jmp_label(ctx, arch, X64Label::Indexed { idx: i })?;
+                self.set_label(ctx, arch, X64Label::Indexed { idx: i })?;
+                state.if_stack.push(crate::naive::Endable::If { idx: i });
+                state.ctrl_stack.push(SysVCtrl::If { base: i, else_seen: false });
+                Ok(())
+            }
+            Instruction::Else => {
+                let Some(SysVCtrl::If { base: i, else_seen }) = state.ctrl_stack.last_mut() else {
+                    return Ok(());
+                };
+                let i = *i;
+                *else_seen = true;
+                self.jmp_label(ctx, arch, X64Label::Indexed { idx: i + 2 })?;
+                self.set_label(ctx, arch, X64Label::Indexed { idx: i + 1 })
+            }
+            Instruction::End if !state.if_stack.is_empty() => {
+                if state.ctrl_stack.is_empty() {
+                    // TryTable's End: ctrl_stack has no entry for it (naive tracks it in
+                    // if_stack only). Delegate to naive so TryTable can emit its dispatch stub.
+                    let other = Instruction::End;
+                    let mut naive_state = crate::naive::State {
+                        local_count: state.local_count,
+                        num_returns: state.ret_count,
+                        control_depth: 0,
+                        label_index: state.label_index,
+                        if_stack: core::mem::take(&mut state.if_stack),
+                        body: state.body,
+                        body_labels: core::mem::take(&mut state.body_labels),
+                        tracing: None,
+                    };
+                    let result = self._handle_op(ctx, arch, &mut naive_state, func_imports, &[], &[], &other, target);
+                    state.label_index = naive_state.label_index;
+                    state.if_stack = naive_state.if_stack;
+                    state.body = naive_state.body;
+                    state.body_labels = naive_state.body_labels;
+                    return result;
+                }
+                state.if_stack.pop();
+                let ctrl = state.ctrl_stack.pop().unwrap();
+                match ctrl {
+                    SysVCtrl::Loop(_) => Ok(()),
+                    SysVCtrl::Block(exit) => {
+                        self.set_label(ctx, arch, X64Label::Indexed { idx: exit })
+                    }
+                    SysVCtrl::If { base: i, else_seen } => {
+                        if !else_seen {
+                            self.set_label(ctx, arch, X64Label::Indexed { idx: i + 1 })?;
+                        }
+                        self.set_label(ctx, arch, X64Label::Indexed { idx: i + 2 })
+                    }
+                }
+            }
+            Instruction::Br(n) => {
+                let n = *n as usize;
+                if let Some(ctrl) = state.ctrl_stack.len().checked_sub(n + 1)
+                    .and_then(|idx| state.ctrl_stack.get(idx))
+                    .copied()
+                {
+                    self.jmp_label(ctx, arch, X64Label::Indexed { idx: ctrl.br_target() })
+                } else {
+                    // Br targeting the function block = return
+                    if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
+                    if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
+                    self.mov(ctx, arch, &RSP, &RBP)?;
+                    self.pop(ctx, arch, &RBP)?;
+                    self.ret(ctx, arch)
+                }
+            }
+            Instruction::BrIf(n) => {
+                let n = *n as usize;
+                let skip = state.label_index;
+                state.label_index += 1;
+                self.pop(ctx, arch, &RAX)?;
+                self.cmp0(ctx, arch, &RAX)?;
+                if let Some(ctrl) = state.ctrl_stack.len().checked_sub(n + 1)
+                    .and_then(|idx| state.ctrl_stack.get(idx))
+                    .copied()
+                {
+                    self.jcc_label(ctx, arch, ConditionCode::NE, X64Label::Indexed { idx: ctrl.br_target() })?;
+                } else {
+                    // BrIf targeting the function block = conditional return
+                    self.jcc_label(ctx, arch, ConditionCode::E, X64Label::Indexed { idx: skip })?;
+                    if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
+                    if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
+                    self.mov(ctx, arch, &RSP, &RBP)?;
+                    self.pop(ctx, arch, &RBP)?;
+                    self.ret(ctx, arch)?;
+                }
+                self.set_label(ctx, arch, X64Label::Indexed { idx: skip })
+            }
+            Instruction::BrTable(targets, default) => {
+                // Pop selector once; for each target: if selector==0 branch, else decrement.
+                self.pop(ctx, arch, &RAX)?;
+                let ctrl = &state.ctrl_stack;
+                macro_rules! do_br {
+                    ($depth:expr) => {{
+                        let n = $depth as usize;
+                        let tgt = ctrl.len().checked_sub(n + 1).and_then(|i| ctrl.get(i)).map(|c| c.br_target());
+                        if let Some(lbl) = tgt {
+                            self.jmp_label(ctx, arch, X64Label::Indexed { idx: lbl })?;
+                        } else {
+                            self.mov(ctx, arch, &RSP, &RBP)?;
+                            self.pop(ctx, arch, &RBP)?;
+                            self.ret(ctx, arch)?;
+                        }
+                    }};
+                }
+                for (arm_idx, &depth) in targets.iter().enumerate() {
+                    let skip = state.label_index;
+                    state.label_index += 1;
+                    self.cmp0(ctx, arch, &RAX)?;
+                    self.jcc_label(ctx, arch, ConditionCode::NE, X64Label::Indexed { idx: skip })?;
+                    do_br!(depth);
+                    self.set_label(ctx, arch, X64Label::Indexed { idx: skip })?;
+                    if arm_idx + 1 < targets.len() {
+                        self.lea(ctx, arch, &RAX, &MemArgKind::Mem {
+                            base: RAX, offset: None, disp: 0u32.wrapping_sub(1),
+                            size: MemorySize::_64, reg_class: RegisterClass::Gpr,
+                        })?;
+                    }
+                }
+                do_br!(*default);
+                Ok(())
+            }
+
+            // ---- Everything else: naive _handle_op (no CTX ops in these paths) ----
             other => {
-                // Build a temporary naive::State to delegate to _handle_op.
-                // We re-use label_index and if_stack from SysVState.
                 let mut naive_state = crate::naive::State {
                     local_count: state.local_count,
                     num_returns: state.ret_count,
@@ -196,7 +366,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
     }
 
     /// Handle a `MachOperator` using the SysV ABI.
-    fn sysv_handle_op<E>(
+    fn sysv_handle_op<E, Err>(
         &mut self,
         ctx: &mut Context,
         arch: X64Arch,
@@ -205,9 +375,9 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
         op: &MachOperator<'_>,
         rewriter: &mut (dyn Reencode<Error = E> + '_),
         target: u32,
-    ) -> Result<(), portal_solutions_blitz_common::HandleOpError<E>>
+    ) -> Result<(), Err>
     where
-        Self::Error: Into<portal_solutions_blitz_common::HandleOpError<E>>,
+        Err: From<Self::Error> + From<reencode::Error<E>>,
         Self: Sized,
     {
         use portal_solutions_blitz_common::wasm_encoder;
@@ -220,33 +390,30 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
 
                 self.set_label(ctx, arch, X64Label::Indexed {
                     idx: *id as usize | (1 << 28),
-                }).map_err(Into::into)?;
+                }).map_err(Err::from)?;
 
-                // Trace preamble: between the entry label and frame setup so the
-                // tail-jump to the outer JIT delivers args in registers untouched.
-                // Scratch: RAX (Reg(0)) — not a SysV argument register.
                 self.emit_trace_preamble(
                     ctx, arch, &mut state.label_index, RAX, data.tracing.as_ref(),
-                ).map_err(Into::into)?;
+                ).map_err(Err::from)?;
 
-                self.push(ctx, arch, &RBP).map_err(Into::into)?;
-                self.mov(ctx, arch, &RBP, &RSP).map_err(Into::into)?;
+                self.push(ctx, arch, &RBP).map_err(Err::from)?;
+                self.mov(ctx, arch, &RBP, &RSP).map_err(Err::from)?;
 
                 let frame_sz = (data.num_params + 16) * 8;
                 let frame_sz = (frame_sz + 15) & !15;
-                self.mov64(ctx, arch, &RAX, frame_sz as u64).map_err(Into::into)?;
-                self.sub(ctx, arch, &RSP, &RAX).map_err(Into::into)?;
+                self.mov64(ctx, arch, &RAX, frame_sz as u64).map_err(Err::from)?;
+                self.sub(ctx, arch, &RSP, &RAX).map_err(Err::from)?;
 
                 for i in 0..data.num_params.min(6) {
-                    self.sysv_store_local(ctx, arch, ARG_REGS[i], i).map_err(Into::into)?;
+                    self.sysv_store_local(ctx, arch, ARG_REGS[i], i).map_err(Err::from)?;
                 }
                 Ok(())
             }
 
             MachOperator::Local { count, .. } => {
-                self.mov64(ctx, arch, &RAX, 0).map_err(Into::into)?;
+                self.mov64(ctx, arch, &RAX, 0).map_err(Err::from)?;
                 for _ in 0..*count {
-                    self.sysv_store_local(ctx, arch, RAX, state.local_count).map_err(Into::into)?;
+                    self.sysv_store_local(ctx, arch, RAX, state.local_count).map_err(Err::from)?;
                     state.local_count += 1;
                 }
                 Ok(())
@@ -256,12 +423,12 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
 
             MachOperator::Instruction { op: insn, .. } => {
                 self.sysv_handle_insn(ctx, arch, state, func_imports, insn, target)
-                    .map_err(Into::into)
+                    .map_err(Err::from)
             }
             MachOperator::Operator { op: Some(op_wasm), .. } => {
                 let insn = rewriter.instruction(op_wasm.clone())?;
                 self.sysv_handle_insn(ctx, arch, state, func_imports, &insn, target)
-                    .map_err(Into::into)
+                    .map_err(Err::from)
             }
             MachOperator::Operator { op: None, .. } => Ok(()),
             _ => Ok(()),

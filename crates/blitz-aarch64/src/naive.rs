@@ -21,7 +21,7 @@ use portal_solutions_asm_aarch64::out::arg::MemArg;
 use portal_solutions_blitz_common::{
     asm::Reg,
     ops::{FnData, MachOperator, TracingHooks},
-    wasm_encoder::{self, Catch, FuncType, Instruction, reencode::Reencode},
+    wasm_encoder::{self, Catch, FuncType, Instruction, reencode::{self as reencode, Reencode}},
     wasmparser::Operator,
 };
 
@@ -179,7 +179,16 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
     fn do_br(&mut self, ctx: &mut Context, arch: AArch64Arch, state: &State, depth: u32)
         -> Result<(), Self::Error>
     {
-        let idx = state.if_stack.len().saturating_sub(depth as usize + 1);
+        let len = state.if_stack.len();
+        let depth_usize = depth as usize;
+        if depth_usize + 1 > len {
+            // Branching out of the function (e.g., from an exception handler).
+            // Emit a function exit: restore frame and return.
+            self.mov(ctx, arch, &reg(SP), &reg(FP))?;
+            self.ldp(ctx, arch, &reg(FP), &reg(LR), &mem_post(SP, 16))?;
+            return self.ret(ctx, arch);
+        }
+        let idx = len - depth_usize - 1;
         match state.if_stack[idx].clone() {
             Endable::TryTable { end_lbl, .. } => self.b_label(ctx, arch, end_lbl),
             Endable::Loop { head_lbl } => {
@@ -609,7 +618,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 self.ret(ctx, arch)
             }
 
-            _ => Ok(()),
+            other => panic!("unimplemented WASM instruction in AArch64 naive handle_insn: {other:?}"),
         }
     }
 
@@ -655,7 +664,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
     }
 
     /// Handle a `MachOperator` (the outer match, called by the pipeline).
-    fn handle_op<E>(
+    fn handle_op<E, Err>(
         &mut self,
         ctx: &mut Context,
         arch: AArch64Arch,
@@ -666,9 +675,9 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         op: &MachOperator<'_>,
         rewriter: &mut (dyn Reencode<Error = E> + '_),
         target: u32,
-    ) -> Result<(), portal_solutions_blitz_common::HandleOpError<E>>
+    ) -> Result<(), Err>
     where
-        Self::Error: Into<portal_solutions_blitz_common::HandleOpError<E>>,
+        Err: From<Self::Error> + From<reencode::Error<E>>,
         Self: Sized,
     {
         match op {
@@ -677,29 +686,26 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 state.num_returns = data.num_returns;
                 state.control_depth = data.control_depth;
 
-                self.set_label(ctx, arch, AArch64Label::Func { r#fn: *id }).map_err(Into::into)?;
+                self.set_label(ctx, arch, AArch64Label::Func { r#fn: *id }).map_err(Err::from)?;
 
-                // Trace preamble: after the entry label, before frame setup.
-                // Every call path (jal + linear) passes through here.
-                // Scratch: T0 (x9) + T1 (x10) — caller-saved, not NaiveAbi arg regs.
-                self.emit_trace_preamble(ctx, arch, &mut state.label_index, T0, data.tracing.as_ref()).map_err(Into::into)?;
+                self.emit_trace_preamble(ctx, arch, &mut state.label_index, T0, data.tracing.as_ref()).map_err(Err::from)?;
 
-                self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16)).map_err(Into::into)?;
-                self.mov(ctx, arch, &reg(FP), &reg(SP)).map_err(Into::into)?;
+                self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16)).map_err(Err::from)?;
+                self.mov(ctx, arch, &reg(FP), &reg(SP)).map_err(Err::from)?;
 
                 let locals_slots = state.local_count as i64 + state.control_depth as i64 * 2 + 2;
                 if locals_slots > 0 {
                     let size = MemArgKind::NoMem(ArgKind::Lit((locals_slots * 8) as u64));
-                    self.sub(ctx, arch, &reg(SP), &reg(SP), &size).map_err(Into::into)?;
+                    self.sub(ctx, arch, &reg(SP), &reg(SP), &size).map_err(Err::from)?;
                 }
                 Ok(())
             }
 
             MachOperator::Local { count, .. } => {
-                self.mov_imm(ctx, arch, &reg(T0), 0).map_err(Into::into)?;
+                self.mov_imm(ctx, arch, &reg(T0), 0).map_err(Err::from)?;
                 for _ in 0..*count {
                     state.local_count += 1;
-                    self.store_local(ctx, arch, T0, state.local_count - 1).map_err(Into::into)?;
+                    self.store_local(ctx, arch, T0, state.local_count - 1).map_err(Err::from)?;
                 }
                 Ok(())
             }
@@ -709,15 +715,15 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
 
             MachOperator::Instruction { op: insn, .. } => {
                 self.handle_insn(ctx, arch, state, func_imports, sigs, tags, insn, target)
-                    .map_err(Into::into)
+                    .map_err(Err::from)
             }
             MachOperator::Operator { op: Some(op_wasm), .. } => {
                 let insn = rewriter.instruction(op_wasm.clone())?;
                 self.handle_insn(ctx, arch, state, func_imports, sigs, tags, &insn, target)
-                    .map_err(Into::into)
+                    .map_err(Err::from)
             }
             MachOperator::Operator { op: None, .. } => Ok(()),
-            _ => Ok(()),
+            _ => Ok(()), // non-instruction operators (Local, StartBody, etc.) silently ignored
         }
     }
 }

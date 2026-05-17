@@ -43,6 +43,12 @@ impl<E> From<reencode::Error<E>> for HandleOpError<E> {
     }
 }
 
+impl<E> From<core::convert::Infallible> for HandleOpError<E> {
+    fn from(x: core::convert::Infallible) -> Self {
+        match x {}
+    }
+}
+
 /// Macro for pattern matching on machine operators.
 ///
 /// This macro simplifies matching on both `Instruction` and `Operator` variants

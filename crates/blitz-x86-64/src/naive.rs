@@ -7,7 +7,7 @@ use alloc::collections::btree_map::BTreeMap;
 use portal_solutions_asm_x86_64::RegisterClass;
 use portal_solutions_asm_x86_64::out::arg::{ArgKind, MemArg, MemArgKind};
 use portal_solutions_blitz_common::ops::TracingHooks;
-use portal_solutions_blitz_common::wasm_encoder::{self, Catch, FuncType, Instruction, reencode::Reencode};
+use portal_solutions_blitz_common::wasm_encoder::{self, Catch, FuncType, Instruction, reencode::{self as reencode, Reencode}};
 
 use crate::{
     out::{Writer, arg::Arg},
@@ -168,7 +168,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
     /// * `func_imports` - Information about imported functions
     /// * `op` - The machine operator to translate
     /// * `rewriter` - Re-encoder for instruction format conversion
-    fn handle_op<E>(
+    fn handle_op<E, Err>(
         &mut self,
         ctx: &mut Context,
         arch: X64Arch,
@@ -179,11 +179,10 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         op: &MachOperator<'_>,
         rewriter: &mut (dyn Reencode<Error = E> + '_),
         target: u32,
-    ) -> Result<(), portal_solutions_blitz_common::HandleOpError<E>>
+    ) -> Result<(), Err>
     where
-        Self::Error: Into<portal_solutions_blitz_common::HandleOpError<E>>,
+        Err: From<Self::Error> + From<reencode::Error<E>>,
     {
-        use portal_solutions_blitz_common::HandleOpError;
         if target != state.body {
             // First-instruction guard: see comment in `_handle_op` below.
             if state.body == 0 && state.body_labels.is_empty() {
@@ -198,10 +197,10 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                             return state.label_index - 1;
                         }),
                     },
-                ).map_err(Into::into)?;
+                ).map_err(Err::from)?;
                 state.body = target;
                 if let Some(idx) = state.body_labels.remove(&state.body) {
-                    self.set_label(ctx, arch, X64Label::Indexed { idx }).map_err(Into::into)?;
+                    self.set_label(ctx, arch, X64Label::Indexed { idx }).map_err(Err::from)?;
                 }
             }
         }
@@ -222,7 +221,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 state.num_returns = *num_returns;
                 state.control_depth = *control_depth;
                 state.tracing = *tracing;
-                self.pop(ctx, arch, &Reg(1)).map_err(Into::into)?;
+                self.pop(ctx, arch, &Reg(1)).map_err(Err::from)?;
                 self.lea(
                     ctx,
                     arch,
@@ -234,26 +233,22 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
                     },
-                ).map_err(Into::into)?;
-                self.xchg(ctx, arch, &Reg(0), &Reg::CTX).map_err(Into::into)?;
-                self.set_label(ctx, arch, X64Label::Func { r#fn: *id }).map_err(Into::into)?;
+                ).map_err(Err::from)?;
+                self.xchg(ctx, arch, &Reg(0), &Reg::CTX).map_err(Err::from)?;
+                self.set_label(ctx, arch, X64Label::Func { r#fn: *id }).map_err(Err::from)?;
             }
             MachOperator::Local { count, ty } => {
                 for _ in 0..*count {
                     state.local_count += 1;
-                    self.push(ctx, arch, &Reg(0)).map_err(Into::into)?;
+                    self.push(ctx, arch, &Reg(0)).map_err(Err::from)?;
                 }
             }
             MachOperator::StartBody => {
-                // Trace preamble runs here — after the function-entry label has
-                // been placed — so every call (linear or via label-jump) is counted.
-                // Reg(0) and Reg(1) hold old-CTX and return-addr respectively; use
-                // Reg(2) (RDX) as scratch to leave them intact for the pushes below.
                 let tracing = state.tracing;
                 let label_idx = &mut state.label_index;
-                self.emit_trace_preamble(ctx, arch, label_idx, Reg(2), tracing.as_ref()).map_err(Into::into)?;
-                self.push(ctx, arch, &Reg(1)).map_err(Into::into)?;
-                self.push(ctx, arch, &Reg(0)).map_err(Into::into)?;
+                self.emit_trace_preamble(ctx, arch, label_idx, Reg(2), tracing.as_ref()).map_err(Err::from)?;
+                self.push(ctx, arch, &Reg(1)).map_err(Err::from)?;
+                self.push(ctx, arch, &Reg(0)).map_err(Err::from)?;
                 self.lea(
                     ctx,
                     arch,
@@ -265,17 +260,17 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
                     },
-                ).map_err(Into::into)?;
-                self.xchg(ctx, arch, &Reg(0), &Reg::CTX).map_err(Into::into)?;
-                self.push(ctx, arch, &Reg(0)).map_err(Into::into)?;
+                ).map_err(Err::from)?;
+                self.xchg(ctx, arch, &Reg(0), &Reg::CTX).map_err(Err::from)?;
+                self.push(ctx, arch, &Reg(0)).map_err(Err::from)?;
                 for _ in 0..state.control_depth {
                     for _ in 0..2 {
-                        self.push(ctx, arch, &Reg(0)).map_err(Into::into)?;
+                        self.push(ctx, arch, &Reg(0)).map_err(Err::from)?;
                     }
                 }
             }
             MachOperator::Instruction { op, .. } => {
-                self._handle_op(ctx, arch, state, func_imports, sigs, tags, op, target).map_err(Into::into)?
+                self._handle_op(ctx, arch, state, func_imports, sigs, tags, op, target).map_err(Err::from)?
             }
             MachOperator::Operator { op, annot } => match match op.as_ref() {
                 None => return Ok(()),
@@ -290,10 +285,10 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     tags,
                     &rewriter.instruction(op.clone())?,
                     target,
-                ).map_err(Into::into)?,
+                ).map_err(Err::from)?,
             },
             // EndBody and any future meta-ops are no-ops at the assembly level.
-            _ => {}
+            _ => {} // non-instruction MachOperators (meta-ops)
 
         }
         Ok(())
@@ -376,9 +371,9 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I32Sub | Instruction::I64Sub => {
-                self.pop(ctx, arch, &Reg(0))?;
-                self.pop(ctx, arch, &Reg(1))?;
-                self.not(ctx, arch, &Reg(1))?;
+                self.pop(ctx, arch, &Reg(0))?;   // Reg(0) = b (subtrahend, top of stack)
+                self.pop(ctx, arch, &Reg(1))?;   // Reg(1) = a (minuend)
+                self.not(ctx, arch, &Reg(0))?;   // ~b; result = ~b + a + 1 = a - b
                 self.lea(
                     ctx,
                     arch,
@@ -406,8 +401,11 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I32DivU | Instruction::I64DivU => {
-                self.pop(ctx, arch, &Reg(0))?;
-                self.pop(ctx, arch, &Reg(1))?;
+                // WASM stack: [dividend, divisor]. Pop divisor→RCX, dividend→RAX.
+                // x86-64 div: rdx:rax / rcx → quotient in rax, remainder in rdx.
+                self.pop(ctx, arch, &Reg(1))?;   // divisor → RCX
+                self.pop(ctx, arch, &Reg(0))?;   // dividend → RAX
+                self.mov64(ctx, arch, &Reg(2), 0)?; // zero RDX (high half of dividend)
                 self.div(ctx, arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32DivU = op {
                     self.u32(ctx, arch, &Reg(0))?;
@@ -415,8 +413,9 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I32DivS | Instruction::I64DivS => {
-                self.pop(ctx, arch, &Reg(0))?;
-                self.pop(ctx, arch, &Reg(1))?;
+                self.pop(ctx, arch, &Reg(1))?;   // divisor → RCX
+                self.pop(ctx, arch, &Reg(0))?;   // dividend → RAX
+                self.mov64(ctx, arch, &Reg(2), 0)?; // zero RDX (sign-extend not available yet)
                 self.idiv(ctx, arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32DivS = op {
                     self.u32(ctx, arch, &Reg(0))?;
@@ -424,22 +423,24 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I32RemU | Instruction::I64RemU => {
-                self.pop(ctx, arch, &Reg(0))?;
-                self.pop(ctx, arch, &Reg(1))?;
-                self.div(ctx, arch, &Reg(0), &Reg(1))?;
+                self.pop(ctx, arch, &Reg(1))?;   // divisor → RCX
+                self.pop(ctx, arch, &Reg(0))?;   // dividend → RAX
+                self.mov64(ctx, arch, &Reg(2), 0)?; // zero RDX
+                self.div(ctx, arch, &Reg(0), &Reg(1))?; // remainder → RDX
                 if let Instruction::I32RemU = op {
-                    self.u32(ctx, arch, &Reg(3))?;
+                    self.u32(ctx, arch, &Reg(2))?;
                 }
-                self.push(ctx, arch, &Reg(3))?;
+                self.push(ctx, arch, &Reg(2))?; // push RDX (remainder)
             }
             Instruction::I32RemS | Instruction::I64RemS => {
-                self.pop(ctx, arch, &Reg(0))?;
-                self.pop(ctx, arch, &Reg(1))?;
-                self.idiv(ctx, arch, &Reg(0), &Reg(1))?;
+                self.pop(ctx, arch, &Reg(1))?;   // divisor → RCX
+                self.pop(ctx, arch, &Reg(0))?;   // dividend → RAX
+                self.mov64(ctx, arch, &Reg(2), 0)?; // zero RDX
+                self.idiv(ctx, arch, &Reg(0), &Reg(1))?; // remainder → RDX
                 if let Instruction::I32RemS = op {
-                    self.u32(ctx, arch, &Reg(3))?;
+                    self.u32(ctx, arch, &Reg(2))?;
                 }
-                self.push(ctx, arch, &Reg(3))?;
+                self.push(ctx, arch, &Reg(2))?; // push RDX (remainder)
             }
             Instruction::I32And | Instruction::I64And => {
                 self.pop(ctx, arch, &Reg(0))?;
@@ -469,18 +470,22 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I32Shl | Instruction::I64Shl => {
-                self.pop(ctx, arch, &Reg(0))?;
-                self.pop(ctx, arch, &Reg(1))?;
-                self.shl(ctx, arch, &Reg(0), &Reg(1))?;
+                // x86-64 shl count must be in CL (low byte of RCX).
+                // Pass count as 8-bit so text-asm emits "cl" and IcedWriter uses CL.
+                let cl = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(1), size: MemorySize::_8 });
+                self.pop(ctx, arch, &Reg(1))?;   // shift count → RCX
+                self.pop(ctx, arch, &Reg(0))?;   // value → RAX
+                self.shl(ctx, arch, &Reg(0), &cl)?;
                 if let Instruction::I32Shl = op {
                     self.u32(ctx, arch, &Reg(0))?;
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I32ShrU | Instruction::I64ShrU => {
-                self.pop(ctx, arch, &Reg(0))?;
-                self.pop(ctx, arch, &Reg(1))?;
-                self.shr(ctx, arch, &Reg(0), &Reg(1))?;
+                let cl = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(1), size: MemorySize::_8 });
+                self.pop(ctx, arch, &Reg(1))?;   // shift count → RCX
+                self.pop(ctx, arch, &Reg(0))?;   // value → RAX
+                self.shr(ctx, arch, &Reg(0), &cl)?;
                 if let Instruction::I32ShrU = op {
                     self.u32(ctx, arch, &Reg(0))?;
                 }
@@ -555,12 +560,19 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.mov(ctx, arch, &Reg(0), &Reg(0))?;
+                // Dereference: load 64-bit value from [rax] into rax.
+                self.mov(ctx, arch, &Reg(0), &MemArgKind::Mem {
+                    base: Reg(0),
+                    offset: None,
+                    disp: 0,
+                    size: MemorySize::_64,
+                    reg_class: RegisterClass::Gpr,
+                })?;
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I64Store(memarg) => {
-                self.pop(ctx, arch, &Reg(2))?;
-                self.pop(ctx, arch, &Reg(0))?;
+                self.pop(ctx, arch, &Reg(2))?;  // value → RDX
+                self.pop(ctx, arch, &Reg(0))?;  // addr → RAX
                 self.mov64(ctx, arch, &Reg(1), memarg.offset)?;
                 self.lea(
                     ctx,
@@ -574,8 +586,14 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.xchg(ctx, arch, &Reg(2), &Reg(0))?;
-                // self.push(ctx,arch,&Reg(0))?;
+                // Store 64-bit value from RDX to [RAX].
+                self.mov(ctx, arch, &MemArgKind::Mem {
+                    base: Reg(0),
+                    offset: None,
+                    disp: 0,
+                    size: MemorySize::_64,
+                    reg_class: RegisterClass::Gpr,
+                }, &Reg(2))?;
             }
             Instruction::I32Load(memarg) => {
                 self.pop(ctx, arch, &Reg(0))?;
@@ -612,8 +630,8 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I32Store(memarg) => {
-                self.pop(ctx, arch, &Reg(2))?;
-                self.pop(ctx, arch, &Reg(0))?;
+                self.pop(ctx, arch, &Reg(2))?;  // value → RDX
+                self.pop(ctx, arch, &Reg(0))?;  // addr → RAX
                 self.mov64(ctx, arch, &Reg(1), memarg.offset)?;
                 self.lea(
                     ctx,
@@ -623,11 +641,19 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         base: Reg(0),
                         offset: Some((Reg(1), 1)),
                         disp: 0,
-                        size: MemorySize::_32,
+                        size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
                     },
                 )?;
-                self.xchg(ctx, arch, &Reg(2), &Reg(0))?;
+                // Store 32-bit value from EDX to [RAX].
+                let edx = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(2), size: MemorySize::_32 });
+                self.mov(ctx, arch, &MemArgKind::Mem {
+                    base: Reg(0),
+                    offset: None,
+                    disp: 0,
+                    size: MemorySize::_32,
+                    reg_class: RegisterClass::Gpr,
+                }, &edx)?;
             }
             Instruction::LocalGet(local_index) => {
                 self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
@@ -757,10 +783,9 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
             Instruction::BrIf(relative_depth) => {
                 let i = state.label_index;
                 state.label_index += 1;
-                self.lea_label(ctx, arch, &Reg(1), X64Label::Indexed { idx: i })?;
                 self.pop(ctx, arch, &Reg(0))?;
                 self.cmp0(ctx, arch, &Reg(0))?;
-                self.jcc(ctx, arch, ConditionCode::E, &Reg(1))?;
+                self.jcc_label(ctx, arch, ConditionCode::E, X64Label::Indexed { idx: i })?;
                 self.br(ctx, arch, state, *relative_depth)?;
                 self.set_label(ctx, arch, X64Label::Indexed { idx: i })?;
             }
@@ -768,10 +793,9 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 for relative_depth in targets.iter().cloned() {
                     let i = state.label_index;
                     state.label_index += 1;
-                    self.lea_label(ctx, arch, &Reg(1), X64Label::Indexed { idx: i })?;
                     self.pop(ctx, arch, &Reg(0))?;
                     self.cmp0(ctx, arch, &Reg(0))?;
-                    self.jcc(ctx, arch, ConditionCode::E, &Reg(1))?;
+                    self.jcc_label(ctx, arch, ConditionCode::E, X64Label::Indexed { idx: i })?;
                     self.br(ctx, arch, state, relative_depth)?;
                     self.set_label(ctx, arch, X64Label::Indexed { idx: i })?;
                     self.lea(
@@ -810,19 +834,17 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 state.label_index += 3;
                 state.if_stack.push(Endable::If { idx: i });
                 self.pop(ctx, arch, &Reg(2))?;
-                self.lea_label(ctx, arch, &Reg(0), X64Label::Indexed { idx: i })?;
-                self.lea_label(ctx, arch, &Reg(1), X64Label::Indexed { idx: i + 1 })?;
                 self.cmp0(ctx, arch, &Reg(2))?;
-                self.jcc(ctx, arch, ConditionCode::E, &Reg(1))?;
-                self.jmp(ctx, arch, &Reg(0))?;
+                self.jcc_label(ctx, arch, ConditionCode::E, X64Label::Indexed { idx: i + 1 })?;
+                self.jmp_label(ctx, arch, X64Label::Indexed { idx: i })?;
                 self.set_label(ctx, arch, X64Label::Indexed { idx: i })?;
             }
             Instruction::Else => {
                 let Endable::If { idx: i } = state.if_stack.last().unwrap() else {
                     todo!()
                 };
-                self.lea_label(ctx, arch, &Reg(0), X64Label::Indexed { idx: i + 2 })?;
-                self.jmp(ctx, arch, &Reg(0))?;
+                let i = *i;
+                self.jmp_label(ctx, arch, X64Label::Indexed { idx: i + 2 })?;
                 self.set_label(ctx, arch, X64Label::Indexed { idx: i + 1 })?;
             }
             Instruction::Loop(blockty) => {
@@ -1001,7 +1023,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: "__wasm_memory_grow".into() })?;
                 self.call(ctx, arch, &Reg(0))?;
             }
-            _ => {}
+            other => panic!("unimplemented WASM instruction in x86-64 naive _handle_op: {other:?}"),
         };
         Ok(())
     }

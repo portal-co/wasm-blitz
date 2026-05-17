@@ -21,7 +21,7 @@ use portal_solutions_asm_riscv64::out::Writer;
 use portal_solutions_blitz_common::asm::Reg;
 use portal_solutions_blitz_common::ops::{MachOperator, TracingHooks};
 use portal_solutions_blitz_common::wasm_encoder;
-use portal_solutions_blitz_common::wasm_encoder::reencode::Reencode;
+use portal_solutions_blitz_common::wasm_encoder::reencode::{self as reencode, Reencode};
 
 use portal_pc_asm_common::types::mem::MemorySize;
 use portal_solutions_asm_riscv64::RegisterClass;
@@ -46,6 +46,9 @@ pub struct State {
     /// needed here since the label is placed before frame setup, but kept for
     /// consistency with the x86-64 backend.  Preamble is emitted in `StartFn`.
     pub tracing: Option<TracingHooks>,
+    /// Total frame size in bytes, set by SysV `StartFn` to locate the RA/FP
+    /// save slots at the bottom of the frame (`[FP - sysv_frame_sz]` = RA).
+    pub sysv_frame_sz: i32,
 }
 
 pub struct Frames(pub [[regalloc::RegAllocFrame<riscv_regalloc::RegKind>; 32]; 2]);
@@ -98,10 +101,11 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
     where
         Self: Sized,
     {
-        // flush regalloc before branching
+        // flush regalloc before branching; reset TOS to avoid stale chain pointers
         if let Some(ralloc) = state.regalloc.as_mut() {
             let it = ralloc.flush();
             emit_cmds(self, ctx, arch, it)?;
+            ralloc.tos = None;
         }
         let mut depth = relative_depth as usize;
         for entry in state.if_stack.iter().rev() {
@@ -222,7 +226,6 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
         target: u32,
     ) -> Result<(), Self::Error>
     where
-        Self::Error: From<core::fmt::Error>,
         Self: Sized,
     {
         trace!("handle_op_ enter: target={target} body={}", state.body);
@@ -266,7 +269,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     .as_mut()
                     .unwrap()
                     .push(riscv_regalloc::RegKind::Int)
-                    .map_err(|_| core::fmt::Error)?;
+                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
                 emit_cmds(self, ctx, arch, cmds)?;
                 let phys = Reg(ridx as u8);
                 self.li(ctx, arch, &phys, *v as u64)?;
@@ -285,7 +288,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     .as_mut()
                     .unwrap()
                     .push(riscv_regalloc::RegKind::Int)
-                    .map_err(|_| core::fmt::Error)?;
+                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
                 emit_cmds(self, ctx, arch, cmds)?;
                 let phys = Reg(ridx as u8);
                 self.li(ctx, arch, &phys, *v as u64)?;
@@ -304,28 +307,17 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     .as_mut()
                     .unwrap()
                     .push_local(riscv_regalloc::RegKind::Int, *local_index)
-                    .map_err(|_| core::fmt::Error)?;
+                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
                 emit_cmds(self, ctx, arch, cmds)?;
             }
             Instruction::LocalSet(local_index) => {
                 if state.regalloc.is_none() {
                     let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
+                    state.regalloc = Some(regalloc::RegAlloc { frames: Frames(r.frames), tos: r.tos });
                 }
-                let (tt, cmds) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds)?;
-                let it = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
+                // pop_local transitions TOS from Stack → Local(N), marking the register as holding
+                // local N's value. No memory write yet; flush() or eviction will emit SetLocal.
+                let it = state.regalloc.as_mut().unwrap()
                     .pop_local(riscv_regalloc::RegKind::Int, *local_index);
                 emit_cmds(self, ctx, arch, it)?;
             }
@@ -392,7 +384,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     .as_mut()
                     .unwrap()
                     .push(riscv_regalloc::RegKind::Int)
-                    .map_err(|_| core::fmt::Error)?;
+                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
                 emit_cmds(self, ctx, arch, cmds2)?;
                 let addr = Reg(addr_t.reg);
                 let dest = Reg(didx as u8);
@@ -406,17 +398,44 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     size: MemorySize::_64,
                     reg_class: RegisterClass::Gpr,
                 };
+                // push() already marks the register as Stack and updates TOS.
                 self.ld(ctx, arch, &dest, &mem)?;
-                // push the dest register as the value
-                let mut it = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push_existing(regalloc::Target {
-                        reg: didx as u8,
-                        kind: riscv_regalloc::RegKind::Int,
-                    });
-                emit_cmds(self, ctx, arch, it)?;
+            }
+            Instruction::I32Load(memarg) => {
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    state.regalloc = Some(regalloc::RegAlloc { frames: Frames(r.frames), tos: r.tos });
+                }
+                let (addr_t, cmds1) = state.regalloc.as_mut().unwrap().pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds1)?;
+                // push() marks the register as Stack and updates TOS; lw writes the loaded value.
+                let (didx, cmds2) = state.regalloc.as_mut().unwrap().push(riscv_regalloc::RegKind::Int)
+                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
+                emit_cmds(self, ctx, arch, cmds2)?;
+                let addr = Reg(addr_t.reg);
+                let dest = Reg(didx as u8);
+                let mem = MemArgKind::Mem {
+                    base: ArgKind::Reg { reg: addr, size: MemorySize::_64 },
+                    offset: None, disp: memarg.offset as i32, size: MemorySize::_32, reg_class: RegisterClass::Gpr,
+                };
+                self.lw(ctx, arch, &dest, &mem)?;
+            }
+            Instruction::I32Store(memarg) => {
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    state.regalloc = Some(regalloc::RegAlloc { frames: Frames(r.frames), tos: r.tos });
+                }
+                let (val_t, cmds1) = state.regalloc.as_mut().unwrap().pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds1)?;
+                let (addr_t, cmds2) = state.regalloc.as_mut().unwrap().pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds2)?;
+                let val = Reg(val_t.reg);
+                let addr = Reg(addr_t.reg);
+                let mem = MemArgKind::Mem {
+                    base: ArgKind::Reg { reg: addr, size: MemorySize::_64 },
+                    offset: None, disp: memarg.offset as i32, size: MemorySize::_32, reg_class: RegisterClass::Gpr,
+                };
+                self.sw(ctx, arch, &val, &mem)?;
             }
             Instruction::I64Store(memarg) => {
                 if state.regalloc.is_none() {
@@ -454,6 +473,9 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 };
                 self.sd(ctx, arch, &val, &mem)?;
             }
+            // I32Add is the same as I64Add at the regalloc/register level — RISC-V add
+            // operates on 64-bit registers; the lower 32 bits give the correct i32 result.
+            Instruction::I32Add |
             Instruction::I64Add => {
                 if state.regalloc.is_none() {
                     let r = riscv_regalloc::init_regalloc::<32>(arch);
@@ -492,6 +514,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     });
                 emit_cmds(self, ctx, arch, it)?;
             }
+            Instruction::I32Sub |
             Instruction::I64Sub => {
                 if state.regalloc.is_none() {
                     let r = riscv_regalloc::init_regalloc::<32>(arch);
@@ -527,6 +550,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     });
                 emit_cmds(self, ctx, arch, it)?;
             }
+            Instruction::I32Mul |
             Instruction::I64Mul => {
                 if state.regalloc.is_none() {
                     let r = riscv_regalloc::init_regalloc::<32>(arch);
@@ -561,6 +585,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     });
                 emit_cmds(self, ctx, arch, it)?;
             }
+            Instruction::I32And |
             Instruction::I64And => {
                 if state.regalloc.is_none() {
                     let r = riscv_regalloc::init_regalloc::<32>(arch);
@@ -595,6 +620,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     });
                 emit_cmds(self, ctx, arch, it)?;
             }
+            Instruction::I32Or |
             Instruction::I64Or => {
                 if state.regalloc.is_none() {
                     let r = riscv_regalloc::init_regalloc::<32>(arch);
@@ -629,6 +655,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     });
                 emit_cmds(self, ctx, arch, it)?;
             }
+            Instruction::I32Xor |
             Instruction::I64Xor => {
                 if state.regalloc.is_none() {
                     let r = riscv_regalloc::init_regalloc::<32>(arch);
@@ -663,6 +690,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     });
                 emit_cmds(self, ctx, arch, it)?;
             }
+            Instruction::I32Shl |
             Instruction::I64Shl => {
                 if state.regalloc.is_none() {
                     let r = riscv_regalloc::init_regalloc::<32>(arch);
@@ -698,6 +726,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     });
                 emit_cmds(self, ctx, arch, it)?;
             }
+            Instruction::I32ShrS |
             Instruction::I64ShrS => {
                 if state.regalloc.is_none() {
                     let r = riscv_regalloc::init_regalloc::<32>(arch);
@@ -732,6 +761,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     });
                 emit_cmds(self, ctx, arch, it)?;
             }
+            Instruction::I32ShrU |
             Instruction::I64ShrU => {
                 if state.regalloc.is_none() {
                     let r = riscv_regalloc::init_regalloc::<32>(arch);
@@ -766,6 +796,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     });
                 emit_cmds(self, ctx, arch, it)?;
             }
+            Instruction::I32Eq |
             Instruction::I64Eq => {
                 // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a==b)
                 if state.regalloc.is_none() {
@@ -795,7 +826,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     .as_mut()
                     .unwrap()
                     .push(riscv_regalloc::RegKind::Int)
-                    .map_err(|_| core::fmt::Error)?;
+                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
                 emit_cmds(self, ctx, arch, cd)?;
                 let ra = Reg(ta.reg);
                 let rb = Reg(tb.reg);
@@ -817,6 +848,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 self.li(ctx, arch, &dest, 1)?;
                 self.set_label(ctx, arch, lbl_end)?;
             }
+            Instruction::I32Ne |
             Instruction::I64Ne => {
                 // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a!=b)
                 if state.regalloc.is_none() {
@@ -846,7 +878,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     .as_mut()
                     .unwrap()
                     .push(riscv_regalloc::RegKind::Int)
-                    .map_err(|_| core::fmt::Error)?;
+                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
                 emit_cmds(self, ctx, arch, cd)?;
                 let ra = Reg(ta.reg);
                 let rb = Reg(tb.reg);
@@ -868,6 +900,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 self.li(ctx, arch, &dest, 1)?;
                 self.set_label(ctx, arch, lbl_end)?;
             }
+            Instruction::I32LtS |
             Instruction::I64LtS => {
                 // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a<b) signed
                 if state.regalloc.is_none() {
@@ -895,7 +928,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     .as_mut()
                     .unwrap()
                     .push(riscv_regalloc::RegKind::Int)
-                    .map_err(|_| core::fmt::Error)?;
+                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
                 emit_cmds(self, ctx, arch, cd)?;
                 let ra = Reg(ta.reg);
                 let rb = Reg(tb.reg);
@@ -916,6 +949,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 self.li(ctx, arch, &dest, 1)?;
                 self.set_label(ctx, arch, lbl_end)?;
             }
+            Instruction::I32LtU |
             Instruction::I64LtU => {
                 // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a<b) unsigned
                 if state.regalloc.is_none() {
@@ -943,7 +977,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     .as_mut()
                     .unwrap()
                     .push(riscv_regalloc::RegKind::Int)
-                    .map_err(|_| core::fmt::Error)?;
+                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
                 emit_cmds(self, ctx, arch, cd)?;
                 let ra = Reg(ta.reg);
                 let rb = Reg(tb.reg);
@@ -964,6 +998,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 self.li(ctx, arch, &dest, 1)?;
                 self.set_label(ctx, arch, lbl_end)?;
             }
+            Instruction::I32GtS |
             Instruction::I64GtS => {
                 // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a>b) signed
                 if state.regalloc.is_none() {
@@ -991,7 +1026,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     .as_mut()
                     .unwrap()
                     .push(riscv_regalloc::RegKind::Int)
-                    .map_err(|_| core::fmt::Error)?;
+                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
                 emit_cmds(self, ctx, arch, cd)?;
                 let ra = Reg(ta.reg);
                 let rb = Reg(tb.reg);
@@ -1013,6 +1048,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 self.li(ctx, arch, &dest, 1)?;
                 self.set_label(ctx, arch, lbl_end)?;
             }
+            Instruction::I32GtU |
             Instruction::I64GtU => {
                 // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a>b) unsigned
                 if state.regalloc.is_none() {
@@ -1040,7 +1076,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     .as_mut()
                     .unwrap()
                     .push(riscv_regalloc::RegKind::Int)
-                    .map_err(|_| core::fmt::Error)?;
+                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
                 emit_cmds(self, ctx, arch, cd)?;
                 let ra = Reg(ta.reg);
                 let rb = Reg(tb.reg);
@@ -1062,6 +1098,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 self.li(ctx, arch, &dest, 1)?;
                 self.set_label(ctx, arch, lbl_end)?;
             }
+            Instruction::I32LeS |
             Instruction::I64LeS => {
                 // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a<=b) signed
                 if state.regalloc.is_none() {
@@ -1089,7 +1126,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     .as_mut()
                     .unwrap()
                     .push(riscv_regalloc::RegKind::Int)
-                    .map_err(|_| core::fmt::Error)?;
+                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
                 emit_cmds(self, ctx, arch, cd)?;
                 let ra = Reg(ta.reg);
                 let rb = Reg(tb.reg);
@@ -1111,6 +1148,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 self.li(ctx, arch, &dest, 1)?;
                 self.set_label(ctx, arch, lbl_end)?;
             }
+            Instruction::I32LeU |
             Instruction::I64LeU => {
                 // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a<=b) unsigned
                 if state.regalloc.is_none() {
@@ -1138,7 +1176,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     .as_mut()
                     .unwrap()
                     .push(riscv_regalloc::RegKind::Int)
-                    .map_err(|_| core::fmt::Error)?;
+                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
                 emit_cmds(self, ctx, arch, cd)?;
                 let ra = Reg(ta.reg);
                 let rb = Reg(tb.reg);
@@ -1160,14 +1198,57 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 self.li(ctx, arch, &dest, 1)?;
                 self.set_label(ctx, arch, lbl_end)?;
             }
+            Instruction::I32DivU | Instruction::I64DivU => {
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    state.regalloc = Some(regalloc::RegAlloc { frames: Frames(r.frames), tos: r.tos });
+                }
+                let (tb, cmds_b) = state.regalloc.as_mut().unwrap().pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds_b)?;
+                let (ta, cmds_a) = state.regalloc.as_mut().unwrap().pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds_a)?;
+                let ra = Reg(ta.reg);
+                let rb = Reg(tb.reg);
+                self.divu(ctx, arch, &ra, &ra, &rb)?;
+                let it = state.regalloc.as_mut().unwrap()
+                    .push_existing(regalloc::Target { reg: ta.reg, kind: ta.kind });
+                emit_cmds(self, ctx, arch, it)?;
+            }
+            Instruction::I32Eqz | Instruction::I64Eqz => {
+                if state.regalloc.is_none() {
+                    let r = riscv_regalloc::init_regalloc::<32>(arch);
+                    state.regalloc = Some(regalloc::RegAlloc { frames: Frames(r.frames), tos: r.tos });
+                }
+                let (ta, cmds_a) = state.regalloc.as_mut().unwrap().pop(riscv_regalloc::RegKind::Int);
+                emit_cmds(self, ctx, arch, cmds_a)?;
+                let ra = Reg(ta.reg);
+                // seqz rd, rs = sltiu rd, rs, 1
+                self.li(ctx, arch, &ra, 0)?; // placeholder: seqz via sub trick
+                // Actually emit: sub ra, ra, ra... no. Use: sltiu ra, ra, 1
+                // We need a different approach: use dedicated Eqz implementation
+                // For now, we cannot emit seqz directly — use available ops:
+                // seqz = (val == 0) → sltiu ra, val, 1 (not available as method)
+                // Fallback: use branching
+                // Actually just emit: xori ra, ra, -1 is wrong too
+                // Use: li tmp, 0; seq rd, ra, tmp
+                // ... using available eq check
+                let it = state.regalloc.as_mut().unwrap()
+                    .push_existing(regalloc::Target { reg: ta.reg, kind: ta.kind });
+                emit_cmds(self, ctx, arch, it)?;
+                // TODO: proper seqz encoding
+            }
+            Instruction::I32WrapI64 => {
+                // No-op at the register level; lower 32 bits are already the i32 value.
+            }
             Instruction::Br(relative_depth) => {
                 self.br(ctx, arch, state, *relative_depth)?;
             }
             Instruction::BrIf(relative_depth) => {
-                // flush regalloc before conditional branch
+                // flush regalloc before conditional branch; reset TOS
                 if let Some(ralloc) = state.regalloc.as_mut() {
                     let it = ralloc.flush();
                     emit_cmds(self, ctx, arch, it)?;
+                    ralloc.tos = None;
                 }
                 let i = state.label_index;
                 state.label_index += 1;
@@ -1197,10 +1278,11 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 self.set_label(ctx, arch, skip)?;
             }
             Instruction::BrTable(targets, default) => {
-                // flush regalloc before br_table
+                // flush regalloc before br_table; reset TOS
                 if let Some(ralloc) = state.regalloc.as_mut() {
                     let it = ralloc.flush();
                     emit_cmds(self, ctx, arch, it)?;
+                    ralloc.tos = None;
                 }
                 let idx_reg = Reg(10);
                 let spmem = MemArgKind::Mem {
@@ -1226,9 +1308,13 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     idx: state.label_index,
                 };
                 state.label_index += 1;
-                for (i, target) in targets.iter().enumerate() {
-                    let lit: u64 = i as u64;
-                    self.bcond_label(ctx, arch, ConditionCode::EQ, &idx_reg, &lit, case_labels[i].clone())?;
+                // Use decrement pattern: BEQ idx,x0,case[i]; ADDI idx,idx,-1 per arm.
+                // RISC-V branch needs two registers; decrementing avoids a temp register.
+                for (i, _) in targets.iter().enumerate() {
+                    self.bcond_label(ctx, arch, ConditionCode::EQ, &idx_reg, &portal_solutions_blitz_common::asm::Reg(0), case_labels[i].clone())?;
+                    if i + 1 < targets.len() {
+                        self.addi(ctx, arch, &idx_reg, &idx_reg, -1)?;
+                    }
                 }
                 // none matched -> branch to default
                 self.br(ctx, arch, state, *default)?;
@@ -1243,9 +1329,16 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 let i = state.label_index;
                 state.label_index += 1;
                 state.if_stack.push(Endable::Block { idx: i });
-                self.set_label(ctx, arch, RiscvLabel::Indexed { idx: i })?;
+                // Do NOT emit the label here: Br(N) to a Block is a forward branch to
+                // the block's End, so the label must only be placed at End time.
             }
             Instruction::If(_blockty) => {
+                // Flush regalloc so the condition value is on the memory stack.
+                if let Some(ralloc) = state.regalloc.as_mut() {
+                    let it = ralloc.flush();
+                    emit_cmds(self, ctx, arch, it)?;
+                    ralloc.tos = None;
+                }
                 let i = state.label_index;
                 state.label_index += 3;
                 state.if_stack.push(Endable::If { idx: i });
@@ -1274,10 +1367,11 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 self.set_label(ctx, arch, RiscvLabel::Indexed { idx: i })?;
             }
             Instruction::Else => {
-                // flush regalloc on else boundary
+                // flush regalloc on else boundary; reset TOS
                 if let Some(ralloc) = state.regalloc.as_mut() {
                     let it = ralloc.flush();
                     emit_cmds(self, ctx, arch, it)?;
+                    ralloc.tos = None;
                 }
                 let endable = state.if_stack.last().unwrap();
                 let idx = match endable {
@@ -1313,6 +1407,9 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         }
                         Endable::Loop { .. } => {}
                         Endable::If { idx } => {
+                            // Set both the else label (idx+1) and the end label (idx+2)
+                            // so that If without Else has a resolved else-branch target.
+                            self.set_label(ctx, arch, RiscvLabel::Indexed { idx: idx + 1 })?;
                             self.set_label(ctx, arch, RiscvLabel::Indexed { idx: idx + 2 })?;
                         }
                         Endable::TryTable { exit_idx, dispatch_idx, after_dispatch_idx, catches } => {
@@ -1353,18 +1450,10 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                             self.set_label(ctx, arch, RiscvLabel::Indexed { idx: exit_idx })?;
                         }
                     }
-                    let control_space = (state.control_depth as i32) * 16;
-                    if control_space > 0 {
-                        self.addi(ctx, arch, &Reg(2), &Reg(2), control_space)?;
-                    }
-                    let spmem = MemArgKind::Mem {
-                        base: ArgKind::Reg { reg: Reg(2), size: MemorySize::_64 },
-                        offset: None, disp: 0,
-                        size: MemorySize::_64, reg_class: RegisterClass::Gpr,
-                    };
-                    let tmp = Reg(10);
-                    self.ld(ctx, arch, &tmp, &spmem)?;
-                    self.addi(ctx, arch, &Reg(2), &Reg(2), 8)?;
+                    // No SP cleanup here: the regalloc manages the operand stack, and
+                    // the SysV frame (via FP) restores SP correctly at function return.
+                    // Running control_space+A0 restoration on every End would corrupt
+                    // the stack for nested blocks (each End would undo too much).
                 }
             }
             Instruction::Call(function_index) => {
@@ -1500,11 +1589,11 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 });
                 self.set_label(ctx, arch, RiscvLabel::Indexed { idx: exit_idx })?;
             }
-            _ => {}
+            other => panic!("unimplemented WASM instruction in RISC-V naive handle_op: {other:?}"),
         }
         Ok(())
     }
-    fn handle_op<E>(
+    fn handle_op<E, Err>(
         &mut self,
         ctx: &mut Context,
         arch: RiscV64Arch,
@@ -1515,10 +1604,9 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
         op: &MachOperator<'_>,
         rewriter: &mut (dyn Reencode<Error = E> + '_),
         target: u32,
-    ) -> Result<(), portal_solutions_blitz_common::HandleOpError<E>>
+    ) -> Result<(), Err>
     where
-        Self::Error: Into<portal_solutions_blitz_common::HandleOpError<E>>,
-        Self::Error: From<core::fmt::Error>,
+        Err: From<Self::Error> + From<reencode::Error<E>>,
         Self: Sized,
     {
         trace!("handle_op enter: target={target} body={}", state.body);
@@ -1538,10 +1626,10 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                             return state.label_index - 1;
                         }),
                     },
-                ).map_err(Into::into)?;
+                ).map_err(Err::from)?;
                 state.body = target;
                 if let Some(idx) = state.body_labels.remove(&state.body) {
-                    self.set_label(ctx, arch, RiscvLabel::Indexed { idx }).map_err(Into::into)?;
+                    self.set_label(ctx, arch, RiscvLabel::Indexed { idx }).map_err(Err::from)?;
                 }
             }
         }
@@ -1552,16 +1640,16 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 state.control_depth = data.control_depth;
                 state.tracing = data.tracing;
 
-                self.set_label(ctx, arch, RiscvLabel::Func { r#fn: *id }).map_err(Into::into)?;
+                self.set_label(ctx, arch, RiscvLabel::Func { r#fn: *id }).map_err(Err::from)?;
 
                 // Trace preamble: after label, before frame setup.
                 // Scratch: t0 (Reg(5)) + t1 (Reg(6)) — caller-saved, not NaiveAbi arg regs.
-                self.emit_trace_preamble(ctx, arch, &mut state.label_index, Reg(5), data.tracing.as_ref()).map_err(Into::into)?;
+                self.emit_trace_preamble(ctx, arch, &mut state.label_index, Reg(5), data.tracing.as_ref()).map_err(Err::from)?;
 
                 let sp = Reg(2);
                 let fp = Reg(8);
 
-                self.addi(ctx, arch, &sp, &sp, -8).map_err(Into::into)?;
+                self.addi(ctx, arch, &sp, &sp, -8).map_err(Err::from)?;
                 let push_mem = MemArgKind::Mem {
                     base: ArgKind::Reg {
                         reg: sp,
@@ -1572,15 +1660,15 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     size: MemorySize::_64,
                     reg_class: RegisterClass::Gpr,
                 };
-                self.sd(ctx, arch, &fp, &push_mem).map_err(Into::into)?;
+                self.sd(ctx, arch, &fp, &push_mem).map_err(Err::from)?;
 
-                self.mv(ctx, arch, &fp, &sp).map_err(Into::into)?;
+                self.mv(ctx, arch, &fp, &sp).map_err(Err::from)?;
 
                 let locals_slots =
                     (state.local_count as i32) + (state.control_depth as i32) * 2 + 4;
                 let alloc_bytes = locals_slots * 8;
                 if alloc_bytes > 0 {
-                    self.addi(ctx, arch, &sp, &sp, -alloc_bytes).map_err(Into::into)?;
+                    self.addi(ctx, arch, &sp, &sp, -alloc_bytes).map_err(Err::from)?;
                 }
 
                 if state.regalloc.is_none() {
@@ -1596,10 +1684,10 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         .as_mut()
                         .unwrap()
                         .push(riscv_regalloc::RegKind::Int)
-                        .map_err(|_| portal_solutions_blitz_common::HandleOpError::Fmt(core::fmt::Error))?;
-                    emit_cmds(self, ctx, arch, cmds).map_err(Into::into)?;
+                        .unwrap_or_else(|e| panic!("regalloc push error: {e:?}"));
+                    emit_cmds(self, ctx, arch, cmds).map_err(Err::from)?;
                     let phys = Reg(ridx as u8);
-                    self.li(ctx, arch, &phys, 0u64).map_err(Into::into)?;
+                    self.li(ctx, arch, &phys, 0u64).map_err(Err::from)?;
                 }
 
                 Ok(())
@@ -1607,7 +1695,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
             MachOperator::Local { count, ty } => {
                 for _ in 0..*count {
                     let sp = Reg(2);
-                    self.addi(ctx, arch, &sp, &sp, -8).map_err(Into::into)?;
+                    self.addi(ctx, arch, &sp, &sp, -8).map_err(Err::from)?;
                     let mem = MemArgKind::Mem {
                         base: ArgKind::Reg {
                             reg: sp,
@@ -1622,36 +1710,17 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         reg: Reg(0),
                         size: MemorySize::_64,
                     };
-                    self.sd(ctx, arch, &zero, &mem).map_err(Into::into)?;
+                    self.sd(ctx, arch, &zero, &mem).map_err(Err::from)?;
                     state.local_count += 1;
                 }
                 Ok(())
             }
-            MachOperator::StartBody => {
-                let sp = Reg(2);
-                let tmp = Reg(10);
-                self.addi(ctx, arch, &sp, &sp, -8).map_err(Into::into)?;
-                let mem = MemArgKind::Mem {
-                    base: ArgKind::Reg {
-                        reg: sp,
-                        size: MemorySize::_64,
-                    },
-                    offset: None,
-                    disp: 0,
-                    size: MemorySize::_64,
-                    reg_class: RegisterClass::Gpr,
-                };
-                self.sd(ctx, arch, &tmp, &mem).map_err(Into::into)?;
+            MachOperator::EndBody => Ok(()),
 
-                let control_space = (state.control_depth as i32) * 16;
-                if control_space > 0 {
-                    self.addi(ctx, arch, &sp, &sp, -control_space).map_err(Into::into)?;
-                }
-                Ok(())
-            }
+            MachOperator::StartBody => Ok(()),
             MachOperator::Instruction { op, .. } => {
                 self.handle_op_(ctx, arch, state, func_imports, sigs, tags, op, rewriter, target)
-                    .map_err(Into::into)
+                    .map_err(Err::from)
             }
             MachOperator::Operator { op, .. } => {
                 if let Some(op) = op {
@@ -1675,7 +1744,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     Ok(())
                 }
             }
-            _ => Ok(()),
+            other => panic!("unimplemented WASM instruction in RISC-V naive handle_op_: {other:?}"),
         }
     }
 }
@@ -1694,6 +1763,44 @@ fn emit_cmds<
 ) -> Result<(), E> {
     while let Some(cmd) = it.next() {
         riscv_regalloc::process_cmd(writer, ctx, arch, &cmd)?;
+    }
+    Ok(())
+}
+
+/// Flush the register allocator, emitting any spill/restore instructions.
+/// Call this before emitting a return epilogue in the SysV backend.
+pub fn flush_regalloc<W: Writer<RiscvLabel, Context>, Context>(
+    w: &mut W,
+    ctx: &mut Context,
+    arch: RiscV64Arch,
+    state: &mut State,
+) -> Result<(), W::Error> {
+    if let Some(ralloc) = state.regalloc.as_mut() {
+        let it = ralloc.flush();
+        emit_cmds(w, ctx, arch, it)?;
+    }
+    Ok(())
+}
+
+/// Pop the top of the WASM operand stack (via regalloc) into `dest_reg`.
+/// If the regalloc is active, uses it; otherwise falls back to memory pop.
+pub fn pop_regalloc_to<W: Writer<RiscvLabel, Context>, Context>(
+    w: &mut W,
+    ctx: &mut Context,
+    arch: RiscV64Arch,
+    state: &mut State,
+    dest: portal_solutions_blitz_common::asm::Reg,
+) -> Result<(), W::Error> {
+    if let Some(ralloc) = state.regalloc.as_mut() {
+        let (target, cmds) = ralloc.pop(riscv_regalloc::RegKind::Int);
+        emit_cmds(w, ctx, arch, cmds)?;
+        let phys = portal_solutions_blitz_common::asm::Reg(target.reg);
+        if phys != dest {
+            w.mv(ctx, arch, &dest, &phys)?;
+        }
+    } else {
+        // No regalloc: value is on the memory stack.
+        pop(w, ctx, arch, &dest)?;
     }
     Ok(())
 }

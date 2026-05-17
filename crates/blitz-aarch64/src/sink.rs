@@ -47,7 +47,7 @@ impl<W, AsmCtx> OperatorSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>>
     for AArch64WasmSink
 where
     W: naive::WriterExt<AsmCtx>,
-    W::Error: Into<HandleOpError<Infallible>>,
+    HandleOpError<Infallible>: From<W::Error>,
 {
     fn operator(
         &mut self,
@@ -83,7 +83,7 @@ impl<W, AsmCtx> InstructionSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>>
     for AArch64WasmSink
 where
     W: naive::WriterExt<AsmCtx>,
-    W::Error: Into<HandleOpError<Infallible>>,
+    HandleOpError<Infallible>: From<W::Error>,
 {
     fn instruction(
         &mut self,

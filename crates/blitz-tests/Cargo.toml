@@ -12,7 +12,8 @@ portal-solutions-blitz-x86-64  = { path = "../blitz-x86-64" }
 portal-solutions-blitz-aarch64 = { path = "../blitz-aarch64" }
 portal-solutions-blitz-riscv64 = { path = "../blitz-riscv64" }
 portal-solutions-asm-x86-64    = { version = "0.1.0", git = "https://github.com/portal-co/asm-arch.git", features = ["iced"] }
-portal-solutions-asm-aarch64   = { version = "0.1.0", git = "https://github.com/portal-co/asm-arch.git" }
-portal-solutions-asm-riscv64   = { version = "0.1.0", git = "https://github.com/portal-co/asm-arch.git" }
+portal-solutions-asm-aarch64   = { version = "0.1.0", git = "https://github.com/portal-co/asm-arch.git", features = ["bin-backend"] }
+portal-solutions-asm-riscv64   = { version = "0.1.0", git = "https://github.com/portal-co/asm-arch.git", features = ["rv-asm-backend"] }
 unicorn-engine                 = "2.1.5"
 libc                           = { version = "0.2" }
+paste                          = "1"
