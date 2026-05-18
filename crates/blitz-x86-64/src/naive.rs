@@ -366,7 +366,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     },
                 )?;
                 if let Instruction::I32Add = op {
-                    self.u32(ctx, arch, &Reg(0))?;
+                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
@@ -387,7 +387,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     },
                 )?;
                 if let Instruction::I32Sub = op {
-                    self.u32(ctx, arch, &Reg(0))?;
+                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
@@ -396,7 +396,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.pop(ctx, arch, &Reg(1))?;
                 self.mul(ctx, arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32Mul = op {
-                    self.u32(ctx, arch, &Reg(0))?;
+                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
@@ -408,7 +408,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.mov64(ctx, arch, &Reg(2), 0)?; // zero RDX (high half of dividend)
                 self.div(ctx, arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32DivU = op {
-                    self.u32(ctx, arch, &Reg(0))?;
+                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
@@ -418,7 +418,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.mov64(ctx, arch, &Reg(2), 0)?; // zero RDX (sign-extend not available yet)
                 self.idiv(ctx, arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32DivS = op {
-                    self.u32(ctx, arch, &Reg(0))?;
+                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
@@ -428,7 +428,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.mov64(ctx, arch, &Reg(2), 0)?; // zero RDX
                 self.div(ctx, arch, &Reg(0), &Reg(1))?; // remainder → RDX
                 if let Instruction::I32RemU = op {
-                    self.u32(ctx, arch, &Reg(2))?;
+                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(2), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
                 }
                 self.push(ctx, arch, &Reg(2))?; // push RDX (remainder)
             }
@@ -438,7 +438,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.mov64(ctx, arch, &Reg(2), 0)?; // zero RDX
                 self.idiv(ctx, arch, &Reg(0), &Reg(1))?; // remainder → RDX
                 if let Instruction::I32RemS = op {
-                    self.u32(ctx, arch, &Reg(2))?;
+                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(2), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
                 }
                 self.push(ctx, arch, &Reg(2))?; // push RDX (remainder)
             }
@@ -447,7 +447,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.pop(ctx, arch, &Reg(1))?;
                 self.and(ctx, arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32And = op {
-                    self.u32(ctx, arch, &Reg(0))?;
+                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
@@ -456,7 +456,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.pop(ctx, arch, &Reg(1))?;
                 self.or(ctx, arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32Or = op {
-                    self.u32(ctx, arch, &Reg(0))?;
+                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
@@ -465,7 +465,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.pop(ctx, arch, &Reg(1))?;
                 self.eor(ctx, arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32Xor = op {
-                    self.u32(ctx, arch, &Reg(0))?;
+                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
@@ -477,7 +477,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.pop(ctx, arch, &Reg(0))?;   // value → RAX
                 self.shl(ctx, arch, &Reg(0), &cl)?;
                 if let Instruction::I32Shl = op {
-                    self.u32(ctx, arch, &Reg(0))?;
+                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
@@ -487,20 +487,20 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.pop(ctx, arch, &Reg(0))?;   // value → RAX
                 self.shr(ctx, arch, &Reg(0), &cl)?;
                 if let Instruction::I32ShrU = op {
-                    self.u32(ctx, arch, &Reg(0))?;
+                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I32WrapI64 => {
                 self.pop(ctx, arch, &Reg(0))?;
-                self.u32(ctx, arch, &Reg(0))?;
+                { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I32Eqz | Instruction::I64Eqz => {
                 self.pop(ctx, arch, &Reg(0))?;
                 self.mov64(ctx, arch, &Reg(1), 0)?;
                 self.cmp0(ctx, arch, &Reg(0))?;
-                self.cmovcc64(ctx, arch, ConditionCode::E, &Reg(1), &1u64)?;
+                self.cmovcc(ctx, arch, ConditionCode::E, &Reg(1), &1u64)?;
                 self.push(ctx, arch, &Reg(1))?;
             }
             Instruction::I32Eq | Instruction::I64Eq => {
@@ -521,7 +521,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 )?;
                 self.mov64(ctx, arch, &Reg(1), 0)?;
                 self.cmp0(ctx, arch, &Reg(0))?;
-                self.cmovcc64(ctx, arch, ConditionCode::E, &Reg(1), &1u64)?;
+                self.cmovcc(ctx, arch, ConditionCode::E, &Reg(1), &1u64)?;
                 self.push(ctx, arch, &Reg(1))?;
             }
             Instruction::I32Ne | Instruction::I64Ne => {
@@ -542,7 +542,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 )?;
                 self.mov64(ctx, arch, &Reg(1), 1)?;
                 self.cmp0(ctx, arch, &Reg(0))?;
-                self.cmovcc64(ctx, arch, ConditionCode::E, &Reg(1), &0u64)?;
+                self.cmovcc(ctx, arch, ConditionCode::E, &Reg(1), &0u64)?;
                 self.push(ctx, arch, &Reg(1))?;
             }
             Instruction::I64Load(memarg) => {
