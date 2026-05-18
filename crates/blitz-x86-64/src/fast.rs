@@ -412,10 +412,8 @@ pub trait WriterExt<Context>: asm_x86::out::Writer<X64FastLabel, Context> {
                 self.br(ctx, arch, state, *relative_depth)?;
             }
             Instruction::BrIf(relative_depth) => {
-                // create label
                 let i = state.label_index;
                 state.label_index += 1;
-                self.lea_label(ctx, arch, &Reg(1), X64FastLabel::Indexed { idx: i })?;
                 // pop cond
                 let t;
                 {
@@ -429,12 +427,8 @@ pub trait WriterExt<Context>: asm_x86::out::Writer<X64FastLabel, Context> {
                 }
                 let cond = Reg(t.reg);
                 self.cmp0(ctx, arch, &cond)?;
-                self.jcc(
-                    ctx,
-                    arch,
-                    portal_solutions_asm_x86_64::ConditionCode::E,
-                    &Reg(1),
-                )?;
+                // if condition is zero (false), skip the branch
+                self.jcc_label(ctx, arch, portal_solutions_asm_x86_64::ConditionCode::E, X64FastLabel::Indexed { idx: i })?;
                 // flush and branch
                 {
                     let flush = state.regalloc.as_mut().unwrap().flush();
@@ -447,7 +441,6 @@ pub trait WriterExt<Context>: asm_x86::out::Writer<X64FastLabel, Context> {
                 for relative_depth in targets.iter().cloned() {
                     let i = state.label_index;
                     state.label_index += 1;
-                    self.lea_label(ctx, arch, &Reg(1), X64FastLabel::Indexed { idx: i })?;
                     let t;
                     {
                         let (tt, cmds) = state
@@ -460,12 +453,8 @@ pub trait WriterExt<Context>: asm_x86::out::Writer<X64FastLabel, Context> {
                     }
                     let cond = Reg(t.reg);
                     self.cmp0(ctx, arch, &cond)?;
-                    self.jcc(
-                        ctx,
-                        arch,
-                        portal_solutions_asm_x86_64::ConditionCode::E,
-                        &Reg(1),
-                    )?;
+                    // if condition is zero (false), skip this arm
+                    self.jcc_label(ctx, arch, portal_solutions_asm_x86_64::ConditionCode::E, X64FastLabel::Indexed { idx: i })?;
                     {
                         let flush = state.regalloc.as_mut().unwrap().flush();
                         emit_cmds(self, ctx, arch, flush, &mut state.stack_manager)?;
@@ -563,24 +552,17 @@ pub trait WriterExt<Context>: asm_x86::out::Writer<X64FastLabel, Context> {
                     t = tt;
                 }
                 let cond = Reg(t.reg);
-                self.lea_label(ctx, arch, &Reg(0), X64FastLabel::Indexed { idx: i })?;
-                self.lea_label(ctx, arch, &Reg(1), X64FastLabel::Indexed { idx: i + 1 })?;
                 self.cmp0(ctx, arch, &cond)?;
-                self.jcc(
-                    ctx,
-                    arch,
-                    portal_solutions_asm_x86_64::ConditionCode::E,
-                    &Reg(1),
-                )?;
-                self.jmp(ctx, arch, &Reg(0))?;
+                // if condition is zero (false), jump to else branch (i+1)
+                self.jcc_label(ctx, arch, portal_solutions_asm_x86_64::ConditionCode::E, X64FastLabel::Indexed { idx: i + 1 })?;
+                // else fall through to then branch
                 self.set_label(ctx, arch, X64FastLabel::Indexed { idx: i })?;
             }
             Instruction::Else => {
                 let Endable::If { idx: i } = state.if_stack.last().unwrap() else {
                     todo!()
                 };
-                self.lea_label(ctx, arch, &Reg(0), X64FastLabel::Indexed { idx: i + 2 })?;
-                self.jmp(ctx, arch, &Reg(0))?;
+                self.jmp_label(ctx, arch, X64FastLabel::Indexed { idx: i + 2 })?;
                 self.set_label(ctx, arch, X64FastLabel::Indexed { idx: i + 1 })?;
             }
             Instruction::Loop(_blockty) => {
