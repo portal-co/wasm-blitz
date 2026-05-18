@@ -11,6 +11,7 @@ description.workspace = true
 log = []
 
 [dependencies]
+portal-solutions-blitz-codegen.workspace = true
 portal-solutions-blitz-common = { workspace = true, features = ["asm"] }
 portal-pc-asm-common = { workspace = true }
 

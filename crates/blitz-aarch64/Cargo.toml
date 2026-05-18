@@ -6,6 +6,7 @@ license.workspace = true
 description.workspace = true
 
 [dependencies]
+portal-solutions-blitz-codegen.workspace = true
 portal-solutions-blitz-common = { workspace = true, features = ["asm"] }
 portal-solutions-asm-aarch64 = { workspace = true }
 portal-solutions-asm-regalloc.workspace = true

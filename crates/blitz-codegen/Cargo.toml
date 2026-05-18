@@ -1,0 +1,8 @@
+[package]
+name = "portal-solutions-blitz-codegen"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+
+[dependencies]

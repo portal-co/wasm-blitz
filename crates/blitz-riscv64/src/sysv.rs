@@ -166,9 +166,13 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
 
                 // Trace preamble: after label, before frame setup so SysV arg
                 // regs (a0–a7, Reg 10–17) are intact for the outer-JIT tail-jump.
-                // Scratch: t0 (Reg(5)) + t1 (Reg(6)) — caller-saved, not arg regs.
-                self.emit_trace_preamble(ctx, arch, &mut state.label_index, Reg(5), data.tracing.as_ref())
-                    .map_err(Err::from)?;
+                if let Some(hooks) = data.tracing.as_ref() {
+                    let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: 6 };
+                    portal_solutions_blitz_codegen::emit_jit_preamble(
+                        &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                        5, &mut state.label_index,
+                    ).map_err(Err::from)?;
+                }
 
                 // Frame layout (from FP downward):
                 //   [FP-(1*8)]  = local 0   ← same offsets as naive, regalloc-compatible

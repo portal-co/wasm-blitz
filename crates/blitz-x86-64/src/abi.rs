@@ -48,7 +48,7 @@ pub struct SysVAbi;
 
 impl<W, Context> BackendAbi<W, Context> for NaiveAbi
 where
-    W: NaiveWriterExt<Context> + ?Sized,
+    W: NaiveWriterExt<Context>,
 {
     type Error = W::Error;
     type State = crate::naive::State;
@@ -101,11 +101,15 @@ where
         arch: X64Arch,
         state: &mut Self::State,
     ) -> Result<(), W::Error> {
-        // Emit tracing preamble here so every call-path (linear + label-jump)
-        // is instrumented. Use Reg(2) (RDX) as scratch; Reg(0)/Reg(1) hold
-        // old-CTX and return-addr that are consumed by the pushes below.
-        let tracing = state.tracing;
-        w.emit_trace_preamble(ctx, arch, &mut state.label_index, Reg(2), tracing.as_ref())?;
+        // Emit tracing preamble. Use Reg(2) (RDX) as scratch; Reg(0)/Reg(1)
+        // hold old-CTX and return-addr consumed by the pushes below.
+        if let Some(hooks) = state.tracing.as_ref() {
+            let mut bw = crate::codegen::BlitzW { writer: w, ctx, arch };
+            portal_solutions_blitz_codegen::emit_jit_preamble(
+                &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                2, &mut state.label_index,
+            )?;
+        }
         w.push(ctx, arch, &Reg(1))?;
         w.push(ctx, arch, &Reg(0))?;
         w.lea(
@@ -344,7 +348,7 @@ where
 
 impl<W, Context> BackendAbi<W, Context> for SysVAbi
 where
-    W: SysVWriterExt<Context> + ?Sized,
+    W: SysVWriterExt<Context>,
 {
     type Error = W::Error;
     type State = SysVState;
@@ -370,7 +374,13 @@ where
         // Trace preamble: after label, before frame setup so the tail-jump
         // delivers SysV arg registers (RDI/RSI/…) intact to the outer JIT.
         // Scratch: RAX (Reg(0)) — not a SysV argument register.
-        w.emit_trace_preamble(ctx, arch, &mut state.label_index, RAX, data.tracing.as_ref())?;
+        if let Some(hooks) = data.tracing.as_ref() {
+            let mut bw = crate::codegen::BlitzW { writer: w, ctx, arch };
+            portal_solutions_blitz_codegen::emit_jit_preamble(
+                &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                0, &mut state.label_index,
+            )?;
+        }
 
         // Standard AMD64 prologue
         w.push(ctx, arch, &RBP)?;

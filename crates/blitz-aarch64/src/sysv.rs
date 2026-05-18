@@ -159,8 +159,13 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 self.set_label(ctx, arch, AArch64Label::Indexed { idx: *id as usize + 0x80000000 })
                     .map_err(Err::from)?;
 
-                self.emit_trace_preamble(ctx, arch, &mut state.label_index, Reg(9), data.tracing.as_ref())
-                    .map_err(Err::from)?;
+                if let Some(hooks) = data.tracing.as_ref() {
+                    let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: 10 };
+                    portal_solutions_blitz_codegen::emit_jit_preamble(
+                        &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                        9, &mut state.label_index,
+                    ).map_err(Err::from)?;
+                }
 
                 self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16)).map_err(Err::from)?;
                 self.mov(ctx, arch, &reg(FP), &reg(SP)).map_err(Err::from)?;

@@ -158,61 +158,6 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
     ///   Use `scratch = Reg(5)` (t0); RISC-V NaiveAbi passes args on the WASM stack.
     /// - **SysVAbi**: call in `StartFn` after `set_label`, before `addi sp, sp, -N`.
     ///   Use `scratch = Reg(5)` (t0); SysV arg regs a0–a7 (Reg 10–17) are untouched.
-    fn emit_trace_preamble(
-        &mut self,
-        ctx: &mut Context,
-        arch: RiscV64Arch,
-        label_index: &mut usize,
-        scratch: Reg,
-        tracing: Option<&TracingHooks>,
-    ) -> Result<(), Self::Error>
-    where
-        Self: Sized,
-    {
-        let hooks = match tracing {
-            Some(h) => h,
-            None => return Ok(()),
-        };
-
-        let scratch2 = Reg(scratch.0 + 1); // t1
-
-        // Helper: [scratch + 0] as a 64-bit memory operand.
-        let mem_scratch = MemArgKind::Mem {
-            base: ArgKind::Reg { reg: scratch, size: MemorySize::_64 },
-            offset: None,
-            disp: 0,
-            size: MemorySize::_64,
-            reg_class: RegisterClass::Gpr,
-        };
-
-        // 1. Increment counter: li t0, addr; ld t1, 0(t0); addi t1, t1, 1; sd t1, 0(t0)
-        self.li(ctx, arch, &scratch, hooks.counter as u64)?;
-        self.ld(ctx, arch, &scratch2, &mem_scratch)?;
-        self.addi(ctx, arch, &scratch2, &scratch2, 1)?;
-        self.sd(ctx, arch, &scratch2, &mem_scratch)?;
-
-        // 2. Load specialisation fn-ptr; tail-jump if non-null.
-        // li t0, spec_addr; ld t0, 0(t0); beq t0, x0, body; jalr x0, t0, 0
-        self.li(ctx, arch, &scratch, hooks.specialization as u64)?;
-        let mem_scratch2 = MemArgKind::Mem {
-            base: ArgKind::Reg { reg: scratch, size: MemorySize::_64 },
-            offset: None,
-            disp: 0,
-            size: MemorySize::_64,
-            reg_class: RegisterClass::Gpr,
-        };
-        self.ld(ctx, arch, &scratch, &mem_scratch2)?;
-        let body_idx = *label_index;
-        *label_index += 1;
-        // beq t0, x0, body_label  (x0 = Reg(0) = zero register)
-        self.bcond_label(ctx, arch, ConditionCode::EQ, &scratch, &Reg(0),
-            RiscvLabel::Indexed { idx: body_idx })?;
-        // jalr x0, t0, 0 — indirect tail-jump, discard return addr into x0 (zero reg)
-        self.jalr(ctx, arch, &Reg(0), &scratch, 0)?;
-        self.set_label(ctx, arch, RiscvLabel::Indexed { idx: body_idx })?;
-        Ok(())
-    }
-
     fn handle_op_<E>(
         &mut self,
         ctx: &mut Context,
@@ -1644,7 +1589,13 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
 
                 // Trace preamble: after label, before frame setup.
                 // Scratch: t0 (Reg(5)) + t1 (Reg(6)) — caller-saved, not NaiveAbi arg regs.
-                self.emit_trace_preamble(ctx, arch, &mut state.label_index, Reg(5), data.tracing.as_ref()).map_err(Err::from)?;
+                if let Some(hooks) = data.tracing.as_ref() {
+                    let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: 6 };
+                    portal_solutions_blitz_codegen::emit_jit_preamble(
+                        &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                        5, &mut state.label_index,
+                    ).map_err(Err::from)?;
+                }
 
                 let sp = Reg(2);
                 let fp = Reg(8);

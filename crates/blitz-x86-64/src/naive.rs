@@ -102,59 +102,6 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
     ///
     /// The tail-jump transfers control to the outer-JIT specialisation with the
     /// current register/stack state fully intact for the ABI in question.
-    fn emit_trace_preamble(
-        &mut self,
-        ctx: &mut Context,
-        arch: X64Arch,
-        label_index: &mut usize,
-        scratch: Reg,
-        tracing: Option<&TracingHooks>,
-    ) -> Result<(), Self::Error> {
-        let hooks = match tracing {
-            Some(h) => h,
-            None => return Ok(()),
-        };
-
-        // 1. Increment invocation counter: [counter] += 1 (non-atomic, approximate).
-        let counter_addr = hooks.counter as u64;
-        self.mov64(ctx, arch, &scratch, counter_addr)?;
-        self.add(
-            ctx,
-            arch,
-            &MemArgKind::Mem {
-                base: ArgKind::Reg { reg: scratch, size: MemorySize::_64 },
-                offset: None,
-                disp: 0,
-                size: MemorySize::_64,
-                reg_class: RegisterClass::Gpr,
-            },
-            &MemArgKind::NoMem(ArgKind::Lit(1)),
-        )?;
-
-        // 2. Load specialisation fn-ptr; tail-jump if non-null.
-        let spec_addr = hooks.specialization as u64;
-        self.mov64(ctx, arch, &scratch, spec_addr)?;
-        self.mov(
-            ctx,
-            arch,
-            &scratch,
-            &MemArgKind::Mem {
-                base: ArgKind::Reg { reg: scratch, size: MemorySize::_64 },
-                offset: None,
-                disp: 0,
-                size: MemorySize::_64,
-                reg_class: RegisterClass::Gpr,
-            },
-        )?;
-        let body_idx = *label_index;
-        *label_index += 1;
-        self.cmp0(ctx, arch, &scratch)?;
-        self.jcc_label(ctx, arch, ConditionCode::E, X64Label::Indexed { idx: body_idx })?;
-        self.jmp(ctx, arch, &scratch)?;
-        self.set_label(ctx, arch, X64Label::Indexed { idx: body_idx })?;
-        Ok(())
-    }
-
     /// Generates x86-64 assembly code for a machine operator.
     ///
     /// Main entry point for translating WASM machine operators into x86-64
@@ -181,6 +128,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         target: u32,
     ) -> Result<(), Err>
     where
+        Self: Sized,
         Err: From<Self::Error> + From<reencode::Error<E>>,
     {
         if target != state.body {
@@ -244,9 +192,13 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 }
             }
             MachOperator::StartBody => {
-                let tracing = state.tracing;
-                let label_idx = &mut state.label_index;
-                self.emit_trace_preamble(ctx, arch, label_idx, Reg(2), tracing.as_ref()).map_err(Err::from)?;
+                if let Some(hooks) = state.tracing.as_ref() {
+                    let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch };
+                    portal_solutions_blitz_codegen::emit_jit_preamble(
+                        &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                        2, &mut state.label_index,
+                    ).map_err(Err::from)?;
+                }
                 self.push(ctx, arch, &Reg(1)).map_err(Err::from)?;
                 self.push(ctx, arch, &Reg(0)).map_err(Err::from)?;
                 self.lea(
@@ -303,7 +255,10 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         tags: &[u32],
         op: &Instruction<'_>,
         target: u32,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
         if target != state.body {
             // On the very first instruction `state.body == 0` is the Default
             // value rather than a real prior body.  Emitting a skip jump

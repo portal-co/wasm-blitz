@@ -58,6 +58,8 @@ impl Display for AArch64Label {
 pub trait Label: portal_solutions_blitz_common::Label<AArch64Label> {}
 impl<T: portal_solutions_blitz_common::Label<AArch64Label> + ?Sized> Label for T {}
 
+/// [`blitz_codegen::BlitzWriter`] implementation for AArch64.
+pub mod codegen;
 /// Naive code generation implementation.
 pub mod naive;
 /// System V (AAPCS64) ABI code generation.

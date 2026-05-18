@@ -628,41 +628,6 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
     ///   Use `scratch = T0` (x9); FP and LR hold frame/return-addr.
     /// - **SysVAbi**: call from `StartFn` after `set_label`, before frame setup.
     ///   Use `scratch = T0` (x9); SysV arg regs (x0–x7) are untouched.
-    fn emit_trace_preamble(
-        &mut self,
-        ctx: &mut Context,
-        arch: AArch64Arch,
-        label_index: &mut usize,
-        scratch: Reg,
-        tracing: Option<&TracingHooks>,
-    ) -> Result<(), Self::Error> {
-        let hooks = match tracing {
-            Some(h) => h,
-            None => return Ok(()),
-        };
-
-        let scratch2 = Reg(scratch.0 + 1); // T1, one register above scratch
-
-        // 1. Increment counter: load → add 1 → store.
-        let counter_addr = hooks.counter as u64;
-        self.mov_imm(ctx, arch, &reg(scratch), counter_addr)?;
-        self.ldr(ctx, arch, &reg(scratch2), &mem_base_disp(scratch, 0))?;
-        self.add(ctx, arch, &reg(scratch2), &reg(scratch2), &MemArgKind::NoMem(ArgKind::Lit(1)))?;
-        self.str(ctx, arch, &reg(scratch2), &mem_base_disp(scratch, 0))?;
-
-        // 2. Load specialisation fn-ptr; tail-jump if non-null.
-        let spec_addr = hooks.specialization as u64;
-        self.mov_imm(ctx, arch, &reg(scratch), spec_addr)?;
-        self.ldr(ctx, arch, &reg(scratch), &mem_base_disp(scratch, 0))?;
-        self.cmp(ctx, arch, &reg(scratch), &MemArgKind::NoMem(ArgKind::Lit(0)))?;
-        let body_idx = *label_index;
-        *label_index += 1;
-        self.bcond_label(ctx, arch, ConditionCode::EQ, AArch64Label::Indexed { idx: body_idx })?;
-        self.br(ctx, arch, &reg(scratch))?;
-        self.set_label(ctx, arch, AArch64Label::Indexed { idx: body_idx })?;
-        Ok(())
-    }
-
     /// Handle a `MachOperator` (the outer match, called by the pipeline).
     fn handle_op<E, Err>(
         &mut self,
@@ -688,7 +653,13 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
 
                 self.set_label(ctx, arch, AArch64Label::Func { r#fn: *id }).map_err(Err::from)?;
 
-                self.emit_trace_preamble(ctx, arch, &mut state.label_index, T0, data.tracing.as_ref()).map_err(Err::from)?;
+                if let Some(hooks) = data.tracing.as_ref() {
+                    let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: T1.0 };
+                    portal_solutions_blitz_codegen::emit_jit_preamble(
+                        &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                        T0.0, &mut state.label_index,
+                    ).map_err(Err::from)?;
+                }
 
                 self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16)).map_err(Err::from)?;
                 self.mov(ctx, arch, &reg(FP), &reg(SP)).map_err(Err::from)?;

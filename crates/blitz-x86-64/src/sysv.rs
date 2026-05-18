@@ -392,9 +392,13 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                     idx: *id as usize | (1 << 28),
                 }).map_err(Err::from)?;
 
-                self.emit_trace_preamble(
-                    ctx, arch, &mut state.label_index, RAX, data.tracing.as_ref(),
-                ).map_err(Err::from)?;
+                if let Some(hooks) = data.tracing.as_ref() {
+                    let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch };
+                    portal_solutions_blitz_codegen::emit_jit_preamble(
+                        &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                        0, &mut state.label_index,
+                    ).map_err(Err::from)?;
+                }
 
                 self.push(ctx, arch, &RBP).map_err(Err::from)?;
                 self.mov(ctx, arch, &RBP, &RSP).map_err(Err::from)?;
