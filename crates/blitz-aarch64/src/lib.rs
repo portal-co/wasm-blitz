@@ -66,5 +66,7 @@ pub mod naive;
 pub mod sysv;
 /// BackendAbi implementations for AArch64.
 pub mod abi;
+/// LFI-compliant sandboxed code generation for AArch64.
+pub mod lfi;
 /// `wax-core` `InstructionSink` / `OperatorSink` impls for the AArch64 backend.
 pub mod sink;

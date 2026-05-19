@@ -82,5 +82,9 @@ pub mod sysv;
 ///
 /// Contains the naive (straightforward) code generation strategy for x86-64.
 pub mod naive;
+/// LFI-compliant sandboxed code generation.
+///
+/// Generates x86-64 code that passes `lfi-verify --arch x64`.
+pub mod lfi;
 /// `wax-core` `InstructionSink` / `OperatorSink` impls for the x86-64 backend.
 pub mod sink;

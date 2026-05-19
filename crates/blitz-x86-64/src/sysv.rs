@@ -62,6 +62,7 @@ fn mem64(base: Reg, disp: u32) -> MemArgKind {
         disp,
         size: MemorySize::_64,
         reg_class: RegisterClass::Gpr,
+        segment: Default::default(),
     }
 }
 
@@ -336,6 +337,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                         self.lea(ctx, arch, &RAX, &MemArgKind::Mem {
                             base: RAX, offset: None, disp: 0u32.wrapping_sub(1),
                             size: MemorySize::_64, reg_class: RegisterClass::Gpr,
+                            segment: Default::default(),
                         })?;
                     }
                 }

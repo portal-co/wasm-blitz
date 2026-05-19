@@ -2206,6 +2206,7 @@ enum NativeArch {
 enum NativeAbi {
     Naive,
     Sysv,
+    Lfi,
 }
 
 fn compile_native_asm(wasm: &[u8], arch: NativeArch, abi: NativeAbi) -> String {
@@ -2289,6 +2290,31 @@ fn compile_native_asm(wasm: &[u8], arch: NativeArch, abi: NativeAbi) -> String {
                     &mut state, &[], &op, &mut reencoder, 0,
                 ).unwrap();
             }
+        }
+        (NativeArch::X86_64, NativeAbi::Lfi) => {
+            use portal_solutions_blitz_x86_64::{lfi, X64Arch};
+            let mut state = lfi::State::default();
+            for op in ops {
+                let op = op.unwrap();
+                lfi::LfiWriterExt::lfi_handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, X64Arch::default(),
+                    &mut state, &[], &[], &[], &op, &mut reencoder, 0,
+                ).unwrap();
+            }
+        }
+        (NativeArch::AArch64, NativeAbi::Lfi) => {
+            use portal_solutions_blitz_aarch64::{lfi, AArch64Arch};
+            let mut state = lfi::State::default();
+            for op in ops {
+                let op = op.unwrap();
+                lfi::LfiWriterExt::lfi_handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, AArch64Arch::default(),
+                    &mut state, &[], &[], &[], &op, &mut reencoder, 0,
+                ).unwrap();
+            }
+        }
+        (NativeArch::Riscv64, NativeAbi::Lfi) => {
+            panic!("LFI not implemented for RISC-V 64");
         }
     }
 
@@ -2838,6 +2864,7 @@ fn assert_native_compile_module_with_memory(arch: NativeArch, abi: NativeAbi) {
         NativeAbi::Sysv => assert_eq!(run_native_sysv_const(arch, &code), 1,
             "memory.size should return 1 page for {arch:?} sysv"),
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
+    NativeAbi::Lfi => {}
     }
 }
 
@@ -2900,6 +2927,7 @@ fn assert_native_compile_module_with_data(arch: NativeArch, abi: NativeAbi) {
             "i32.load should return 42 for {arch:?} sysv",
         ),
         NativeAbi::Naive => run_native_naive_smoke_with_mem(arch, &code, NATIVE_WASM_MEM, &data),
+    NativeAbi::Lfi => {}
     }
 }
 
@@ -3066,6 +3094,7 @@ fn assert_native_compile_module_with_import(arch: NativeArch, abi: NativeAbi) {
                 ).unwrap();
             }
         }
+    (_, NativeAbi::Lfi) => panic!("LFI not supported in this test helper"),
     }
     let base_asm = normalize_native_asm(arch, out.0);
     let asm = format!("{base_asm}{}", import_stub_add_one(arch));
@@ -3077,6 +3106,7 @@ fn assert_native_compile_module_with_import(arch: NativeArch, abi: NativeAbi) {
             "env::add_one(42) should return 43 for {arch:?} sysv",
         ),
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
+    NativeAbi::Lfi => {}
     }
 }
 
@@ -3391,6 +3421,7 @@ fn compile_native_binary(wasm: &[u8], arch: NativeArch, abi: NativeAbi) -> Vec<u
             }
             out.into_bytes()
         }
+    (_, NativeAbi::Lfi) => panic!("LFI not supported in this test helper"),
     }
 }
 
@@ -3482,6 +3513,7 @@ fn compile_native_asm_with_imports(
                 ).unwrap();
             }
         }
+    (_, NativeAbi::Lfi) => panic!("LFI not supported in this test helper"),
     }
 
     normalize_native_asm(arch, out.0)
@@ -3499,6 +3531,7 @@ fn assert_native_exec_const(arch: NativeArch, abi: NativeAbi) {
     match abi {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => assert_eq!(run_native_sysv_with_args(arch, &code, &[]) as u32, 42),
+    NativeAbi::Lfi => {}
     }
 }
 native_variants!(exec_const, assert_native_exec_const);
@@ -3511,6 +3544,7 @@ fn assert_native_bin_exec_const(arch: NativeArch, abi: NativeAbi) {
     match abi {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => assert_eq!(run_native_sysv_with_args(arch, &code, &[]) as u32, 42),
+    NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_const, assert_native_bin_exec_const);
@@ -3524,6 +3558,7 @@ fn assert_native_exec_i64const(arch: NativeArch, abi: NativeAbi) {
     match abi {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => assert_eq!(run_native_sysv_with_args(arch, &code, &[]), val),
+    NativeAbi::Lfi => {}
     }
 }
 native_variants!(exec_i64const, assert_native_exec_i64const);
@@ -3536,6 +3571,7 @@ fn assert_native_bin_exec_i64const(arch: NativeArch, abi: NativeAbi) {
     match abi {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => assert_eq!(run_native_sysv_with_args(arch, &code, &[]), val),
+    NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_i64const, assert_native_bin_exec_i64const);
@@ -3567,6 +3603,7 @@ fn assert_native_bin_exec_add(arch: NativeArch, abi: NativeAbi) {
             assert_eq!(run_native_sysv_with_args(arch, &code, &[5, 3]) as u32, 8);
             assert_eq!(run_native_sysv_with_args(arch, &code, &[100, 200]) as u32, 300);
         }
+    NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_add, assert_native_bin_exec_add);
@@ -3598,6 +3635,7 @@ fn assert_native_bin_exec_sub(arch: NativeArch, abi: NativeAbi) {
             assert_eq!(run_native_sysv_with_args(arch, &code, &[10, 3]) as u32, 7);
             assert_eq!(run_native_sysv_with_args(arch, &code, &[3, 10]) as u32, (-7i32) as u32);
         }
+    NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_sub, assert_native_bin_exec_sub);
@@ -3625,6 +3663,7 @@ fn assert_native_bin_exec_divu(arch: NativeArch, abi: NativeAbi) {
     match abi {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => assert_eq!(run_native_sysv_with_args(arch, &code, &[10, 2]) as u32, 5),
+    NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_divu, assert_native_bin_exec_divu);
@@ -3652,6 +3691,7 @@ fn assert_native_bin_exec_localset(arch: NativeArch, abi: NativeAbi) {
     match abi {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => assert_eq!(run_native_sysv_with_args(arch, &code, &[0]) as u32, 77),
+    NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_localset, assert_native_bin_exec_localset);
@@ -3679,6 +3719,7 @@ fn assert_native_bin_exec_i64sub(arch: NativeArch, abi: NativeAbi) {
     match abi {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => assert_eq!(run_native_sysv_with_args(arch, &code, &[100, 37]), 63),
+    NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_i64sub, assert_native_bin_exec_i64sub);
@@ -3706,6 +3747,7 @@ fn assert_native_bin_exec_shl(arch: NativeArch, abi: NativeAbi) {
     match abi {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => assert_eq!(run_native_sysv_with_args(arch, &code, &[3, 4]) as u32, 48),
+    NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_shl, assert_native_bin_exec_shl);
@@ -3767,6 +3809,7 @@ fn assert_native_bin_exec_brtable(arch: NativeArch, abi: NativeAbi) {
             assert_eq!(run_native_sysv_with_args(arch, &code, &[1]) as u32, 10,
                 "selector 1 → 10 for {arch:?}");
         }
+    NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_brtable, assert_native_bin_exec_brtable);
@@ -3830,6 +3873,7 @@ fn assert_native_bin_exec_loop_counter(arch: NativeArch, abi: NativeAbi) {
             assert_eq!(run_native_sysv_with_args(arch, &code, &[5]) as u32, 5);
             assert_eq!(run_native_sysv_with_args(arch, &code, &[10]) as u32, 10);
         }
+    NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_loop_counter, assert_native_bin_exec_loop_counter);
@@ -3877,6 +3921,7 @@ fn assert_native_bin_exec_i64_store_load(arch: NativeArch, abi: NativeAbi) {
             assert_eq!(run_native_sysv_with_args_and_mem(arch, &code, &[NATIVE_WASM_MEM, 42], NATIVE_WASM_MEM, 65536), 42);
             assert_eq!(run_native_sysv_with_args_and_mem(arch, &code, &[NATIVE_WASM_MEM, u64::MAX], NATIVE_WASM_MEM, 65536), u64::MAX);
         }
+    NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_i64_store_load, assert_native_bin_exec_i64_store_load);
@@ -3919,6 +3964,7 @@ fn assert_native_bin_exec_i32_store_load(arch: NativeArch, abi: NativeAbi) {
             run_native_sysv_with_args_and_mem(arch, &code, &[NATIVE_WASM_MEM, 0xDEAD], NATIVE_WASM_MEM, 65536) as u32,
             0xDEAD,
         ),
+    NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_i32_store_load, assert_native_bin_exec_i32_store_load);
@@ -4364,5 +4410,246 @@ fn test_no_throw_normal_exit_c() {
     let c = compile_c_exc(&wasm);
     let result = run_c(&c, 0, &[], 1);
     assert_eq!(result, vec![77]);
+}
+
+// ---------------------------------------------------------------------------
+// LFI tests
+// ---------------------------------------------------------------------------
+
+/// Path to the lfi-verify binary (built from lfi-verifier source).
+/// Set LFI_VERIFY env var or fall back to the build location.
+fn lfi_verify_binary() -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("LFI_VERIFY") {
+        return Some(std::path::PathBuf::from(p));
+    }
+    // Default location after `meson setup build && ninja -C build`
+    let p = std::path::PathBuf::from("/tmp/lfi-verifier/build/lfi-verify");
+    if p.exists() { Some(p) } else { None }
+}
+
+/// Wrap raw code bytes in a minimal ELF64 binary suitable for lfi-verify.
+///
+/// lfi-verify reads PT_LOAD segments with PF_X from an ELF64 binary.
+/// We create the simplest possible ELF: one PT_LOAD segment at virtual
+/// address 0x1000 containing the code bytes.
+fn wrap_in_elf64(code: &[u8], machine: u16) -> Vec<u8> {
+    // ELF64 header: 64 bytes
+    // Program header: 56 bytes
+    // Total header: 120 bytes; pad to 0x1000 so code starts at vaddr 0x1000
+    let hdr_size: u64 = 64;
+    let phdr_size: u64 = 56;
+    let code_offset: u64 = 0x1000; // file offset where code starts
+    let vaddr: u64 = 0x1000;       // virtual address of code (32-byte aligned)
+    let filesz: u64 = code.len() as u64;
+    let memsz: u64 = filesz;
+
+    let mut buf: Vec<u8> = Vec::with_capacity(code_offset as usize + code.len());
+
+    // ELF magic + class=64bit + data=LE + version=1 + OS/ABI=SYSV + pad
+    buf.extend_from_slice(b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00");
+    // e_type=ET_EXEC(2), e_machine, e_version=1
+    buf.extend_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+    buf.extend_from_slice(&machine.to_le_bytes());
+    buf.extend_from_slice(&1u32.to_le_bytes()); // e_version
+    buf.extend_from_slice(&vaddr.to_le_bytes()); // e_entry
+    buf.extend_from_slice(&hdr_size.to_le_bytes()); // e_phoff (program headers after ELF header)
+    buf.extend_from_slice(&0u64.to_le_bytes()); // e_shoff (no section headers)
+    buf.extend_from_slice(&0u32.to_le_bytes()); // e_flags
+    buf.extend_from_slice(&(hdr_size as u16).to_le_bytes()); // e_ehsize
+    buf.extend_from_slice(&(phdr_size as u16).to_le_bytes()); // e_phentsize
+    buf.extend_from_slice(&1u16.to_le_bytes()); // e_phnum
+    buf.extend_from_slice(&64u16.to_le_bytes()); // e_shentsize
+    buf.extend_from_slice(&0u16.to_le_bytes()); // e_shnum
+    buf.extend_from_slice(&0u16.to_le_bytes()); // e_shstrndx
+
+    // PT_LOAD program header (56 bytes)
+    buf.extend_from_slice(&1u32.to_le_bytes()); // p_type = PT_LOAD
+    buf.extend_from_slice(&5u32.to_le_bytes()); // p_flags = PF_R|PF_X
+    buf.extend_from_slice(&code_offset.to_le_bytes()); // p_offset
+    buf.extend_from_slice(&vaddr.to_le_bytes()); // p_vaddr
+    buf.extend_from_slice(&vaddr.to_le_bytes()); // p_paddr
+    buf.extend_from_slice(&filesz.to_le_bytes()); // p_filesz
+    buf.extend_from_slice(&memsz.to_le_bytes()); // p_memsz
+    buf.extend_from_slice(&0x1000u64.to_le_bytes()); // p_align
+
+    // Pad to code_offset
+    while buf.len() < code_offset as usize {
+        buf.push(0);
+    }
+
+    buf.extend_from_slice(code);
+    buf
+}
+
+/// Run lfi-verify on an ELF binary and return true if it passes.
+fn run_lfi_verify(elf: &[u8], arch_flag: &str) -> Result<bool, String> {
+    use std::io::Write as _;
+    let lfi = lfi_verify_binary().ok_or_else(|| {
+        "lfi-verify not found; set LFI_VERIFY env var or build from /tmp/lfi-verifier".to_string()
+    })?;
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let elf_path = std::env::temp_dir().join(format!("blitz_lfi_{pid}_{seq}.elf"));
+    std::fs::File::create(&elf_path)
+        .and_then(|mut f| f.write_all(elf))
+        .map_err(|e| e.to_string())?;
+    let out = std::process::Command::new(&lfi)
+        .args(["--arch", arch_flag, elf_path.to_str().unwrap()])
+        .output()
+        .map_err(|e| format!("failed to run lfi-verify: {e}"))?;
+    let _ = std::fs::remove_file(&elf_path);
+    Ok(out.status.success())
+}
+
+/// Compile WASM to LFI x86-64 assembly, assemble it, and return (text, bytes).
+///
+/// Inserts `.bundle_align_mode 5` so GNU as automatically pads instructions
+/// that would cross 32-byte bundle boundaries — exactly what lfi-verify requires.
+fn compile_lfi_x64(wasm: &[u8]) -> (String, Vec<u8>) {
+    let raw_asm = compile_native_asm(wasm, NativeArch::X86_64, NativeAbi::Lfi);
+    // Insert bundle-align directive right after the .intel_syntax header line.
+    let asm = raw_asm.replacen(
+        ".intel_syntax noprefix\n",
+        ".intel_syntax noprefix\n.bundle_align_mode 5\n",
+        1,
+    );
+    let bytes = assemble_native_text(NativeArch::X86_64, &asm)
+        .expect("LFI x86-64 assembly failed");
+    (asm, bytes)
+}
+
+/// Compile WASM to LFI AArch64 assembly, assemble it, and return (text, bytes).
+fn compile_lfi_aarch64(wasm: &[u8]) -> (String, Vec<u8>) {
+    let asm = compile_native_asm(wasm, NativeArch::AArch64, NativeAbi::Lfi);
+    let bytes = assemble_native_text(NativeArch::AArch64, &asm)
+        .expect("LFI AArch64 assembly failed");
+    (asm, bytes)
+}
+
+// ── LFI assertion helpers ──────────────────────────────────────────────────
+
+fn assert_lfi_x64_no_ret(asm: &str) {
+    for line in asm.lines() {
+        let t = line.trim();
+        // Bare `ret` not inside a label/symbol name
+        if t == "ret" || t.starts_with("ret ") || t.starts_with("ret\t") {
+            panic!("LFI x86-64 output contains forbidden `ret` instruction:\n{asm}");
+        }
+    }
+}
+
+fn assert_lfi_x64_gs_memory(asm: &str) {
+    // Any memory load/store must use gs: prefix (if memory instructions are present)
+    let has_memory_load = asm.lines().any(|l| {
+        let t = l.trim();
+        (t.starts_with("mov ") || t.starts_with("movzx ") || t.starts_with("movsx "))
+            && t.contains("ptr [") && !t.contains("ptr gs:[") && !t.contains("ptr [rsp") && !t.contains("ptr [r14")
+    });
+    if has_memory_load {
+        panic!("LFI x86-64 output has unsandboxed memory operand:\n{asm}");
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_lfi_x64_no_ret_simple() {
+    // A function that returns a constant — must not contain `ret`.
+    let wasm = make_module(&[], &[ValType::I64], &[
+        Instruction::I64Const(42),
+    ]);
+    let (asm, _bytes) = compile_lfi_x64(&wasm);
+    assert_lfi_x64_no_ret(&asm);
+    assert!(asm.contains("jmp"), "LFI return should use jmp (rtcall), got:\n{asm}");
+    assert!(asm.contains(".balign 32") || asm.contains(".align 32"),
+        "LFI should emit 32-byte alignment, got:\n{asm}");
+}
+
+#[test]
+fn test_lfi_x64_no_ret_add() {
+    // Stack-based add — must not contain `ret` in generated code.
+    let wasm = make_module(&[], &[ValType::I64], &[
+        Instruction::I64Const(5),
+        Instruction::I64Const(3),
+        Instruction::I64Add,
+    ]);
+    let (asm, _bytes) = compile_lfi_x64(&wasm);
+    assert_lfi_x64_no_ret(&asm);
+}
+
+#[test]
+fn test_lfi_x64_assembles() {
+    // The generated LFI assembly must assemble without errors.
+    let wasm = make_module(&[], &[ValType::I64], &[
+        Instruction::I64Const(99),
+    ]);
+    let (asm, bytes) = compile_lfi_x64(&wasm);
+    assert!(!bytes.is_empty(), "assembled output should not be empty, asm:\n{asm}");
+}
+
+#[test]
+fn test_lfi_x64_verify() {
+    // Full pipeline: compile → assemble → lfi-verify.
+    // Skip if lfi-verify binary is not available.
+    if lfi_verify_binary().is_none() {
+        eprintln!("SKIP: lfi-verify not found; set LFI_VERIFY or build from /tmp/lfi-verifier");
+        return;
+    }
+    let wasm = make_module(&[], &[ValType::I64], &[
+        Instruction::I64Const(42),
+    ]);
+    let (asm, bytes) = compile_lfi_x64(&wasm);
+    // Wrap raw text section bytes in a minimal ELF64 (EM_X86_64 = 62).
+    let elf = wrap_in_elf64(&bytes, 62);
+    match run_lfi_verify(&elf, "x64") {
+        Ok(true) => {} // ✓
+        Ok(false) => panic!("lfi-verify REJECTED generated code.\nAssembly:\n{asm}"),
+        Err(e) => panic!("lfi-verify error: {e}"),
+    }
+}
+
+#[test]
+fn test_lfi_x64_verify_add() {
+    // Test stack-based add (not local-based: local variable access via xchg rsp/CTX
+    // is not yet LFI-compliant; that requires RSP-relative tracking, future work).
+    if lfi_verify_binary().is_none() { return; }
+    let wasm = make_module(&[], &[ValType::I64], &[
+        Instruction::I64Const(10),
+        Instruction::I64Const(32),
+        Instruction::I64Add,
+    ]);
+    let (asm, bytes) = compile_lfi_x64(&wasm);
+    let elf = wrap_in_elf64(&bytes, 62);
+    match run_lfi_verify(&elf, "x64") {
+        Ok(true) => {}
+        Ok(false) => panic!("lfi-verify REJECTED add function:\n{asm}"),
+        Err(e) => panic!("lfi-verify error: {e}"),
+    }
+}
+
+#[test]
+fn test_lfi_aarch64_assembles() {
+    // The generated LFI AArch64 assembly must assemble without errors.
+    let wasm = make_module(&[], &[ValType::I64], &[
+        Instruction::I64Const(77),
+    ]);
+    let (asm, bytes) = compile_lfi_aarch64(&wasm);
+    assert!(!bytes.is_empty(), "assembled AArch64 LFI output should not be empty, asm:\n{asm}");
+}
+
+#[test]
+fn test_lfi_aarch64_verify() {
+    if lfi_verify_binary().is_none() { return; }
+    let wasm = make_module(&[], &[ValType::I64], &[
+        Instruction::I64Const(77),
+    ]);
+    let (asm, bytes) = compile_lfi_aarch64(&wasm);
+    // EM_AARCH64 = 183
+    let elf = wrap_in_elf64(&bytes, 183);
+    match run_lfi_verify(&elf, "arm64") {
+        Ok(true) => {}
+        Ok(false) => panic!("lfi-verify REJECTED AArch64 code:\n{asm}"),
+        Err(e) => panic!("lfi-verify error: {e}"),
+    }
 }
 

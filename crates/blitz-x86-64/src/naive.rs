@@ -180,6 +180,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 0u32.wrapping_sub(*params as u32),
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 ).map_err(Err::from)?;
                 self.xchg(ctx, arch, &Reg(0), &Reg::CTX).map_err(Err::from)?;
@@ -211,6 +212,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 0u32.wrapping_sub(state.control_depth as u32 * 16),
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 ).map_err(Err::from)?;
                 self.xchg(ctx, arch, &Reg(0), &Reg::CTX).map_err(Err::from)?;
@@ -318,6 +320,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 0,
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 if let Instruction::I32Add = op {
@@ -339,6 +342,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 1,
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 if let Instruction::I32Sub = op {
@@ -472,6 +476,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 1,
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 self.mov64(ctx, arch, &Reg(1), 0)?;
@@ -493,6 +498,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 1,
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 self.mov64(ctx, arch, &Reg(1), 1)?;
@@ -513,6 +519,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 0,
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 // Dereference: load 64-bit value from [rax] into rax.
@@ -522,6 +529,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     disp: 0,
                     size: MemorySize::_64,
                     reg_class: RegisterClass::Gpr,
+                    segment: Default::default(),
                 })?;
                 self.push(ctx, arch, &Reg(0))?;
             }
@@ -539,6 +547,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 0,
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 // Store 64-bit value from RDX to [RAX].
@@ -548,6 +557,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     disp: 0,
                     size: MemorySize::_64,
                     reg_class: RegisterClass::Gpr,
+                    segment: Default::default(),
                 }, &Reg(2))?;
             }
             Instruction::I32Load(memarg) => {
@@ -563,6 +573,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 0,
                         size: MemorySize::_32,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 // Dereference: load 32-bit value into eax (zero-extends to rax).
@@ -580,6 +591,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 0,
                         size: MemorySize::_32,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 self.push(ctx, arch, &Reg(0))?;
@@ -598,6 +610,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 0,
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 // Store 32-bit value from EDX to [RAX].
@@ -608,6 +621,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     disp: 0,
                     size: MemorySize::_32,
                     reg_class: RegisterClass::Gpr,
+                    segment: Default::default(),
                 }, &edx)?;
             }
             Instruction::LocalGet(local_index) => {
@@ -622,6 +636,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 0u32.wrapping_sub(((*local_index as i32 as isize) * 8) as u32),
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 self.pop(ctx, arch, &Reg(0))?;
@@ -635,6 +650,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 0u32.wrapping_sub(((*local_index as i32 as isize + 1) * 8) as u32),
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
@@ -653,6 +669,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 0u32.wrapping_sub(((*local_index as i32 as isize) * 8) as u32),
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 self.push(ctx, arch, &Reg(0))?;
@@ -666,6 +683,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 0u32.wrapping_sub(((*local_index as i32 as isize + 1) * 8) as u32),
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
@@ -684,6 +702,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 0u32.wrapping_sub(((*local_index as i32 as isize) * 8) as u32),
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 self.push(ctx, arch, &Reg(0))?;
@@ -697,6 +716,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 0u32.wrapping_sub(((*local_index as i32 as isize + 1) * 8) as u32),
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
@@ -717,6 +737,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 0u32.wrapping_sub(8),
                         size: MemorySize::_64,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 self.mov(ctx, arch, &RSP, &Reg(0))?;
@@ -763,6 +784,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                             disp: 0xffff_ffff,
                             size: MemorySize::_64,
                             reg_class: RegisterClass::Gpr,
+                            segment: Default::default(),
                         },
                     )?;
                     self.push(ctx, arch, &Reg(0))?;
@@ -965,6 +987,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         disp: 0,
                         size: MemorySize::_32,
                         reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 self.push(ctx, arch, &Reg(0))?;

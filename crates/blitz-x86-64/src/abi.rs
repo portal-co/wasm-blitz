@@ -79,6 +79,7 @@ where
                 disp: 0u32.wrapping_sub(data.num_params as u32),
                 size: MemorySize::_64,
                 reg_class: RegisterClass::Gpr,
+                segment: Default::default(),
             },
         )?;
         w.xchg(ctx, arch, &Reg(0), &Reg::CTX)?;
@@ -122,6 +123,7 @@ where
                 disp: 0u32.wrapping_sub(state.control_depth as u32 * 16),
                 size: MemorySize::_64,
                 reg_class: RegisterClass::Gpr,
+                segment: Default::default(),
             },
         )?;
         w.xchg(ctx, arch, &Reg(0), &Reg::CTX)?;
@@ -151,6 +153,7 @@ where
                 disp: 0u32.wrapping_sub((n as isize * 8) as u32),
                 size: MemorySize::_64,
                 reg_class: RegisterClass::Gpr,
+                segment: Default::default(),
             },
         )?;
         w.pop(ctx, arch, &Reg(0))?;
@@ -164,6 +167,7 @@ where
                 disp: 0u32.wrapping_sub(((n as isize + 1) * 8) as u32),
                 size: MemorySize::_64,
                 reg_class: RegisterClass::Gpr,
+                segment: Default::default(),
             },
         )?;
         w.xchg(ctx, arch, &RSP, &Reg::CTX)?;
@@ -189,6 +193,7 @@ where
                 disp: 0u32.wrapping_sub((n as isize * 8) as u32),
                 size: MemorySize::_64,
                 reg_class: RegisterClass::Gpr,
+                segment: Default::default(),
             },
         )?;
         w.push(ctx, arch, &Reg(0))?;
@@ -202,6 +207,7 @@ where
                 disp: 0u32.wrapping_sub(((n as isize + 1) * 8) as u32),
                 size: MemorySize::_64,
                 reg_class: RegisterClass::Gpr,
+                segment: Default::default(),
             },
         )?;
         w.xchg(ctx, arch, &RSP, &Reg::CTX)
@@ -226,6 +232,7 @@ where
                 disp: 0u32.wrapping_sub((n as isize * 8) as u32),
                 size: MemorySize::_64,
                 reg_class: RegisterClass::Gpr,
+                segment: Default::default(),
             },
         )?;
         w.push(ctx, arch, &Reg(0))?;
@@ -239,6 +246,7 @@ where
                 disp: 0u32.wrapping_sub(((n as isize + 1) * 8) as u32),
                 size: MemorySize::_64,
                 reg_class: RegisterClass::Gpr,
+                segment: Default::default(),
             },
         )?;
         w.xchg(ctx, arch, &RSP, &Reg::CTX)?;
@@ -325,6 +333,7 @@ where
                 disp: (state.local_count + 3 * 8) as u32,
                 size: MemorySize::_8,
                 reg_class: RegisterClass::Gpr,
+                segment: Default::default(),
             },
         )?;
         w.mov(ctx, arch, &RSP, &Reg(0))?;

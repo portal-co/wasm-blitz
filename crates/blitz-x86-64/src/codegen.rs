@@ -60,6 +60,7 @@ where
                 offset: None, disp: 0,
                 size: MemorySize::_64,
                 reg_class: RegisterClass::Gpr,
+                segment: Default::default(),
             },
             &MemArgKind::NoMem(ArgKind::Lit(1)),
         )
@@ -74,6 +75,7 @@ where
                 offset: None, disp: 0,
                 size: MemorySize::_64,
                 reg_class: RegisterClass::Gpr,
+                segment: Default::default(),
             },
         )
     }

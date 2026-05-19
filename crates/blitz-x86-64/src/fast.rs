@@ -134,6 +134,7 @@ pub trait WriterExt<Context>: asm_x86::out::Writer<X64FastLabel, Context> {
             disp: 8u32,
             size: MemorySize::_64,
             reg_class: asm_x86::RegisterClass::Gpr,
+            segment: Default::default(),
         };
         self.xchg(ctx, arch, &rsp_mem, &Reg::CTX)?;
         for _ in 0..=relative_depth {
@@ -146,6 +147,7 @@ pub trait WriterExt<Context>: asm_x86::out::Writer<X64FastLabel, Context> {
             disp: 8u32,
             size: MemorySize::_64,
             reg_class: asm_x86::RegisterClass::Gpr,
+            segment: Default::default(),
         };
         self.xchg(ctx, arch, &rsp_mem, &Reg::CTX)?;
         self.mov(ctx, arch, &RSP, &Reg(1))?;
@@ -275,6 +277,7 @@ pub trait WriterExt<Context>: asm_x86::out::Writer<X64FastLabel, Context> {
                         disp: 0,
                         size: MemorySize::_64,
                         reg_class: asm_x86::RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 // push existing
@@ -348,6 +351,7 @@ pub trait WriterExt<Context>: asm_x86::out::Writer<X64FastLabel, Context> {
                         disp: 0,
                         size: MemorySize::_64,
                         reg_class: asm_x86::RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 self.mov(ctx, arch, &addr, &addr)?;
@@ -399,6 +403,7 @@ pub trait WriterExt<Context>: asm_x86::out::Writer<X64FastLabel, Context> {
                         disp: 0,
                         size: MemorySize::_64,
                         reg_class: asm_x86::RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 self.xchg(ctx, arch, &Reg(val.reg), &base)?;
@@ -472,6 +477,7 @@ pub trait WriterExt<Context>: asm_x86::out::Writer<X64FastLabel, Context> {
                             disp: 0xffff_ffff,
                             size: MemorySize::_64,
                             reg_class: asm_x86::RegisterClass::Gpr,
+                            segment: Default::default(),
                         },
                     )?;
                     {
@@ -663,6 +669,7 @@ pub trait WriterExt<Context>: asm_x86::out::Writer<X64FastLabel, Context> {
                         disp: (state.local_count + 3 * 8) as u32,
                         size: MemorySize::_8,
                         reg_class: asm_x86::RegisterClass::Gpr,
+                        segment: Default::default(),
                     },
                 )?;
                 self.mov(ctx, arch, &Reg(4), &tmp)?;
