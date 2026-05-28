@@ -29,7 +29,7 @@ use portal_solutions_asm_aarch64::{
 use portal_pc_asm_common::types::mem::MemorySize;
 use portal_solutions_blitz_common::{
     asm::Reg,
-    ops::{MachOperator, TracingHooks},
+    ops::MachOperator,
     wasm_encoder::{FuncType, reencode::Reencode},
 };
 
@@ -159,10 +159,10 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 self.set_label(ctx, arch, AArch64Label::Indexed { idx: *id as usize + 0x80000000 })
                     .map_err(Err::from)?;
 
-                if let Some(hooks) = data.tracing.as_ref() {
+                if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: 10 };
                     portal_solutions_blitz_codegen::emit_jit_preamble(
-                        &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                        &mut bw, cfg.table_base_off, 0,
                         9, &mut state.label_index,
                     ).map_err(Err::from)?;
                 }

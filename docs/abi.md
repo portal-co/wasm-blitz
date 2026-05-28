@@ -529,80 +529,119 @@ todo!("SysVAbi exception handling requires platform unwinder — deferred; see d
 
 ### Overview
 
-Setting `FnData.tracing = Some(TracingHooks { counter, specialization })` causes the
-code generator to emit a short preamble at every function entry point.  The preamble
-is injected **after** the function-entry label and **before** any frame setup, so:
+Setting `FnData.tracing = Some(TracingConfig { enabled: true, num_sites, table_base_off })`
+causes the code generator to emit a short preamble at every **trace site** in the
+function.  A trace site is:
 
-- The invocation counter is incremented on every call.
-- If the outer JIT writes a non-null function pointer into the specialisation slot, the
-  generated code performs a **tail-jump** to that pointer instead of running the
-  baseline body.
+- **site 0** — the function entry (after the entry label, before frame setup), and
+- **one site per `Block` / `Loop`** entry (after the site's entry label / CTX-frame
+  push), numbered `1, 2, …` in source order.
 
-The tail-jump is a bare indirect branch — no frame has been set up, so the outer JIT's
-specialised function receives exactly the same caller state as the baseline function
-would have.
+`If` and `TryTable` are **not** trace sites.  The total count is computed by
+`trace_site_count` (`blitz-common/src/ops.rs`) and must be stored in
+`TracingConfig::num_sites` so the runtime can size the per-function trace table.
 
-### `TracingHooks` (defined in `blitz-common/src/ops.rs`)
+Each preamble increments that site's invocation counter and, if the runtime has
+installed a non-null specialisation pointer for the site, performs a **tail-jump** to it
+instead of running the baseline body.  For loops the preamble runs on every iteration
+(the loop back-edge re-enters at the site label), giving hot-loop counts.
+
+### Compile/runtime separation — CTX-relative trace table
+
+**No runtime address is baked into the generated code.**  Instead the runtime owns a
+contiguous `[TraceSite]` table per traced function and the code reaches it indirectly:
 
 ```rust
-pub struct TracingHooks {
-    /// Pointer to this function's u64 invocation counter.
-    pub counter: *mut u64,
-    /// Pointer to this function's specialisation fn-pointer slot.
-    /// If `*specialisation` is non-null the generated prologue tail-jumps there.
-    pub specialization: *const *const (),
+#[repr(C)]
+pub struct TraceSite {       // blitz-common/src/ops.rs
+    pub counter: u64,            // +0
+    pub specialization: *const (), // +8
+}
+
+pub struct TracingConfig {
+    pub enabled: bool,
+    pub num_sites: u32,          // = trace_site_count(body)
+    pub table_base_off: i32,     // CTX-relative slot holding the table base ptr
 }
 ```
 
-Both pointers are baked as 64-bit immediates into the generated code at compile time.
-The caller must keep the storage alive for the lifetime of the generated code.
+The runtime writes the table's base pointer into a fixed, CTX-relative slot at
+`table_base_off` before the first guest entry.  Compilation emits only that structural
+offset and a per-site `site_id`; the entry for a site is `base + site_id * 16`
+(`TRACE_SITE_SIZE`), with the counter at `+0` and the specialisation pointer at `+8`
+(`TRACE_SITE_SPEC_OFF`).  This lets a module be compiled in one process/address space
+and run in another.
 
-### Emitted instruction sequence (pseudo-code)
+### Emitted instruction sequence (pseudo-code), per site
 
 ```
-; 1. Non-atomic counter increment
-   load  scratch, &counter
-   load  tmp,     [scratch]
-   tmp  += 1
-   store [scratch], tmp
-
-; 2. Specialisation check + optional tail-jump
-   load  scratch, &specialization
-   load  scratch, [scratch]          ; scratch = *specialization
-   if scratch == 0: jump body        ; null → run baseline
-   jump  scratch                     ; non-null → tail-jump to outer JIT
+   load  scratch, [CTX + table_base_off]        ; runtime trace-table base
+   inc   qword [scratch + site_id*16 + 0]        ; counter++ (non-atomic)
+   load  scratch, [scratch + site_id*16 + 8]     ; specialization ptr
+   if scratch == 0: jump body                    ; null → run baseline
+   jump  scratch                                 ; non-null → tail-jump
 body:
-   ; ... normal frame setup continues ...
+   ; ... baseline body continues ...
 ```
+
+This is `emit_jit_preamble(w, base_off, site_id, scratch, label_counter)` in
+`blitz-codegen`, built on the `BlitzWriter` primitives `load_trace_base`,
+`inc_mem64_disp`, and `load_mem64_disp`.
 
 ### Architecture / ABI specifics
 
-| Backend   | ABI     | Scratch reg(s) | Preamble position in `handle_op` |
-|-----------|---------|----------------|----------------------------------|
-| x86-64    | NaiveAbi | Reg(2) (RDX)  | `StartBody`, before push Reg(1)/Reg(0) |
-| x86-64    | SysVAbi  | Reg(0) (RAX)  | `StartFn`, after `set_label`, before `push rbp` |
-| AArch64   | NaiveAbi | x9+x10 (T0/T1)| `StartFn`, after `set_label`, before `stp FP,LR` |
-| AArch64   | SysVAbi  | x9+x10 (T0/T1)| `StartFn`, after `set_label`, before `stp FP,LR` |
-| RISC-V 64 | NaiveAbi | t0+t1 (Reg 5/6)| `StartFn`, after `set_label`, before `addi sp,sp,-8` |
-| RISC-V 64 | SysVAbi  | t0+t1 (Reg 5/6)| `StartFn`, after `set_label`, before `addi sp,sp,-N` |
+| Backend   | ABI     | Scratch reg(s) | Site emission |
+|-----------|---------|----------------|---------------|
+| x86-64    | NaiveAbi | Reg(2) (RDX)  | entry in `StartBody`; loop/block via `emit_trace_site` |
+| x86-64    | SysVAbi  | Reg(0) (RAX)  | entry only (`StartFn`); SysV handles control flow itself |
+| AArch64   | NaiveAbi | x9+x10 (T0/T1)| entry in `StartFn`; loop/block via `emit_trace_site` |
+| AArch64   | SysVAbi  | x9+x10 (T0/T1)| entry only (`StartFn`) |
+| RISC-V 64 | NaiveAbi | t0+t1 (Reg 5/6)| entry in `StartFn`; loop/block via `emit_trace_site` |
+| RISC-V 64 | SysVAbi  | t0+t1 (Reg 5/6)| entry only (`StartFn`) |
 
-**x86-64 NaiveAbi note**: the function-entry label (`Func{fn}`) is placed *after* the
-`pop rcx / lea rax / xchg CTX` sequence.  The trace preamble lives in `StartBody`
-(which immediately follows the label) so that both the initial linear-execution path
-and all label-jump call paths pass through the counter and specialisation check.
-Scratch register Reg(2) (RDX) is used to avoid clobbering Reg(0) (old CTX) and
-Reg(1) (return address), which are consumed by the `push` instructions in `StartBody`.
+Loop/block sites are emitted only on the **NaiveAbi** path (`naive.rs`, also used by the
+LFI ABI).  The SysVAbi backends keep their own CTX-free control-flow lowering and
+currently emit the function-entry site only.
 
-### Outer-JIT specialisation contract
+**CTX-relative base for SysVAbi**: at the function-entry preamble the SysV frame is not
+yet set up, so the trace-table base is reached via the SysV-side base convention rather
+than the NaiveAbi CTX frame pointer.  The *table layout* (`TraceSite`, `site_id`
+indexing) is identical across ABIs; only the base-load slot differs.
 
-The outer JIT's specialised function must be entered with the same register/stack state
-that the baseline function has at the preamble position:
+### Specialisation + deopt (`crates/blitz-specialize`)
 
-- **NaiveAbi (x86-64)**: Reg(0) = old CTX, Reg(1) = return address, CTX = frame ptr,
-  RSP = WASM operand stack.
-- **SysVAbi (x86-64)**: SysV arg registers (RDI/RSI/RDX/RCX/R8/R9) intact, no frame set up.
-- **AArch64 (both ABIs)**: LR = return addr, SP = caller stack/WASM stack, X0–X7 intact.
-- **RISC-V 64 (both ABIs)**: RA = return addr, A0–A7 intact, no frame set up.
+The `blitz-specialize` crate builds specialised variants to install into a site's
+`specialization` slot:
+
+- `FnSlice` + `BranchAnalysis` give a slice-resident (random-access) view of one
+  function with every relative branch depth resolved to an absolute index, and map each
+  `Block`/`Loop` header to its `site_id`.
+- `specialize(slice, analysis, SpecSpec)` substitutes embedder-asserted constant locals
+  / globals (value specialisation) and folds loads from regions asserted constant
+  (memory specialisation), returning the rewritten body plus the `Guard`s it depends on.
+- `emit_deopt_guard(w, diff_reg, deopt_label, label_counter)` emits the guard branch:
+  the caller materialises `diff_reg` to be zero iff the assumption holds; the guard
+  falls through when it holds and branches to `deopt_label` (the **generic site entry**)
+  otherwise.  Deopt fires whenever any guard fails — i.e. whenever the specialised code
+  would be invalid.
+
+### Stack-state contract
+
+The tail-jump is a bare indirect branch with the operand-stack / CTX-frame state of the
+**generic site entry** intact, so a specialised variant must preserve that layout and
+its deopt target is the generic site entry (a plain branch back, live state untouched).
+Per-site live state:
+
+- **Function entry (site 0)** — as before frame setup:
+  - **NaiveAbi (x86-64)**: Reg(0) = old CTX, Reg(1) = return address, CTX = frame ptr,
+    RSP = WASM operand stack.
+  - **SysVAbi (x86-64)**: SysV arg registers (RDI/RSI/RDX/RCX/R8/R9) intact, no frame.
+  - **AArch64 (both ABIs)**: LR = return addr, SP = caller/WASM stack, X0–X7 intact.
+  - **RISC-V 64 (both ABIs)**: RA = return addr, A0–A7 intact, no frame.
+- **Loop/block sites** — the CTX frame for the site has been pushed and the operand
+  stack is materialised (RISC-V flushes regalloc first); the specialised variant inherits
+  exactly that state.  Because `specialize` only substitutes values (never changing stack
+  shape), layout compatibility holds by construction.
 
 ### exnref deferral
 

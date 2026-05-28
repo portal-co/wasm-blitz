@@ -34,7 +34,7 @@ use portal_solutions_asm_x86_64::{
 use portal_solutions_blitz_common::{
     asm::Reg,
     asm::common::mem::MemorySize,
-    ops::{FnData, MachOperator, TracingHooks},
+    ops::{FnData, MachOperator},
     wasm_encoder::{self, FuncType, Instruction, reencode::{self as reencode, Reencode}},
 };
 
@@ -248,6 +248,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                         body: state.body,
                         body_labels: core::mem::take(&mut state.body_labels),
                         tracing: None,
+                        next_site_id: 0,
                     };
                     let result = self._handle_op(ctx, arch, &mut naive_state, func_imports, &[], &[], &other, target);
                     state.label_index = naive_state.label_index;
@@ -356,6 +357,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                     body: state.body,
                     body_labels: core::mem::take(&mut state.body_labels),
                     tracing: None,
+                    next_site_id: 0,
                 };
                 let result = self._handle_op(ctx, arch, &mut naive_state, func_imports, &[], &[], other, target);
                 state.label_index = naive_state.label_index;
@@ -394,10 +396,10 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                     idx: *id as usize | (1 << 28),
                 }).map_err(Err::from)?;
 
-                if let Some(hooks) = data.tracing.as_ref() {
+                if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch };
                     portal_solutions_blitz_codegen::emit_jit_preamble(
-                        &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                        &mut bw, cfg.table_base_off, 0,
                         0, &mut state.label_index,
                     ).map_err(Err::from)?;
                 }

@@ -20,7 +20,7 @@ use portal_pc_asm_common::types::mem::MemorySize;
 use portal_solutions_asm_aarch64::out::arg::MemArg;
 use portal_solutions_blitz_common::{
     asm::Reg,
-    ops::{FnData, MachOperator, TracingHooks},
+    ops::{FnData, MachOperator, TracingConfig},
     wasm_encoder::{self, Catch, FuncType, Instruction, reencode::{self as reencode, Reencode}},
     wasmparser::Operator,
 };
@@ -44,7 +44,10 @@ pub struct State {
     pub body_labels: BTreeMap<u32, usize>,
     /// Carried from `StartFn` to `StartBody` so the tracing preamble is emitted
     /// after the function-entry label, ensuring every call-path is instrumented.
-    pub tracing: Option<TracingHooks>,
+    pub tracing: Option<TracingConfig>,
+    /// Next trace-site id to assign (function entry = site 0; each loop/block
+    /// consumes the next).  See `emit_jit_preamble` / Item 1.
+    pub next_site_id: u32,
 }
 
 /// Represents a control-flow frame.
@@ -200,6 +203,25 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         }
     }
 
+    /// Emit a tracing/specialization preamble for a loop/block control-flow
+    /// site, consuming the next `site_id`.  No-op when tracing is disabled.
+    /// Uses T0 as scratch (T1 as the inner `inc_mem64` scratch).
+    fn emit_trace_site(&mut self, ctx: &mut Context, arch: AArch64Arch, state: &mut State)
+        -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
+            let site_id = state.next_site_id;
+            state.next_site_id += 1;
+            let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: T1.0 };
+            portal_solutions_blitz_codegen::emit_jit_preamble(
+                &mut bw, cfg.table_base_off, site_id, T0.0, &mut state.label_index,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Handle a single WASM instruction (the inner match).
     fn handle_insn(
         &mut self,
@@ -211,7 +233,10 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         tags: &[u32],
         op: &Instruction<'_>,
         target: u32,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
         if target != state.body {
             // On the very first instruction of a function, `state.body` is
             // still the `Default::default()` value (0) and no body has been
@@ -456,6 +481,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 let end_lbl = AArch64Label::Indexed { idx: state.label_index };
                 state.label_index += 1;
                 state.if_stack.push(Endable::Block { end_lbl });
+                self.emit_trace_site(ctx, arch, state)?;
                 Ok(())
             }
             Instruction::Loop(_) => {
@@ -463,6 +489,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 state.label_index += 1;
                 self.set_label(ctx, arch, head_lbl.clone())?;
                 state.if_stack.push(Endable::Loop { head_lbl });
+                self.emit_trace_site(ctx, arch, state)?;
                 Ok(())
             }
             Instruction::If(_) => {
@@ -653,10 +680,12 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
 
                 self.set_label(ctx, arch, AArch64Label::Func { r#fn: *id }).map_err(Err::from)?;
 
-                if let Some(hooks) = data.tracing.as_ref() {
+                state.tracing = data.tracing;
+                state.next_site_id = 1;
+                if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: T1.0 };
                     portal_solutions_blitz_codegen::emit_jit_preamble(
-                        &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                        &mut bw, cfg.table_base_off, 0,
                         T0.0, &mut state.label_index,
                     ).map_err(Err::from)?;
                 }

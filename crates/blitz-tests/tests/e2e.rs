@@ -4653,3 +4653,90 @@ fn test_lfi_aarch64_verify() {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// JIT tracing / specialization (Items 1–3)
+// ---------------------------------------------------------------------------
+
+/// Compile the loop-counter fn with tracing enabled, returning x86-64 naive asm.
+fn compile_x86_naive_with_tracing(wasm: &[u8], base_off: i32) -> (String, u32) {
+    use portal_solutions_blitz_common::ops::{trace_site_count, MachOperator, TracingConfig};
+    use portal_solutions_blitz_x86_64::{naive, X64Arch};
+
+    let (sigs_wp, _sigs_enc, fsigs) = parse_sigs(wasm);
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let num_sites = trace_site_count(&bodies[0]);
+
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut reencoder = RoundtripReencoder;
+    let mut out = NativeAsmWriter(String::new());
+    let mut ctx = ();
+    let mut state = naive::State::default();
+    for op in ops {
+        let mut op = op.unwrap();
+        if let MachOperator::StartFn { data, .. } = &mut op {
+            data.tracing = Some(TracingConfig { enabled: true, num_sites, table_base_off: base_off });
+        }
+        naive::WriterExt::handle_op::<_, HandleOpError<_>>(
+            &mut out, &mut ctx, X64Arch::default(),
+            &mut state, &[], &[], &[], &op, &mut reencoder, 0,
+        ).unwrap();
+    }
+    (out.0, num_sites)
+}
+
+/// Tracing-disabled compile of the loop-counter fn (the zero-overhead path).
+fn compile_x86_naive_no_tracing(wasm: &[u8]) -> String {
+    compile_native_asm(wasm, NativeArch::X86_64, NativeAbi::Naive)
+}
+
+#[test]
+fn test_tracing_site_per_loop_and_entry() {
+    // Loop-counter fn has a function entry (site 0) + one loop (site 1); the
+    // `If` is not a trace site. So `trace_site_count` must be 2.
+    let wasm = make_loop_counter_wasm();
+    let (asm, num_sites) = compile_x86_naive_with_tracing(&wasm, 0x60);
+    assert_eq!(num_sites, 2, "entry + loop == 2 sites");
+
+    // One preamble per site: each loads the runtime trace-table base from the
+    // CTX-relative slot (CTX = r15, base_off = 0x60 = 96).
+    let base_loads = asm.matches("qword ptr [r15+96]").count();
+    assert_eq!(base_loads, 2, "one CTX-relative base load per site:\n{asm}");
+
+    // Site 0 (function entry) indexes TraceSite[0]; site 1 (loop) indexes
+    // TraceSite[1] = +16 bytes.  counter at +0, specialization ptr at +8.
+    assert!(asm.contains("add qword ptr [rdx+0],1"), "site 0 counter:\n{asm}");
+    assert!(asm.contains("mov rdx, qword ptr [rdx+8]"), "site 0 spec ptr:\n{asm}");
+    assert!(asm.contains("add qword ptr [rdx+16],1"), "site 1 counter:\n{asm}");
+    assert!(asm.contains("mov rdx, qword ptr [rdx+24]"), "site 1 spec ptr:\n{asm}");
+    // Tail-jump to the specialization through the loaded pointer.
+    assert!(asm.contains("jmp rdx"), "spec tail-jump:\n{asm}");
+}
+
+#[test]
+fn test_tracing_uses_no_baked_address() {
+    // Compile/runtime separation: the preamble must reach its trace state
+    // CTX-relative, never by baking an absolute 64-bit address into the code.
+    let wasm = make_loop_counter_wasm();
+    let (asm, _) = compile_x86_naive_with_tracing(&wasm, 0x60);
+    assert!(!asm.contains("movabs"), "preamble must not bake an absolute address:\n{asm}");
+}
+
+#[test]
+fn test_tracing_disabled_is_zero_overhead() {
+    // With tracing off (the default), no preamble is emitted — the generated
+    // code must be what it was before tracing existed.
+    let wasm = make_loop_counter_wasm();
+    let asm_off = compile_x86_naive_no_tracing(&wasm);
+    assert!(!asm_off.contains("qword ptr [r15+96]"), "no trace-base load when disabled");
+
+    // And the enabled build is strictly a superset (longer) of the disabled one.
+    let (asm_on, _) = compile_x86_naive_with_tracing(&wasm, 0x60);
+    assert!(asm_on.len() > asm_off.len(), "tracing adds preamble code");
+}

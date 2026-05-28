@@ -104,10 +104,11 @@ where
     ) -> Result<(), W::Error> {
         // Emit tracing preamble. Use Reg(2) (RDX) as scratch; Reg(0)/Reg(1)
         // hold old-CTX and return-addr consumed by the pushes below.
-        if let Some(hooks) = state.tracing.as_ref() {
+        state.next_site_id = 1;
+        if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW { writer: w, ctx, arch };
             portal_solutions_blitz_codegen::emit_jit_preamble(
-                &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                &mut bw, cfg.table_base_off, 0,
                 2, &mut state.label_index,
             )?;
         }
@@ -383,10 +384,10 @@ where
         // Trace preamble: after label, before frame setup so the tail-jump
         // delivers SysV arg registers (RDI/RSI/…) intact to the outer JIT.
         // Scratch: RAX (Reg(0)) — not a SysV argument register.
-        if let Some(hooks) = data.tracing.as_ref() {
+        if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW { writer: w, ctx, arch };
             portal_solutions_blitz_codegen::emit_jit_preamble(
-                &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                &mut bw, cfg.table_base_off, 0,
                 0, &mut state.label_index,
             )?;
         }

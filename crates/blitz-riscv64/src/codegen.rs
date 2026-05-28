@@ -12,9 +12,13 @@ fn riscv_reg(r: Reg) -> MemArgKind {
 }
 
 fn riscv_mem_base(base: Reg) -> MemArgKind {
+    riscv_mem_base_disp(base, 0)
+}
+
+fn riscv_mem_base_disp(base: Reg, disp: i32) -> MemArgKind {
     MemArgKind::Mem {
         base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
-        offset: None, disp: 0,
+        offset: None, disp,
         size: MemorySize::_64,
         reg_class: RegisterClass::Gpr,
     }
@@ -86,6 +90,28 @@ where
     }
 
     fn load_mem64(&mut self, dest: u8, src: u8) -> Result<(), Self::Error> {
-        self.writer.ld(self.ctx, self.arch, &riscv_reg(Reg(dest)), &riscv_mem_base(Reg(src)))
+        self.load_mem64_disp(dest, src, 0)
+    }
+
+    // Trace-table base lives at disp(CTX), written by the runtime.
+    fn load_trace_base(&mut self, dest: u8, base_off: i32) -> Result<(), Self::Error> {
+        self.writer.ld(
+            self.ctx, self.arch,
+            &riscv_reg(Reg(dest)),
+            &riscv_mem_base_disp(Reg::CTX, base_off),
+        )
+    }
+
+    // RISC-V: ld s2, disp(ptr); addi s2, s2, 1; sd s2, disp(ptr)
+    fn inc_mem64_disp(&mut self, ptr_reg: u8, disp: i32) -> Result<(), Self::Error> {
+        let s2 = Reg(self.scratch2);
+        let mem = riscv_mem_base_disp(Reg(ptr_reg), disp);
+        self.writer.ld(self.ctx, self.arch, &riscv_reg(s2), &mem)?;
+        self.writer.addi(self.ctx, self.arch, &riscv_reg(s2), &riscv_reg(s2), 1)?;
+        self.writer.sd(self.ctx, self.arch, &riscv_reg(s2), &mem)
+    }
+
+    fn load_mem64_disp(&mut self, dest: u8, src: u8, disp: i32) -> Result<(), Self::Error> {
+        self.writer.ld(self.ctx, self.arch, &riscv_reg(Reg(dest)), &riscv_mem_base_disp(Reg(src), disp))
     }
 }

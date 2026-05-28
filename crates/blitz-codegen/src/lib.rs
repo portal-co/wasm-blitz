@@ -68,41 +68,72 @@ pub trait BlitzWriter {
 
     /// Load the 64-bit value at the address stored in `src` into `dest`.
     fn load_mem64(&mut self, dest: u8, src: u8) -> Result<(), Self::Error>;
+
+    // ---- CTX-relative trace-table access (JIT preamble) ------------------
+
+    /// Load the runtime-provided trace-table base pointer into `dest`.
+    ///
+    /// The base is stored by the runtime at a fixed, CTX-relative slot
+    /// `base_off` (see `TracingConfig::table_base_off`).  This is how the
+    /// preamble reaches its [`TraceSite`](../portal_solutions_blitz_common/ops/struct.TraceSite.html)
+    /// table without any absolute address being baked into the code.
+    fn load_trace_base(&mut self, dest: u8, base_off: i32) -> Result<(), Self::Error>;
+
+    /// Atomicity-free increment of the 64-bit value at `[ptr_reg + disp]`.
+    fn inc_mem64_disp(&mut self, ptr_reg: u8, disp: i32) -> Result<(), Self::Error>;
+
+    /// Load the 64-bit value at `[src + disp]` into `dest`.
+    fn load_mem64_disp(&mut self, dest: u8, src: u8, disp: i32) -> Result<(), Self::Error>;
 }
+
+/// Size in bytes of one `TraceSite` entry (`counter: u64` + `specialization: ptr`).
+pub const TRACE_SITE_SIZE: i32 = 16;
+/// Byte offset of the `specialization` pointer within a `TraceSite`.
+pub const TRACE_SITE_SPEC_OFF: i32 = 8;
 
 // ---------------------------------------------------------------------------
 // Shared instruction implementations
 // ---------------------------------------------------------------------------
 
-/// Emit a JIT tracing preamble.
+/// Emit a JIT tracing preamble for one trace site.
 ///
-/// Increments the invocation counter at `counter_addr`, then checks the
-/// specialisation function pointer at `spec_addr`. If non-null it tail-jumps
-/// there; otherwise it falls through to `body_label` (placed by this function).
+/// Reaches the runtime [`TraceSite`] table through a CTX-relative base
+/// (`base_off`, see `TracingConfig::table_base_off`), indexes it by `site_id`,
+/// increments that site's invocation counter, then checks its specialisation
+/// code pointer.  If non-null it tail-jumps there (with the operand-stack /
+/// CTX-frame state intact for this site); otherwise it falls through to
+/// `body_label` (placed by this function).
+///
+/// No absolute address is baked into the generated code — only the structural
+/// `base_off` and `site_id` — so compilation is independent of the runtime
+/// address space.
 ///
 /// `scratch` is a caller-provided scratch register (by blitz register number).
-/// Architectures that need a second scratch register for `inc_mem64` store it
-/// in their [`BlitzWriter`] implementation — callers don't need to know.
+/// Architectures that need a second scratch register for `inc_mem64_disp` store
+/// it in their [`BlitzWriter`] implementation — callers don't need to know.
 ///
 /// The `label_counter` is incremented once by this function to allocate the
 /// body label.
 pub fn emit_jit_preamble<W: BlitzWriter>(
     w: &mut W,
-    counter_addr: u64,
-    spec_addr: u64,
+    base_off: i32,
+    site_id: u32,
     scratch: u8,
     label_counter: &mut usize,
 ) -> Result<(), W::Error> {
     let body_label = *label_counter;
     *label_counter += 1;
 
-    // 1. Increment invocation counter (non-atomic, approximate).
-    w.load_u64_imm(scratch, counter_addr)?;
-    w.inc_mem64(scratch)?;
+    let site_off = site_id as i32 * TRACE_SITE_SIZE;
 
-    // 2. Load specialisation fn-ptr; tail-jump if non-null.
-    w.load_u64_imm(scratch, spec_addr)?;
-    w.load_mem64(scratch, scratch)?;
+    // 1. Load runtime trace-table base (no baked address).
+    w.load_trace_base(scratch, base_off)?;
+
+    // 2. Increment this site's invocation counter (non-atomic, approximate).
+    w.inc_mem64_disp(scratch, site_off)?;
+
+    // 3. Load specialisation code-ptr; tail-jump if non-null.
+    w.load_mem64_disp(scratch, scratch, site_off + TRACE_SITE_SPEC_OFF)?;
     w.branch_zero_label(scratch, body_label)?;
     w.branch_reg(scratch)?;
     w.place_label(body_label)?;

@@ -22,7 +22,7 @@ use portal_solutions_asm_riscv64::RiscV64Arch;
 use portal_solutions_asm_riscv64::out::Writer;
 use portal_solutions_blitz_common::{
     asm::Reg,
-    ops::{MachOperator, TracingHooks},
+    ops::MachOperator,
     wasm_encoder::{Instruction, reencode::{self as reencode, Reencode}},
 };
 use portal_pc_asm_common::types::mem::MemorySize;
@@ -166,10 +166,10 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
 
                 // Trace preamble: after label, before frame setup so SysV arg
                 // regs (a0–a7, Reg 10–17) are intact for the outer-JIT tail-jump.
-                if let Some(hooks) = data.tracing.as_ref() {
+                if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: 6 };
                     portal_solutions_blitz_codegen::emit_jit_preamble(
-                        &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                        &mut bw, cfg.table_base_off, 0,
                         5, &mut state.label_index,
                     ).map_err(Err::from)?;
                 }

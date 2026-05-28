@@ -106,10 +106,12 @@ where
         w.set_label(ctx, arch, AArch64Label::Func { r#fn: id })?;
 
         // Trace preamble: after label, before frame setup.
-        if let Some(hooks) = data.tracing.as_ref() {
+        state.tracing = data.tracing;
+        state.next_site_id = 1;
+        if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW { writer: w, ctx, arch, scratch2: 10 };
             portal_solutions_blitz_codegen::emit_jit_preamble(
-                &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                &mut bw, cfg.table_base_off, 0,
                 T0.0, &mut state.label_index,
             )?;
         }
@@ -260,10 +262,10 @@ where
 
         // Trace preamble: after label, before frame setup so AAPCS64 arg regs
         // (X0–X7) are delivered intact to the outer-JIT specialisation.
-        if let Some(hooks) = data.tracing.as_ref() {
+        if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW { writer: w, ctx, arch, scratch2: 10 };
             portal_solutions_blitz_codegen::emit_jit_preamble(
-                &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                &mut bw, cfg.table_base_off, 0,
                 T0.0, &mut state.label_index,
             )?;
         }

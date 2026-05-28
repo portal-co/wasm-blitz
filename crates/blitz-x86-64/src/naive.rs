@@ -6,7 +6,7 @@
 use alloc::collections::btree_map::BTreeMap;
 use portal_solutions_asm_x86_64::RegisterClass;
 use portal_solutions_asm_x86_64::out::arg::{ArgKind, MemArg, MemArgKind};
-use portal_solutions_blitz_common::ops::TracingHooks;
+use portal_solutions_blitz_common::ops::TracingConfig;
 use portal_solutions_blitz_common::wasm_encoder::{self, Catch, FuncType, Instruction, reencode::{self as reencode, Reencode}};
 
 use crate::{
@@ -30,7 +30,10 @@ pub struct State {
     /// Carried from `StartFn` to `StartBody` so tracing can be emitted after
     /// the function-entry label is placed (ensuring every call — linear or
     /// via label-jump — passes through the counter and specialisation check).
-    pub tracing: Option<TracingHooks>,
+    pub tracing: Option<TracingConfig>,
+    /// Next trace-site id to assign (function entry consumes site 0; each
+    /// loop/block consumes the next).  See `emit_jit_preamble` / Item 1.
+    pub next_site_id: u32,
 }
 
 /// Magic sentinel pushed onto the CTX stack to mark a TryTable frame.
@@ -87,6 +90,33 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
         self.mov(ctx, arch, &RSP, &Reg(1))?;
         self.jmp(ctx, arch, &Reg(0))?;
+        Ok(())
+    }
+
+    /// Emit a tracing/specialization preamble for a loop/block control-flow
+    /// site, consuming the next `site_id`.  No-op when tracing is disabled.
+    ///
+    /// Placed after the site's entry label and CTX-frame push, so the
+    /// specialization tail-jump (if installed) inherits the operand-stack /
+    /// CTX-frame layout of the generic site entry (see the blitz-specialize
+    /// stack-state contract).  Uses `Reg(2)` (RDX) as scratch.
+    fn emit_trace_site(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        state: &mut State,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
+            let site_id = state.next_site_id;
+            state.next_site_id += 1;
+            let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch };
+            portal_solutions_blitz_codegen::emit_jit_preamble(
+                &mut bw, cfg.table_base_off, site_id, 2, &mut state.label_index,
+            )?;
+        }
         Ok(())
     }
 
@@ -193,10 +223,11 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 }
             }
             MachOperator::StartBody => {
-                if let Some(hooks) = state.tracing.as_ref() {
+                state.next_site_id = 1;
+                if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch };
                     portal_solutions_blitz_codegen::emit_jit_preamble(
-                        &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                        &mut bw, cfg.table_base_off, 0,
                         2, &mut state.label_index,
                     ).map_err(Err::from)?;
                 }
@@ -805,6 +836,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 // }
                 self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
                 self.set_label(ctx, arch, X64Label::Indexed { idx: i })?;
+                self.emit_trace_site(ctx, arch, state)?;
             }
             Instruction::If(blockty) => {
                 let i = state.label_index;
@@ -837,6 +869,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.push(ctx, arch, &Reg(0))?;
                 // }
                 self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
+                self.emit_trace_site(ctx, arch, state)?;
             }
             Instruction::End => {
                 // Function-level End (if_stack empty) is a no-op: the function

@@ -98,10 +98,43 @@ where
     }
 
     fn load_mem64(&mut self, dest: u8, src: u8) -> Result<(), Self::Error> {
+        self.load_mem64_disp(dest, src, 0)
+    }
+
+    // Trace-table base lives at [CTX + base_off], written by the runtime.
+    fn load_trace_base(&mut self, dest: u8, base_off: i32) -> Result<(), Self::Error> {
         self.writer.ldr(
             self.ctx, self.arch,
             &aarch64_reg(Reg(dest)),
-            &aarch64_mem_base_disp(Reg(src), 0),
+            &aarch64_mem_base_disp(Reg::CTX, base_off),
+        )
+    }
+
+    // AArch64: ldr s2,[ptr+disp]; add s2,s2,1; str s2,[ptr+disp]
+    fn inc_mem64_disp(&mut self, ptr_reg: u8, disp: i32) -> Result<(), Self::Error> {
+        let s2 = Reg(self.scratch2);
+        self.writer.ldr(
+            self.ctx, self.arch,
+            &aarch64_reg(s2),
+            &aarch64_mem_base_disp(Reg(ptr_reg), disp),
+        )?;
+        self.writer.add(
+            self.ctx, self.arch,
+            &aarch64_reg(s2), &aarch64_reg(s2),
+            &MemArgKind::NoMem(ArgKind::Lit(1)),
+        )?;
+        self.writer.str(
+            self.ctx, self.arch,
+            &aarch64_reg(s2),
+            &aarch64_mem_base_disp(Reg(ptr_reg), disp),
+        )
+    }
+
+    fn load_mem64_disp(&mut self, dest: u8, src: u8, disp: i32) -> Result<(), Self::Error> {
+        self.writer.ldr(
+            self.ctx, self.arch,
+            &aarch64_reg(Reg(dest)),
+            &aarch64_mem_base_disp(Reg(src), disp),
         )
     }
 }

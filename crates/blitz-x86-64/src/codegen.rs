@@ -67,12 +67,46 @@ where
     }
 
     fn load_mem64(&mut self, dest: u8, src: u8) -> Result<(), Self::Error> {
+        self.load_mem64_disp(dest, src, 0)
+    }
+
+    // Trace-table base lives at [CTX + base_off], written by the runtime.
+    fn load_trace_base(&mut self, dest: u8, base_off: i32) -> Result<(), Self::Error> {
+        self.writer.mov(
+            self.ctx, self.arch,
+            &Reg(dest),
+            &MemArgKind::Mem {
+                base: ArgKind::Reg { reg: Reg::CTX, size: MemorySize::_64 },
+                offset: None, disp: base_off as u32,
+                size: MemorySize::_64,
+                reg_class: RegisterClass::Gpr,
+                segment: Default::default(),
+            },
+        )
+    }
+
+    // x86-64: ADD [ptr_reg + disp], 1 — single instruction, no scratch needed
+    fn inc_mem64_disp(&mut self, ptr_reg: u8, disp: i32) -> Result<(), Self::Error> {
+        self.writer.add(
+            self.ctx, self.arch,
+            &MemArgKind::Mem {
+                base: ArgKind::Reg { reg: Reg(ptr_reg), size: MemorySize::_64 },
+                offset: None, disp: disp as u32,
+                size: MemorySize::_64,
+                reg_class: RegisterClass::Gpr,
+                segment: Default::default(),
+            },
+            &MemArgKind::NoMem(ArgKind::Lit(1)),
+        )
+    }
+
+    fn load_mem64_disp(&mut self, dest: u8, src: u8, disp: i32) -> Result<(), Self::Error> {
         self.writer.mov(
             self.ctx, self.arch,
             &Reg(dest),
             &MemArgKind::Mem {
                 base: ArgKind::Reg { reg: Reg(src), size: MemorySize::_64 },
-                offset: None, disp: 0,
+                offset: None, disp: disp as u32,
                 size: MemorySize::_64,
                 reg_class: RegisterClass::Gpr,
                 segment: Default::default(),

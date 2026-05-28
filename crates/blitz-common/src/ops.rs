@@ -235,36 +235,57 @@ pub fn mach_operators<'a, 'b, Annot: FromWasmInfo, E: From<BinaryReaderError>>(
         .flatten();
 }
 
-/// Tracing and outer-JIT specialization hooks embedded into the generated function prologue.
+/// One entry in the runtime-owned *trace table*.
 ///
-/// Both pointers are baked as 64-bit immediates into the generated machine code at
-/// compile time; the outer JIT reads/writes through them at runtime.  The caller must
-/// keep the pointed-to storage alive for the entire lifetime of the generated code.
+/// The runtime allocates a contiguous `[TraceSite]` per traced function (sized by
+/// [`TracingConfig::num_sites`]) and is responsible for zeroing it and for any
+/// memory ordering.  The generated code reaches the table through a CTX-relative
+/// base pointer (see [`TracingConfig::table_base_off`]) and indexes it by a
+/// compile-time `site_id` — **no absolute address is baked into the code**, so the
+/// compilation and runtime environments can be fully separated.
 ///
-/// # Safety
-/// Raw pointers — caller is responsible for alignment, validity, and any required
-/// synchronisation with the outer JIT.
-#[derive(Debug, Clone, Copy)]
-pub struct TracingHooks {
-    /// Pointer to this function's `u64` invocation counter.
+/// Layout is `#[repr(C)]` so the generated code and the runtime agree on field
+/// offsets: `counter` at `+0`, `specialization` at `+8`.
+#[derive(Debug, Default)]
+#[repr(C)]
+pub struct TraceSite {
+    /// Approximate invocation counter for this site.
     ///
-    /// The generated prologue performs a non-atomic load → increment → store on
-    /// every function entry.  Approximate counting is intentional; the outer JIT
-    /// does not need exact values.
-    pub counter: *mut u64,
-    /// Pointer to this function's specialization fn-pointer slot.
+    /// The generated preamble performs a non-atomic load → increment → store on
+    /// every entry.  Approximate counting is intentional; the outer JIT does not
+    /// need exact values.
+    pub counter: u64,
+    /// Specialization code pointer for this site.
     ///
-    /// At runtime the generated prologue loads `*specialization`.  If the value is
-    /// non-null it is treated as a function pointer and control is transferred there
-    /// via a tail-jump (no frame has been set up yet, so the caller's register/stack
-    /// state is fully intact for whichever ABI is in use).
-    pub specialization: *const *const (),
+    /// At runtime the generated preamble loads this field.  If non-null it is
+    /// treated as a code pointer and control is transferred there via a tail-jump
+    /// with the operand-stack / CTX-frame state intact for this site (function
+    /// entry, or a loop/block entry — see the blitz-specialize stack-state
+    /// contract).
+    pub specialization: *const (),
 }
 
-// SAFETY: the outer JIT that owns and writes these slots is responsible for
-// any required memory ordering; blitz only embeds the addresses.
-unsafe impl Send for TracingHooks {}
-unsafe impl Sync for TracingHooks {}
+/// Compile-time configuration for emitting tracing/specialization sites in a
+/// function, without baking any runtime addresses.
+///
+/// The generated code references the runtime [`TraceSite`] table indirectly: it
+/// loads the table base from a fixed, CTX-relative slot ([`Self::table_base_off`])
+/// and indexes by a per-site id.  This keeps compilation independent of the
+/// runtime address space.
+#[derive(Debug, Clone, Copy)]
+pub struct TracingConfig {
+    /// Whether tracing code should be emitted at all.  `false` → zero overhead,
+    /// identical codegen to `tracing: None`.
+    pub enabled: bool,
+    /// Number of trace sites in this function (function entry = site 0, then one
+    /// per loop/block).  The runtime uses this to size the [`TraceSite`] table.
+    /// Computed by [`trace_site_count`].
+    pub num_sites: u32,
+    /// Fixed, CTX-relative offset at which the runtime stores the base pointer of
+    /// this function's [`TraceSite`] table.  Loaded by the preamble; never an
+    /// absolute address.
+    pub table_base_off: i32,
+}
 
 /// Metadata about a WASM function.
 ///
@@ -279,9 +300,9 @@ pub struct FnData {
     pub num_returns: usize,
     /// Maximum nesting depth of control flow structures in the function.
     pub control_depth: usize,
-    /// Optional tracing/specialization hooks.  `None` → no tracing code emitted
-    /// (zero overhead on the fast path).
-    pub tracing: Option<TracingHooks>,
+    /// Optional tracing/specialization configuration.  `None` (or `enabled:
+    /// false`) → no tracing code emitted (zero overhead on the fast path).
+    pub tracing: Option<TracingConfig>,
 }
 
 impl PartialEq for FnData {
@@ -450,6 +471,29 @@ pub fn control_depth(a: &FunctionBody<'_>) -> usize {
         }
     }
     return max;
+}
+
+/// Counts the number of tracing/specialization sites in a function.
+///
+/// Site `0` is the function entry; every `Block` and `Loop` entry adds one more.
+/// This is the size of the runtime [`TraceSite`] table the function needs and is
+/// stored in [`TracingConfig::num_sites`].  The per-site `site_id` assigned by the
+/// backends increments in the same source order this function scans.
+///
+/// Note: `If` and `TryTable` are *not* counted as trace sites (they are not
+/// jump-back targets the way loops are, and `If` does not push a CTX frame the
+/// preamble can rely on); keep this in sync with the backends' site emission.
+pub fn trace_site_count(a: &FunctionBody<'_>) -> u32 {
+    let mut count: u32 = 1; // function entry = site 0
+    for op in a.get_operators_reader().into_iter().flatten().flatten() {
+        match op {
+            Operator::Block { .. } | Operator::Loop { .. } => {
+                count += 1;
+            }
+            _ => {}
+        }
+    }
+    count
 }
 #[derive(Clone)]
 pub struct ScanMach<T, F, D> {

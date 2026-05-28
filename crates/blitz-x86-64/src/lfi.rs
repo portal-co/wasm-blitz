@@ -90,10 +90,11 @@ where
         arch: X64Arch,
         state: &mut State,
     ) -> Result<(), W::Error> {
-        if let Some(hooks) = state.tracing.as_ref() {
+        state.next_site_id = 1;
+        if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW { writer: w, ctx, arch };
             portal_solutions_blitz_codegen::emit_jit_preamble(
-                &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                &mut bw, cfg.table_base_off, 0,
                 2, &mut state.label_index,
             )?;
         }

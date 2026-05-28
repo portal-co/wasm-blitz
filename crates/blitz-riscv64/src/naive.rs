@@ -19,7 +19,7 @@ use portal_solutions_asm_riscv64::RiscV64Arch;
 use portal_solutions_asm_riscv64::out::Writer;
 
 use portal_solutions_blitz_common::asm::Reg;
-use portal_solutions_blitz_common::ops::{MachOperator, TracingHooks};
+use portal_solutions_blitz_common::ops::{MachOperator, TracingConfig};
 use portal_solutions_blitz_common::wasm_encoder;
 use portal_solutions_blitz_common::wasm_encoder::reencode::{self as reencode, Reencode};
 
@@ -45,7 +45,10 @@ pub struct State {
     /// Carried from `StartFn` to `StartBody` for RISC-V NaiveAbi — not actually
     /// needed here since the label is placed before frame setup, but kept for
     /// consistency with the x86-64 backend.  Preamble is emitted in `StartFn`.
-    pub tracing: Option<TracingHooks>,
+    pub tracing: Option<TracingConfig>,
+    /// Next trace-site id to assign (function entry = site 0; each loop/block
+    /// consumes the next).  See `emit_jit_preamble` / Item 1.
+    pub next_site_id: u32,
     /// Total frame size in bytes, set by SysV `StartFn` to locate the RA/FP
     /// save slots at the bottom of the frame (`[FP - sysv_frame_sz]` = RA).
     pub sysv_frame_sz: i32,
@@ -91,6 +94,33 @@ pub enum Endable {
 }
 
 pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
+    /// Emit a tracing/specialization preamble for a loop/block control-flow
+    /// site, consuming the next `site_id`.  No-op when tracing is disabled.
+    ///
+    /// Flushes regalloc first so the operand stack is materialised at the site
+    /// (matching the generic-entry layout the specialization tail-jump expects).
+    /// Uses t0 (Reg 5) as scratch, t1 (Reg 6) as the `inc_mem64` scratch.
+    fn emit_trace_site(&mut self, ctx: &mut Context, arch: RiscV64Arch, state: &mut State)
+        -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
+            if let Some(ralloc) = state.regalloc.as_mut() {
+                let it = ralloc.flush();
+                emit_cmds(self, ctx, arch, it)?;
+                ralloc.tos = None;
+            }
+            let site_id = state.next_site_id;
+            state.next_site_id += 1;
+            let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: 6 };
+            portal_solutions_blitz_codegen::emit_jit_preamble(
+                &mut bw, cfg.table_base_off, site_id, 5, &mut state.label_index,
+            )?;
+        }
+        Ok(())
+    }
+
     fn br(
         &mut self,
         ctx: &mut Context,
@@ -1276,6 +1306,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 state.if_stack.push(Endable::Block { idx: i });
                 // Do NOT emit the label here: Br(N) to a Block is a forward branch to
                 // the block's End, so the label must only be placed at End time.
+                self.emit_trace_site(ctx, arch, state)?;
             }
             Instruction::If(_blockty) => {
                 // Flush regalloc so the condition value is on the memory stack.
@@ -1337,6 +1368,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 state.label_index += 1;
                 state.if_stack.push(Endable::Loop { idx: i });
                 self.set_label(ctx, arch, RiscvLabel::Indexed { idx: i })?;
+                self.emit_trace_site(ctx, arch, state)?;
             }
             Instruction::End => {
                 // Function-level End (empty if_stack) is a no-op: the function
@@ -1584,15 +1616,16 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 state.num_returns = data.num_returns;
                 state.control_depth = data.control_depth;
                 state.tracing = data.tracing;
+                state.next_site_id = 1;
 
                 self.set_label(ctx, arch, RiscvLabel::Func { r#fn: *id }).map_err(Err::from)?;
 
                 // Trace preamble: after label, before frame setup.
                 // Scratch: t0 (Reg(5)) + t1 (Reg(6)) — caller-saved, not NaiveAbi arg regs.
-                if let Some(hooks) = data.tracing.as_ref() {
+                if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: 6 };
                     portal_solutions_blitz_codegen::emit_jit_preamble(
-                        &mut bw, hooks.counter as u64, hooks.specialization as u64,
+                        &mut bw, cfg.table_base_off, 0,
                         5, &mut state.label_index,
                     ).map_err(Err::from)?;
                 }
