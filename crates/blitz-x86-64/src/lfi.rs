@@ -92,7 +92,7 @@ where
     ) -> Result<(), W::Error> {
         state.next_site_id = 1;
         if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
-            let mut bw = crate::codegen::BlitzW { writer: w, ctx, arch };
+            let mut bw = crate::codegen::BlitzW::new(w, ctx, arch);
             portal_solutions_blitz_codegen::emit_jit_preamble(
                 &mut bw, cfg.table_base_off, 0,
                 2, &mut state.label_index,

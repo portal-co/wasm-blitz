@@ -8,11 +8,37 @@ use portal_solutions_blitz_common::asm::common::mem::MemorySize;
 use portal_solutions_blitz_common::asm::Reg;
 use crate::X64Label;
 
+/// Where the runtime trace-table base pointer is found, for `load_trace_base`.
+///
+/// The NaiveAbi/LFI backends use a frame-pointer (CTX) convention; the SysV ABI
+/// has no CTX at the function-entry preamble, so it passes the base as a virtual
+/// function parameter (a reserved register) and spills it to a frame slot for
+/// mid-function sites.  See `docs/abi.md` (Tracing).
+#[derive(Clone, Copy)]
+pub enum TraceBase {
+    /// Base pointer stored at `[CTX + base_off]` (NaiveAbi / LFI).
+    CtxSlot,
+    /// Base pointer held directly in this blitz register (SysV virtual param).
+    Reg(u8),
+    /// Base pointer stored at `[RBP + disp]` (SysV mid-function frame slot).
+    FrameSlot(i32),
+}
+
 /// Wrapper binding an x86-64 writer + ctx + arch for [`portal_solutions_blitz_codegen::BlitzWriter`].
 pub struct BlitzW<'a, W, Context> {
     pub writer: &'a mut W,
     pub ctx: &'a mut Context,
     pub arch: X64Arch,
+    /// How `load_trace_base` reaches the runtime trace-table base.
+    pub trace_base: TraceBase,
+}
+
+impl<'a, W, Context> BlitzW<'a, W, Context> {
+    /// Construct a wrapper using the default CTX-relative trace-base convention
+    /// (NaiveAbi / LFI).
+    pub fn new(writer: &'a mut W, ctx: &'a mut Context, arch: X64Arch) -> Self {
+        BlitzW { writer, ctx, arch, trace_base: TraceBase::CtxSlot }
+    }
 }
 
 impl<'a, W, Context> portal_solutions_blitz_codegen::BlitzWriter for BlitzW<'a, W, Context>
@@ -70,19 +96,41 @@ where
         self.load_mem64_disp(dest, src, 0)
     }
 
-    // Trace-table base lives at [CTX + base_off], written by the runtime.
+    // Load the runtime trace-table base into `dest` from the configured source.
     fn load_trace_base(&mut self, dest: u8, base_off: i32) -> Result<(), Self::Error> {
-        self.writer.mov(
-            self.ctx, self.arch,
-            &Reg(dest),
-            &MemArgKind::Mem {
-                base: ArgKind::Reg { reg: Reg::CTX, size: MemorySize::_64 },
-                offset: None, disp: base_off as u32,
-                size: MemorySize::_64,
-                reg_class: RegisterClass::Gpr,
-                segment: Default::default(),
-            },
-        )
+        match self.trace_base {
+            // NaiveAbi/LFI: base pointer stored at [CTX + base_off].
+            TraceBase::CtxSlot => self.writer.mov(
+                self.ctx, self.arch,
+                &Reg(dest),
+                &MemArgKind::Mem {
+                    base: ArgKind::Reg { reg: Reg::CTX, size: MemorySize::_64 },
+                    offset: None, disp: base_off as u32,
+                    size: MemorySize::_64,
+                    reg_class: RegisterClass::Gpr,
+                    segment: Default::default(),
+                },
+            ),
+            // SysV function-entry site: base is the virtual-param register.
+            TraceBase::Reg(r) => {
+                if r != dest {
+                    self.writer.mov(self.ctx, self.arch, &Reg(dest), &Reg(r))?;
+                }
+                Ok(())
+            }
+            // SysV mid-function site: base spilled to [RBP + disp]  (RBP = Reg(5)).
+            TraceBase::FrameSlot(disp) => self.writer.mov(
+                self.ctx, self.arch,
+                &Reg(dest),
+                &MemArgKind::Mem {
+                    base: ArgKind::Reg { reg: Reg(5), size: MemorySize::_64 },
+                    offset: None, disp: disp as u32,
+                    size: MemorySize::_64,
+                    reg_class: RegisterClass::Gpr,
+                    segment: Default::default(),
+                },
+            ),
+        }
     }
 
     // x86-64: ADD [ptr_reg + disp], 1 — single instruction, no scratch needed

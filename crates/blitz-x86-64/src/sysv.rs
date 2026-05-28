@@ -34,12 +34,22 @@ use portal_solutions_asm_x86_64::{
 use portal_solutions_blitz_common::{
     asm::Reg,
     asm::common::mem::MemorySize,
-    ops::{FnData, MachOperator},
+    ops::{FnData, MachOperator, TracingConfig},
     wasm_encoder::{self, FuncType, Instruction, reencode::{self as reencode, Reencode}},
 };
 
 use crate::{X64Label, RSP};
+use crate::codegen::TraceBase;
 use crate::naive::WriterExt as NaiveExt;
+
+/// Blitz register number of the SysV **trace-base virtual parameter** (`r11`).
+///
+/// `r11` is caller-saved and never a SysV positional argument register, so the
+/// runtime can pass the per-function trace-table base pointer in it without
+/// disturbing the function's real arguments.  The function-entry preamble reads
+/// it directly (before frame setup); `StartFn` then spills it to a frame slot so
+/// mid-function (loop/block) sites can reload it after `r11` is clobbered.
+pub const TRACE_BASE_REG: u8 = 11;
 
 // ---- register shortcuts ----
 const RAX: Reg = Reg(0);
@@ -99,6 +109,16 @@ pub struct SysVState {
     pub ctrl_stack: Vec<SysVCtrl>,
     pub body: u32,
     pub body_labels: BTreeMap<u32, usize>,
+    /// Tracing/specialization config for this function (`None`/disabled → no
+    /// preamble emitted).
+    pub tracing: Option<TracingConfig>,
+    /// Next trace-site id to assign (function entry = site 0; each loop/block
+    /// consumes the next, in source order).
+    pub next_site_id: u32,
+    /// RBP-relative displacement of the spilled trace-base pointer slot, set by
+    /// `StartFn` when tracing is enabled.  Mid-function sites load the base from
+    /// `[RBP + trace_base_disp]`.
+    pub trace_base_disp: i32,
 }
 
 /// Extension trait for generating System V AMD64-compatible functions.
@@ -130,6 +150,32 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
         -> Result<(), Self::Error>
     {
         self.mov(ctx, arch, &dest, &mem64(RSP, 0))
+    }
+
+    /// Emit a tracing/specialization preamble for a mid-function (loop/block)
+    /// site, consuming the next `site_id`.  No-op when tracing is disabled.
+    ///
+    /// The trace-table base is reloaded from the spilled frame slot
+    /// (`[RBP + trace_base_disp]`) since the virtual-param register `r11` has
+    /// been clobbered by the body.  Uses `RAX` as scratch (free at a block
+    /// boundary — operands live on the WASM stack).
+    fn sysv_emit_trace_site(&mut self, ctx: &mut Context, arch: X64Arch, state: &mut SysVState)
+        -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
+            let site_id = state.next_site_id;
+            state.next_site_id += 1;
+            let mut bw = crate::codegen::BlitzW {
+                writer: self, ctx, arch,
+                trace_base: TraceBase::FrameSlot(state.trace_base_disp),
+            };
+            portal_solutions_blitz_codegen::emit_jit_preamble(
+                &mut bw, cfg.table_base_off, site_id, 0, &mut state.label_index,
+            )?;
+        }
+        Ok(())
     }
 
     /// Handle an instruction using the SysV ABI (overrides local access and Return).
@@ -204,14 +250,15 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 self.set_label(ctx, arch, X64Label::Indexed { idx: i })?;
                 state.if_stack.push(crate::naive::Endable::Br);
                 state.ctrl_stack.push(SysVCtrl::Loop(i));
-                Ok(())
+                // Trace site after the loop-back label so it runs each iteration.
+                self.sysv_emit_trace_site(ctx, arch, state)
             }
             Instruction::Block(_) => {
                 let i = state.label_index;
                 state.label_index += 1;
                 state.if_stack.push(crate::naive::Endable::Br);
                 state.ctrl_stack.push(SysVCtrl::Block(i));
-                Ok(())
+                self.sysv_emit_trace_site(ctx, arch, state)
             }
             Instruction::If(_) => {
                 let i = state.label_index;
@@ -391,13 +438,22 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 state.param_count = data.num_params;
                 state.ret_count = data.num_returns;
                 state.local_count = data.num_params;
+                state.tracing = data.tracing;
+                state.next_site_id = 1; // site 0 is the function entry below
 
                 self.set_label(ctx, arch, X64Label::Indexed {
                     idx: *id as usize | (1 << 28),
                 }).map_err(Err::from)?;
 
+                // Function-entry site (site 0): the trace-table base arrives in
+                // the virtual-param register r11; read it directly so the
+                // specialization tail-jump fires before any frame is built (SysV
+                // arg registers RDI/RSI/… still intact).  Scratch = RAX.
                 if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
-                    let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch };
+                    let mut bw = crate::codegen::BlitzW {
+                        writer: self, ctx, arch,
+                        trace_base: TraceBase::Reg(TRACE_BASE_REG),
+                    };
                     portal_solutions_blitz_codegen::emit_jit_preamble(
                         &mut bw, cfg.table_base_off, 0,
                         0, &mut state.label_index,
@@ -407,10 +463,21 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 self.push(ctx, arch, &RBP).map_err(Err::from)?;
                 self.mov(ctx, arch, &RBP, &RSP).map_err(Err::from)?;
 
-                let frame_sz = (data.num_params + 16) * 8;
-                let frame_sz = (frame_sz + 15) & !15;
+                // One extra slot (at the frame bottom) holds the spilled trace
+                // base for mid-function sites; +16 headroom is the pre-existing
+                // local budget.
+                let slots = data.num_params + 16 + 1;
+                let frame_sz = (slots * 8 + 15) & !15;
                 self.mov64(ctx, arch, &RAX, frame_sz as u64).map_err(Err::from)?;
                 self.sub(ctx, arch, &RSP, &RAX).map_err(Err::from)?;
+
+                // Spill the virtual-param base (r11) to the bottom frame slot.
+                if data.tracing.as_ref().map(|c| c.enabled).unwrap_or(false) {
+                    let disp = 0u32.wrapping_sub(frame_sz as u32);
+                    state.trace_base_disp = -(frame_sz as i32);
+                    self.mov(ctx, arch, &mem64(RBP, disp), &Reg(TRACE_BASE_REG))
+                        .map_err(Err::from)?;
+                }
 
                 for i in 0..data.num_params.min(6) {
                     self.sysv_store_local(ctx, arch, ARG_REGS[i], i).map_err(Err::from)?;

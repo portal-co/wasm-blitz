@@ -112,7 +112,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
             let site_id = state.next_site_id;
             state.next_site_id += 1;
-            let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch };
+            let mut bw = crate::codegen::BlitzW::new(self, ctx, arch);
             portal_solutions_blitz_codegen::emit_jit_preamble(
                 &mut bw, cfg.table_base_off, site_id, 2, &mut state.label_index,
             )?;
@@ -225,7 +225,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
             MachOperator::StartBody => {
                 state.next_site_id = 1;
                 if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
-                    let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch };
+                    let mut bw = crate::codegen::BlitzW::new(self, ctx, arch);
                     portal_solutions_blitz_codegen::emit_jit_preamble(
                         &mut bw, cfg.table_base_off, 0,
                         2, &mut state.label_index,

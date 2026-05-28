@@ -4740,3 +4740,156 @@ fn test_tracing_disabled_is_zero_overhead() {
     let (asm_on, _) = compile_x86_naive_with_tracing(&wasm, 0x60);
     assert!(asm_on.len() > asm_off.len(), "tracing adds preamble code");
 }
+
+// ---------------------------------------------------------------------------
+// SysV tracing execution: trace-table install + counter / specialization verify
+// ---------------------------------------------------------------------------
+
+/// Compile `wasm` for x86-64 SysV with tracing enabled, into raw machine code
+/// (assembled at base 0x100000 for Unicorn).  Returns `(code, num_sites)`.
+fn compile_x86_sysv_binary_traced(wasm: &[u8]) -> (Vec<u8>, u32) {
+    use portal_solutions_blitz_x86_64::{sysv, X64Arch, X64Label};
+    use portal_solutions_asm_x86_64::out::iced::IcedWriter;
+    use portal_solutions_blitz_common::ops::{trace_site_count, MachOperator, TracingConfig};
+
+    let (sigs_wp, _, fsigs) = parse_sigs(wasm);
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let num_sites = trace_site_count(&bodies[0]);
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut reencoder = RoundtripReencoder;
+    let mut ctx = ();
+    let mut out = IcedWriter::<X64Label>::new(0x100000);
+    let mut state = sysv::SysVState::default();
+    for op in ops {
+        let mut op = op.unwrap();
+        if let MachOperator::StartFn { data, .. } = &mut op {
+            // SysV ignores table_base_off (site 0 = r11, mid = frame slot).
+            data.tracing = Some(TracingConfig { enabled: true, num_sites, table_base_off: 0 });
+        }
+        sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+            &mut out, &mut ctx, X64Arch::default(),
+            &mut state, &[], &op, &mut reencoder, 0,
+        ).unwrap();
+    }
+    (out.into_bytes(), num_sites)
+}
+
+/// Run a traced x86-64 SysV function under Unicorn.
+///
+/// Installs a zeroed `[TraceSite]` table at `TRACE_TABLE`, passes its base in
+/// the virtual-parameter register `r11`, optionally installs a specialization
+/// stub for one site, runs, and returns `(rax_result, per_site_counters)`.
+fn run_x86_sysv_traced(
+    code: &[u8],
+    args: &[u64],
+    num_sites: u32,
+    spec: Option<(u32, &[u8])>,
+) -> (u64, Vec<u64>) {
+    use unicorn_engine::{unicorn_const::{Arch, Mode, Prot}, RegisterX86, Unicorn};
+
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x200000;
+    const STACK_SIZE: u64 = 0x10000;
+    const TRACE_TABLE: u64 = 0x400000;
+    const HALT: u64 = CODE + 0xF000; // sentinel return address (past all code)
+
+    let mut uc = Unicorn::new(Arch::X86, Mode::MODE_64).unwrap();
+    uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+    uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+    uc.mem_map(TRACE_TABLE, 0x1000, Prot::ALL).unwrap();
+    uc.mem_write(CODE, code).unwrap();
+    // Zero the trace table.
+    uc.mem_write(TRACE_TABLE, &vec![0u8; num_sites as usize * 16]).unwrap();
+
+    // Optionally install a specialization stub + pointer for one site.
+    if let Some((site, stub)) = spec {
+        let stub_addr = CODE + ((code.len() as u64 + 15) & !15); // 16-align after code
+        uc.mem_write(stub_addr, stub).unwrap();
+        let slot = TRACE_TABLE + site as u64 * 16 + 8; // TraceSite.specialization
+        uc.mem_write(slot, &stub_addr.to_le_bytes()).unwrap();
+    }
+
+    let rsp = STACK + STACK_SIZE - 8;
+    uc.mem_write(rsp, &HALT.to_le_bytes()).unwrap(); // return address sentinel
+    uc.reg_write(RegisterX86::RSP, rsp).unwrap();
+    // Virtual trace-base parameter.
+    uc.reg_write(RegisterX86::R11, TRACE_TABLE).unwrap();
+    let arg_regs = [RegisterX86::RDI, RegisterX86::RSI, RegisterX86::RDX, RegisterX86::RCX];
+    for (i, &v) in args.iter().enumerate().take(4) {
+        uc.reg_write(arg_regs[i], v).unwrap();
+    }
+
+    uc.emu_start(CODE, HALT, 0, 100_000).unwrap();
+
+    let result = uc.reg_read(RegisterX86::RAX).unwrap();
+    let mut counters = Vec::with_capacity(num_sites as usize);
+    for s in 0..num_sites {
+        let mut b = [0u8; 8];
+        uc.mem_read(TRACE_TABLE + s as u64 * 16, &mut b).unwrap();
+        counters.push(u64::from_le_bytes(b));
+    }
+    (result, counters)
+}
+
+#[test]
+fn test_sysv_tracing_counters_increment() {
+    // Loop-counter fn: site 0 = entry, site 1 = loop. With arg=5 the loop body
+    // runs until n hits 0, so the loop site is entered 6 times (initial + 5
+    // back-edges) and the entry site once.  No specialization installed → the
+    // baseline runs and the result is the counted value.
+    let wasm = make_loop_counter_wasm();
+    let (code, num_sites) = compile_x86_sysv_binary_traced(&wasm);
+    assert_eq!(num_sites, 2);
+
+    let (result, counters) = run_x86_sysv_traced(&code, &[5], num_sites, None);
+    assert_eq!(result as u32, 5, "baseline loop result");
+    assert_eq!(counters[0], 1, "function entered once");
+    assert_eq!(counters[1], 6, "loop site entered 6× for n=5");
+
+    // A different arg scales the loop counter.
+    let (result, counters) = run_x86_sysv_traced(&code, &[10], num_sites, None);
+    assert_eq!(result as u32, 10);
+    assert_eq!(counters[0], 1);
+    assert_eq!(counters[1], 11);
+}
+
+#[test]
+fn test_sysv_tracing_specialization_tailjump() {
+    // Install a specialization stub at site 0 (function entry): `mov eax, 0xABCD ; ret`.
+    // The entry preamble must increment the counter, see the non-null pointer,
+    // and tail-jump to the stub — so the result is the stub's sentinel and the
+    // loop site is never reached.
+    let wasm = make_loop_counter_wasm();
+    let (code, num_sites) = compile_x86_sysv_binary_traced(&wasm);
+
+    let stub: &[u8] = &[0xB8, 0xCD, 0xAB, 0x00, 0x00, 0xC3]; // mov eax,0xABCD ; ret
+    let (result, counters) = run_x86_sysv_traced(&code, &[5], num_sites, Some((0, stub)));
+
+    assert_eq!(result as u32, 0xABCD, "entry specialization tail-jump taken");
+    assert_eq!(counters[0], 1, "entry counter still incremented before the jump");
+    assert_eq!(counters[1], 0, "loop site never reached (specialized away)");
+}
+
+#[test]
+fn test_sysv_tracing_loop_site_specialization() {
+    // Install a specialization stub at the loop site (site 1).  The baseline
+    // entry runs, the loop is entered once (counter[1] == 1), the preamble sees
+    // the pointer and tail-jumps to the stub instead of running the loop body.
+    let wasm = make_loop_counter_wasm();
+    let (code, num_sites) = compile_x86_sysv_binary_traced(&wasm);
+
+    // At a mid-function site the operand stack is live, so the stub must tear
+    // down the SysV frame before returning: mov eax,99 ; mov rsp,rbp ; pop rbp ; ret
+    let stub: &[u8] = &[0xB8, 0x63, 0x00, 0x00, 0x00, 0x48, 0x89, 0xEC, 0x5D, 0xC3];
+    let (result, counters) = run_x86_sysv_traced(&code, &[5], num_sites, Some((1, stub)));
+
+    assert_eq!(result as u32, 99, "loop-site specialization tail-jump taken");
+    assert_eq!(counters[0], 1, "entry counter incremented");
+    assert_eq!(counters[1], 1, "loop entered once before tail-jump");
+}
