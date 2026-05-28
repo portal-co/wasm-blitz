@@ -81,7 +81,7 @@ where
         state.tracing = data.tracing;
         state.next_site_id = 1;
         if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
-            let mut bw = crate::codegen::BlitzW { writer: w, ctx, arch, scratch2: 6 };
+            let mut bw = crate::codegen::BlitzW::new(w, ctx, arch, 6);
             portal_solutions_blitz_codegen::emit_jit_preamble(
                 &mut bw, cfg.table_base_off, 0,
                 5, &mut state.label_index,
@@ -243,7 +243,7 @@ where
         // Trace preamble: after label, before frame setup so SysV arg regs
         // (a0–a7, Reg 10–17) are intact for the outer-JIT tail-jump.
         if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
-            let mut bw = crate::codegen::BlitzW { writer: w, ctx, arch, scratch2: 6 };
+            let mut bw = crate::codegen::BlitzW::new(w, ctx, arch, 6);
             portal_solutions_blitz_codegen::emit_jit_preamble(
                 &mut bw, cfg.table_base_off, 0,
                 5, &mut state.label_index,

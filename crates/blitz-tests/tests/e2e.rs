@@ -4745,96 +4745,18 @@ fn test_tracing_disabled_is_zero_overhead() {
 // SysV tracing execution: trace-table install + counter / specialization verify
 // ---------------------------------------------------------------------------
 
-/// Compile `wasm` for x86-64 SysV with tracing enabled, into raw machine code
-/// (assembled at base 0x100000 for Unicorn).  Returns `(code, num_sites)`.
+/// Thin x86-64 shims over the generic SysV tracing harness (kept for the
+/// x86-specific tests below, including the loop-site frame-teardown stub).
 fn compile_x86_sysv_binary_traced(wasm: &[u8]) -> (Vec<u8>, u32) {
-    use portal_solutions_blitz_x86_64::{sysv, X64Arch, X64Label};
-    use portal_solutions_asm_x86_64::out::iced::IcedWriter;
-    use portal_solutions_blitz_common::ops::{trace_site_count, MachOperator, TracingConfig};
-
-    let (sigs_wp, _, fsigs) = parse_sigs(wasm);
-    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
-    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
-        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
-            bodies.push(body);
-        }
-    }
-    let num_sites = trace_site_count(&bodies[0]);
-    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
-    let ops = dce_pass!(raw_ops);
-    let mut reencoder = RoundtripReencoder;
-    let mut ctx = ();
-    let mut out = IcedWriter::<X64Label>::new(0x100000);
-    let mut state = sysv::SysVState::default();
-    for op in ops {
-        let mut op = op.unwrap();
-        if let MachOperator::StartFn { data, .. } = &mut op {
-            // SysV ignores table_base_off (site 0 = r11, mid = frame slot).
-            data.tracing = Some(TracingConfig { enabled: true, num_sites, table_base_off: 0 });
-        }
-        sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-            &mut out, &mut ctx, X64Arch::default(),
-            &mut state, &[], &op, &mut reencoder, 0,
-        ).unwrap();
-    }
-    (out.into_bytes(), num_sites)
+    compile_native_sysv_binary_traced(wasm, NativeArch::X86_64)
 }
-
-/// Run a traced x86-64 SysV function under Unicorn.
-///
-/// Installs a zeroed `[TraceSite]` table at `TRACE_TABLE`, passes its base in
-/// the virtual-parameter register `r11`, optionally installs a specialization
-/// stub for one site, runs, and returns `(rax_result, per_site_counters)`.
 fn run_x86_sysv_traced(
     code: &[u8],
     args: &[u64],
     num_sites: u32,
     spec: Option<(u32, &[u8])>,
 ) -> (u64, Vec<u64>) {
-    use unicorn_engine::{unicorn_const::{Arch, Mode, Prot}, RegisterX86, Unicorn};
-
-    const CODE: u64 = 0x100000;
-    const STACK: u64 = 0x200000;
-    const STACK_SIZE: u64 = 0x10000;
-    const TRACE_TABLE: u64 = 0x400000;
-    const HALT: u64 = CODE + 0xF000; // sentinel return address (past all code)
-
-    let mut uc = Unicorn::new(Arch::X86, Mode::MODE_64).unwrap();
-    uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
-    uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
-    uc.mem_map(TRACE_TABLE, 0x1000, Prot::ALL).unwrap();
-    uc.mem_write(CODE, code).unwrap();
-    // Zero the trace table.
-    uc.mem_write(TRACE_TABLE, &vec![0u8; num_sites as usize * 16]).unwrap();
-
-    // Optionally install a specialization stub + pointer for one site.
-    if let Some((site, stub)) = spec {
-        let stub_addr = CODE + ((code.len() as u64 + 15) & !15); // 16-align after code
-        uc.mem_write(stub_addr, stub).unwrap();
-        let slot = TRACE_TABLE + site as u64 * 16 + 8; // TraceSite.specialization
-        uc.mem_write(slot, &stub_addr.to_le_bytes()).unwrap();
-    }
-
-    let rsp = STACK + STACK_SIZE - 8;
-    uc.mem_write(rsp, &HALT.to_le_bytes()).unwrap(); // return address sentinel
-    uc.reg_write(RegisterX86::RSP, rsp).unwrap();
-    // Virtual trace-base parameter.
-    uc.reg_write(RegisterX86::R11, TRACE_TABLE).unwrap();
-    let arg_regs = [RegisterX86::RDI, RegisterX86::RSI, RegisterX86::RDX, RegisterX86::RCX];
-    for (i, &v) in args.iter().enumerate().take(4) {
-        uc.reg_write(arg_regs[i], v).unwrap();
-    }
-
-    uc.emu_start(CODE, HALT, 0, 100_000).unwrap();
-
-    let result = uc.reg_read(RegisterX86::RAX).unwrap();
-    let mut counters = Vec::with_capacity(num_sites as usize);
-    for s in 0..num_sites {
-        let mut b = [0u8; 8];
-        uc.mem_read(TRACE_TABLE + s as u64 * 16, &mut b).unwrap();
-        counters.push(u64::from_le_bytes(b));
-    }
-    (result, counters)
+    run_native_sysv_traced(NativeArch::X86_64, code, args, num_sites, spec)
 }
 
 #[test]
@@ -4893,3 +4815,228 @@ fn test_sysv_tracing_loop_site_specialization() {
     assert_eq!(counters[0], 1, "entry counter incremented");
     assert_eq!(counters[1], 1, "loop entered once before tail-jump");
 }
+
+// ---------------------------------------------------------------------------
+// Generic (all-arch) SysV tracing execution harness
+// ---------------------------------------------------------------------------
+
+/// Compile `wasm` for the given arch's SysV ABI with tracing enabled, into raw
+/// machine code (loaded at 0x100000 under Unicorn).  Returns `(code, num_sites)`.
+fn compile_native_sysv_binary_traced(wasm: &[u8], arch: NativeArch) -> (Vec<u8>, u32) {
+    use portal_solutions_blitz_common::ops::{trace_site_count, MachOperator, TracingConfig};
+
+    let (sigs_wp, _, fsigs) = parse_sigs(wasm);
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let num_sites = trace_site_count(&bodies[0]);
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut reencoder = RoundtripReencoder;
+    let mut ctx = ();
+
+    // Inject tracing into the StartFn FnData of every op.
+    let inject = |op: &mut MachOperator<'_, ()>| {
+        if let MachOperator::StartFn { data, .. } = op {
+            data.tracing = Some(TracingConfig { enabled: true, num_sites, table_base_off: 0 });
+        }
+    };
+
+    let code = match arch {
+        NativeArch::X86_64 => {
+            use portal_solutions_blitz_x86_64::{sysv, X64Arch, X64Label};
+            use portal_solutions_asm_x86_64::out::iced::IcedWriter;
+            let mut out = IcedWriter::<X64Label>::new(0x100000);
+            let mut state = sysv::SysVState::default();
+            for op in ops {
+                let mut op = op.unwrap();
+                inject(&mut op);
+                sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, X64Arch::default(),
+                    &mut state, &[], &op, &mut reencoder, 0,
+                ).unwrap();
+            }
+            out.into_bytes()
+        }
+        NativeArch::AArch64 => {
+            use portal_solutions_blitz_aarch64::{naive, sysv, AArch64Arch, AArch64Label};
+            use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+            let mut out = AArch64Writer::<AArch64Label>::new();
+            let mut state = naive::State::default();
+            for op in ops {
+                let mut op = op.unwrap();
+                inject(&mut op);
+                sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, AArch64Arch::default(),
+                    &mut state, &[], &op, &mut reencoder, 0,
+                ).unwrap();
+            }
+            out.into_bytes()
+        }
+        NativeArch::Riscv64 => {
+            use portal_solutions_blitz_riscv64::{naive, sysv, RiscV64Arch, RiscvLabel};
+            use portal_solutions_asm_riscv64::out::rv_asm_backend::RvAsmWriter;
+            let mut out = RvAsmWriter::<RiscvLabel>::new();
+            let mut state = naive::State::default();
+            for op in ops {
+                let mut op = op.unwrap();
+                inject(&mut op);
+                sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, RiscV64Arch::default(),
+                    &mut state, &[], &op, &mut reencoder, 0,
+                ).unwrap();
+            }
+            out.into_bytes()
+        }
+    };
+    (code, num_sites)
+}
+
+/// A function-entry specialization stub that returns `sentinel` (≤ 0x7FF so it
+/// fits every arch's single-instruction immediate) via the ABI return register.
+/// Entered before any frame is built, so a bare return suffices.
+fn sysv_entry_stub(arch: NativeArch, sentinel: u16) -> Vec<u8> {
+    match arch {
+        NativeArch::X86_64 => {
+            // mov eax, imm32 ; ret
+            let mut v = vec![0xB8u8];
+            v.extend_from_slice(&(sentinel as u32).to_le_bytes());
+            v.push(0xC3);
+            v
+        }
+        NativeArch::AArch64 => {
+            // movz w0, #sentinel ; ret
+            let movz = 0x5280_0000u32 | ((sentinel as u32) << 5);
+            let mut v = movz.to_le_bytes().to_vec();
+            v.extend_from_slice(&0xD65F_03C0u32.to_le_bytes()); // ret
+            v
+        }
+        NativeArch::Riscv64 => {
+            // addi a0, x0, #sentinel ; ret (jalr x0, 0(ra))
+            let addi = ((sentinel as u32) << 20) | (10u32 << 7) | 0x13;
+            let mut v = addi.to_le_bytes().to_vec();
+            v.extend_from_slice(&0x0000_8067u32.to_le_bytes()); // ret
+            v
+        }
+    }
+}
+
+/// Run a traced SysV function under Unicorn for any arch.
+///
+/// Installs a zeroed `[TraceSite]` table, passes its base in the arch's
+/// virtual-parameter register, optionally installs a specialization stub for one
+/// site, runs, and returns `(return_reg, per_site_counters)`.
+fn run_native_sysv_traced(
+    arch: NativeArch,
+    code: &[u8],
+    args: &[u64],
+    num_sites: u32,
+    spec: Option<(u32, &[u8])>,
+) -> (u64, Vec<u64>) {
+    use unicorn_engine::{unicorn_const::{Arch, Mode, Prot}, Unicorn};
+
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x200000;
+    const STACK_SIZE: u64 = 0x10000;
+    const TRACE_TABLE: u64 = 0x400000;
+    const HALT: u64 = CODE + 0xF000;
+
+    // Shared setup performed inside each arch arm (Unicorn is not object-safe
+    // across arches, so we duplicate the small tail).
+    macro_rules! common_mem {
+        ($uc:expr) => {{
+            $uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            $uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            $uc.mem_map(TRACE_TABLE, 0x1000, Prot::ALL).unwrap();
+            $uc.mem_write(CODE, code).unwrap();
+            $uc.mem_write(TRACE_TABLE, &vec![0u8; num_sites as usize * 16]).unwrap();
+            if let Some((site, stub)) = spec {
+                let stub_addr = CODE + ((code.len() as u64 + 15) & !15);
+                $uc.mem_write(stub_addr, stub).unwrap();
+                let slot = TRACE_TABLE + site as u64 * 16 + 8;
+                $uc.mem_write(slot, &stub_addr.to_le_bytes()).unwrap();
+            }
+        }};
+    }
+    macro_rules! read_counters {
+        ($uc:expr) => {{
+            let mut counters = Vec::with_capacity(num_sites as usize);
+            for s in 0..num_sites {
+                let mut b = [0u8; 8];
+                $uc.mem_read(TRACE_TABLE + s as u64 * 16, &mut b).unwrap();
+                counters.push(u64::from_le_bytes(b));
+            }
+            counters
+        }};
+    }
+
+    match arch {
+        NativeArch::X86_64 => {
+            use unicorn_engine::RegisterX86;
+            let mut uc = Unicorn::new(Arch::X86, Mode::MODE_64).unwrap();
+            common_mem!(uc);
+            let rsp = STACK + STACK_SIZE - 8;
+            uc.mem_write(rsp, &HALT.to_le_bytes()).unwrap();
+            uc.reg_write(RegisterX86::RSP, rsp).unwrap();
+            uc.reg_write(RegisterX86::R11, TRACE_TABLE).unwrap(); // virtual param
+            let arg_regs = [RegisterX86::RDI, RegisterX86::RSI, RegisterX86::RDX, RegisterX86::RCX];
+            for (i, &v) in args.iter().enumerate().take(4) { uc.reg_write(arg_regs[i], v).unwrap(); }
+            uc.emu_start(CODE, HALT, 0, 100_000).unwrap();
+            (uc.reg_read(RegisterX86::RAX).unwrap(), read_counters!(uc))
+        }
+        NativeArch::AArch64 => {
+            use unicorn_engine::RegisterARM64;
+            let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+            common_mem!(uc);
+            uc.reg_write(RegisterARM64::SP, STACK + STACK_SIZE - 16).unwrap();
+            uc.reg_write(RegisterARM64::LR, HALT).unwrap();
+            uc.reg_write(RegisterARM64::X12, TRACE_TABLE).unwrap(); // virtual param
+            let arg_regs = [RegisterARM64::X0, RegisterARM64::X1, RegisterARM64::X2, RegisterARM64::X3];
+            for (i, &v) in args.iter().enumerate().take(4) { uc.reg_write(arg_regs[i], v).unwrap(); }
+            uc.emu_start(CODE, HALT, 0, 100_000).unwrap();
+            (uc.reg_read(RegisterARM64::X0).unwrap(), read_counters!(uc))
+        }
+        NativeArch::Riscv64 => {
+            use unicorn_engine::RegisterRISCV;
+            let mut uc = Unicorn::new(Arch::RISCV, Mode::RISCV64).unwrap();
+            common_mem!(uc);
+            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16).unwrap();
+            uc.reg_write(RegisterRISCV::RA, HALT).unwrap();
+            uc.reg_write(RegisterRISCV::T2, TRACE_TABLE).unwrap(); // virtual param
+            let arg_regs = [RegisterRISCV::A0, RegisterRISCV::A1, RegisterRISCV::A2, RegisterRISCV::A3];
+            for (i, &v) in args.iter().enumerate().take(4) { uc.reg_write(arg_regs[i], v).unwrap(); }
+            uc.emu_start(CODE, HALT, 0, 100_000).unwrap();
+            (uc.reg_read(RegisterRISCV::A0).unwrap(), read_counters!(uc))
+        }
+    }
+}
+
+fn assert_sysv_tracing_counters(arch: NativeArch) {
+    let wasm = make_loop_counter_wasm();
+    let (code, num_sites) = compile_native_sysv_binary_traced(&wasm, arch);
+    assert_eq!(num_sites, 2, "{arch:?}: entry + loop");
+    // Mid-function (loop) site uses the spilled frame-slot base; the counter
+    // incrementing the right amount proves the frame-slot disp is correct.
+    let (result, counters) = run_native_sysv_traced(arch, &code, &[5], num_sites, None);
+    assert_eq!(result as u32, 5, "{arch:?}: baseline loop result");
+    assert_eq!(counters[0], 1, "{arch:?}: entry site once");
+    assert_eq!(counters[1], 6, "{arch:?}: loop site 6× for n=5");
+}
+
+fn assert_sysv_tracing_entry_spec(arch: NativeArch) {
+    let wasm = make_loop_counter_wasm();
+    let (code, num_sites) = compile_native_sysv_binary_traced(&wasm, arch);
+    let stub = sysv_entry_stub(arch, 1234);
+    let (result, counters) = run_native_sysv_traced(arch, &code, &[5], num_sites, Some((0, &stub)));
+    assert_eq!(result as u32, 1234, "{arch:?}: entry specialization tail-jump taken");
+    assert_eq!(counters[0], 1, "{arch:?}: entry counter incremented before jump");
+    assert_eq!(counters[1], 0, "{arch:?}: loop site never reached");
+}
+
+#[test] fn test_sysv_tracing_counters_aarch64() { assert_sysv_tracing_counters(NativeArch::AArch64); }
+#[test] fn test_sysv_tracing_counters_riscv64() { assert_sysv_tracing_counters(NativeArch::Riscv64); }
+#[test] fn test_sysv_tracing_entry_spec_aarch64() { assert_sysv_tracing_entry_spec(NativeArch::AArch64); }
+#[test] fn test_sysv_tracing_entry_spec_riscv64() { assert_sysv_tracing_entry_spec(NativeArch::Riscv64); }

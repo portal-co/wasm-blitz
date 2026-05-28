@@ -29,7 +29,17 @@ use portal_pc_asm_common::types::mem::MemorySize;
 use portal_solutions_asm_riscv64::{RegisterClass, out::arg::{ArgKind, MemArgKind}};
 
 use crate::RiscvLabel;
+use crate::codegen::TraceBase;
 use crate::naive::{State, WriterExt as NaiveExt, flush_regalloc, push, pop, pop_regalloc_to};
+
+/// Blitz register number of the RISC-V psABI **trace-base virtual parameter**
+/// (`t2` / x7).
+///
+/// `t2` is caller-saved and never a positional argument register (a0–a7), nor
+/// the trace-preamble scratch (t0/t1), so the runtime can pass the per-function
+/// trace-table base in it.  Read directly at the function-entry site; spilled to
+/// an fp-relative frame slot for mid-function (loop/block) sites.
+pub const TRACE_BASE_REG: u8 = 7;
 
 // Argument registers in RISC-V psABI order: a0–a7
 const ARG_REGS: [Reg; 8] = [
@@ -159,15 +169,21 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                 state.local_count = data.num_params;
                 state.num_returns = data.num_returns;
                 state.control_depth = data.control_depth;
+                state.tracing = data.tracing;
+                state.next_site_id = 1; // site 0 is the function entry below
 
                 self.set_label(ctx, arch, RiscvLabel::Indexed {
                     idx: *id as usize | (1 << 28),
                 }).map_err(Err::from)?;
 
-                // Trace preamble: after label, before frame setup so SysV arg
-                // regs (a0–a7, Reg 10–17) are intact for the outer-JIT tail-jump.
+                // Function-entry site (site 0): trace-table base arrives in the
+                // virtual-param register t2; read it directly before frame setup
+                // so a0–a7 are intact for the tail-jump.  Scratch t0/t1.
                 if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
-                    let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: 6 };
+                    let mut bw = crate::codegen::BlitzW {
+                        writer: self, ctx, arch, scratch2: 6,
+                        trace_base: TraceBase::Reg(TRACE_BASE_REG),
+                    };
                     portal_solutions_blitz_codegen::emit_jit_preamble(
                         &mut bw, cfg.table_base_off, 0,
                         5, &mut state.label_index,
@@ -176,17 +192,25 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
 
                 // Frame layout (from FP downward):
                 //   [FP-(1*8)]  = local 0   ← same offsets as naive, regalloc-compatible
-                //   [FP-(2*8)]  = local 1
                 //   ...
-                //   [SP+8] = saved old-FP   ← bottom two slots for callee-saves
-                //   [SP+0] = saved RA
-                let frame_slots = data.num_params + 2 + state.control_depth * 2 + 2;
+                //   [SP+16] = spilled trace base  ← extra slot for mid-function sites
+                //   [SP+8]  = saved old-FP   ← bottom two slots for callee-saves
+                //   [SP+0]  = saved RA
+                let frame_slots = data.num_params + 2 + state.control_depth * 2 + 3;
                 let frame_sz = (frame_slots * 8) as i32;
                 state.sysv_frame_sz = frame_sz;
                 self.addi(ctx, arch, &SP, &SP, -frame_sz).map_err(Err::from)?;
                 self.sd(ctx, arch, &RA, &mem64(SP, 0)).map_err(Err::from)?;
                 self.sd(ctx, arch, &FP, &mem64(SP, 8)).map_err(Err::from)?;
                 self.addi(ctx, arch, &FP, &SP, frame_sz).map_err(Err::from)?;
+
+                // Spill the virtual-param base (t2) to the [SP+16] slot and point
+                // mid-function sites at it (fp-relative).
+                if data.tracing.as_ref().map(|c| c.enabled).unwrap_or(false) {
+                    let disp = -frame_sz + 16;
+                    state.trace_base = TraceBase::FrameSlot(disp);
+                    self.sd(ctx, arch, &Reg(TRACE_BASE_REG), &mem64(FP, disp)).map_err(Err::from)?;
+                }
 
                 for i in 0..data.num_params.min(8) {
                     self.sysv_store_local(ctx, arch, ARG_REGS[i], i).map_err(Err::from)?;

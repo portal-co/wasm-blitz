@@ -595,37 +595,49 @@ This is `emit_jit_preamble(w, base_off, site_id, scratch, label_counter)` in
 | x86-64    | NaiveAbi | Reg(2) (RDX)  | entry in `StartBody`; loop/block via `emit_trace_site` |
 | x86-64    | SysVAbi  | Reg(0) (RAX)  | entry + loop/block via `sysv_emit_trace_site` |
 | AArch64   | NaiveAbi | x9+x10 (T0/T1)| entry in `StartFn`; loop/block via `emit_trace_site` |
-| AArch64   | SysVAbi  | x9+x10 (T0/T1)| entry only (`StartFn`) |
+| AArch64   | SysVAbi  | x9+x10 (T0/T1)| entry + loop/block (delegated naive `emit_trace_site`) |
 | RISC-V 64 | NaiveAbi | t0+t1 (Reg 5/6)| entry in `StartFn`; loop/block via `emit_trace_site` |
-| RISC-V 64 | SysVAbi  | t0+t1 (Reg 5/6)| entry only (`StartFn`) |
+| RISC-V 64 | SysVAbi  | t0+t1 (Reg 5/6)| entry + loop/block (delegated naive `emit_trace_site`) |
 
 On the **NaiveAbi** path (`naive.rs`, also used by the LFI ABI) the base is the CTX
-frame pointer.  **x86-64 SysVAbi** has its own control-flow lowering and supports
-mid-function sites too (see below); the AArch64/RISC-V SysVAbi backends currently emit
-the function-entry site only.
+frame pointer.  All three **SysVAbi** backends support mid-function sites via the
+virtual-parameter convention below.
 
-**SysVAbi trace-base — the virtual function parameter (x86-64)**:
-the SysV frame is not set up at the function-entry preamble, and the NaiveAbi CTX frame
+**SysVAbi trace-base — the virtual function parameter**:
+the SysV frame is not set up at the function-entry preamble and the NaiveAbi CTX frame
 pointer does not exist, so the trace-table base is passed as a **virtual function
-parameter** in `r11` (`TRACE_BASE_REG` in `sysv.rs`).  `r11` is caller-saved and never a
-SysV positional argument register, so the runtime can set it without disturbing the
-function's real arguments (`rdi`/`rsi`/…).
+parameter** in a reserved register (`TRACE_BASE_REG` in each backend's `sysv.rs`):
 
-- **Site 0 (function entry)** reads the base directly from `r11`, before any frame is
-  built, so the specialization tail-jump still delivers the SysV argument registers
-  intact.
-- **`StartFn`** then spills `r11` to a dedicated slot at the bottom of the rbp frame
-  (`SysVState::trace_base_disp`); one extra slot is reserved beyond the local budget.
-- **Mid-function sites (loop/block)** reload the base from `[RBP + trace_base_disp]`,
-  since `r11` is clobbered by the body.  A mid-function specialization stub is entered
-  with the operand stack live and the frame set up, so to return from the function it
-  must tear the frame down itself (`mov rsp,rbp; pop rbp; ret`).
+| Arch     | Virtual-param reg | Frame-pointer for the spill slot |
+|----------|-------------------|----------------------------------|
+| x86-64   | `r11`             | `rbp` (bottom frame slot)        |
+| AArch64  | `x12`             | `x29`/FP (bottom frame slot)     |
+| RISC-V 64| `t2` (x7)         | `s0`/fp (`[sp+16]` slot)         |
+
+Each is caller-saved and never a positional argument register (nor the trace-preamble
+scratch), so the runtime can set it without disturbing the function's real arguments.
+
+- **Site 0 (function entry)** reads the base directly from the virtual-param register,
+  before any frame is built, so the specialization tail-jump still delivers the SysV
+  argument registers intact (`codegen::TraceBase::Reg`).
+- **`StartFn`** then spills it to a dedicated extra frame slot and records the FP-relative
+  displacement.  For the x86-64 ABI this lives in `SysVState::trace_base_disp`; the
+  AArch64/RISC-V SysV backends reuse the **naive lowering** and configure it via the new
+  `naive::State::trace_base` field (`codegen::TraceBase::FrameSlot`).
+- **Mid-function sites (loop/block)** are emitted by the naive `emit_trace_site` (on
+  AArch64/RISC-V, reached by delegation from the SysV control-flow path), which reloads
+  the base from the frame slot since the virtual-param register is clobbered by the body.
+  A mid-function specialization stub is entered with the operand stack live and the frame
+  set up, so to return from the whole function it must tear the frame down itself (on
+  x86-64, `mov rsp,rbp; pop rbp; ret`).
 
 The *table layout* (`TraceSite`, `site_id` indexing) is identical across all ABIs; only
 the base-load mechanism differs (`codegen::TraceBase::{CtxSlot, Reg, FrameSlot}`).
-The runtime contract is exercised end-to-end in the e2e suite under Unicorn
-(`run_x86_sysv_traced`): it installs a zeroed `[TraceSite]` table, passes its base in
-`r11`, and verifies counter increments and entry/loop-site specialization tail-jumps.
+The runtime contract is exercised end-to-end for **all three arches** in the e2e suite
+under Unicorn (`run_native_sysv_traced`): it installs a zeroed `[TraceSite]` table,
+passes its base in the virtual-param register, and verifies per-site counter increments
+(including the mid-function loop site) and entry-site specialization tail-jumps; the
+x86-64 tests additionally cover a loop-site specialization with frame teardown.
 
 ### Specialisation + deopt (`crates/blitz-specialize`)
 

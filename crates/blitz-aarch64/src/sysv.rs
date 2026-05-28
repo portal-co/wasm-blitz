@@ -35,7 +35,16 @@ use portal_solutions_blitz_common::{
 
 use crate::naive::{State, WriterExt};
 use crate::AArch64Label;
+use crate::codegen::TraceBase;
 use crate::{FP, LR, SP};
+
+/// Blitz register number of the AAPCS64 **trace-base virtual parameter** (`x12`).
+///
+/// `x12` is caller-saved and never a positional argument register (X0–X7), nor
+/// the trace-preamble scratch (x9/x10), so the runtime can pass the per-function
+/// trace-table base in it.  Read directly at the function-entry site; spilled to
+/// an FP-relative frame slot for mid-function (loop/block) sites.
+pub const TRACE_BASE_REG: u8 = 12;
 
 fn reg(r: Reg) -> MemArgKind {
     MemArgKind::NoMem(ArgKind::Reg { reg: r, size: MemorySize::_64 })
@@ -155,12 +164,20 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 state.local_count = data.num_params;
                 state.num_returns = data.num_returns;
                 state.control_depth = data.control_depth;
+                state.tracing = data.tracing;
+                state.next_site_id = 1; // site 0 is the function entry below
 
                 self.set_label(ctx, arch, AArch64Label::Indexed { idx: *id as usize + 0x80000000 })
                     .map_err(Err::from)?;
 
+                // Function-entry site (site 0): trace-table base arrives in the
+                // virtual-param register x12; read it directly before the frame
+                // is built so the tail-jump delivers X0–X7 intact.  Scratch x9/x10.
                 if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
-                    let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: 10 };
+                    let mut bw = crate::codegen::BlitzW {
+                        writer: self, ctx, arch, scratch2: 10,
+                        trace_base: TraceBase::Reg(TRACE_BASE_REG),
+                    };
                     portal_solutions_blitz_codegen::emit_jit_preamble(
                         &mut bw, cfg.table_base_off, 0,
                         9, &mut state.label_index,
@@ -170,10 +187,19 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16)).map_err(Err::from)?;
                 self.mov(ctx, arch, &reg(FP), &reg(SP)).map_err(Err::from)?;
 
-                let locals_slots = data.num_params as i64 + state.control_depth as i64 * 2 + 2;
-                if locals_slots > 0 {
-                    let size = MemArgKind::NoMem(ArgKind::Lit((locals_slots * 8) as u64));
-                    self.sub(ctx, arch, &reg(SP), &reg(SP), &size).map_err(Err::from)?;
+                // One extra slot (frame bottom) holds the spilled trace base for
+                // mid-function sites.
+                let locals_slots = data.num_params as i64 + state.control_depth as i64 * 2 + 3;
+                let size = MemArgKind::NoMem(ArgKind::Lit((locals_slots * 8) as u64));
+                self.sub(ctx, arch, &reg(SP), &reg(SP), &size).map_err(Err::from)?;
+
+                // Spill the virtual-param base (x12) to the bottom frame slot and
+                // point mid-function sites at it.
+                if data.tracing.as_ref().map(|c| c.enabled).unwrap_or(false) {
+                    let disp = -(locals_slots as i32 * 8);
+                    state.trace_base = TraceBase::FrameSlot(disp);
+                    self.str(ctx, arch, &reg(Reg(TRACE_BASE_REG)), &mem_base_disp(FP, disp))
+                        .map_err(Err::from)?;
                 }
 
                 for i in 0..data.num_params.min(8) {

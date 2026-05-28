@@ -22,6 +22,22 @@ fn aarch64_mem_base_disp(base: Reg, disp: i32) -> MemArgKind {
     }
 }
 
+/// Where the runtime trace-table base pointer is found, for `load_trace_base`.
+///
+/// NaiveAbi uses the CTX frame pointer; the AAPCS64 SysV ABI passes the base as
+/// a virtual function parameter (a reserved register) and spills it to an
+/// FP-relative frame slot for mid-function sites.  See `docs/abi.md`.
+#[derive(Clone, Copy, Default)]
+pub enum TraceBase {
+    /// Base pointer stored at `[CTX + base_off]` (NaiveAbi / LFI).
+    #[default]
+    CtxSlot,
+    /// Base pointer held directly in this blitz register (SysV virtual param).
+    Reg(u8),
+    /// Base pointer stored at `[FP + disp]` (SysV mid-function frame slot).
+    FrameSlot(i32),
+}
+
 /// Wrapper binding an AArch64 writer + ctx + arch for
 /// [`portal_solutions_blitz_codegen::BlitzWriter`].
 ///
@@ -32,6 +48,15 @@ pub struct BlitzW<'a, W, Context> {
     pub ctx: &'a mut Context,
     pub arch: AArch64Arch,
     pub scratch2: u8,
+    /// How `load_trace_base` reaches the runtime trace-table base.
+    pub trace_base: TraceBase,
+}
+
+impl<'a, W, Context> BlitzW<'a, W, Context> {
+    /// Construct a wrapper using the default CTX-relative trace-base convention.
+    pub fn new(writer: &'a mut W, ctx: &'a mut Context, arch: AArch64Arch, scratch2: u8) -> Self {
+        BlitzW { writer, ctx, arch, scratch2, trace_base: TraceBase::CtxSlot }
+    }
 }
 
 impl<'a, W, Context> portal_solutions_blitz_codegen::BlitzWriter for BlitzW<'a, W, Context>
@@ -101,13 +126,27 @@ where
         self.load_mem64_disp(dest, src, 0)
     }
 
-    // Trace-table base lives at [CTX + base_off], written by the runtime.
+    // Load the runtime trace-table base into `dest` from the configured source.
     fn load_trace_base(&mut self, dest: u8, base_off: i32) -> Result<(), Self::Error> {
-        self.writer.ldr(
-            self.ctx, self.arch,
-            &aarch64_reg(Reg(dest)),
-            &aarch64_mem_base_disp(Reg::CTX, base_off),
-        )
+        match self.trace_base {
+            TraceBase::CtxSlot => self.writer.ldr(
+                self.ctx, self.arch,
+                &aarch64_reg(Reg(dest)),
+                &aarch64_mem_base_disp(Reg::CTX, base_off),
+            ),
+            TraceBase::Reg(r) => {
+                if r != dest {
+                    self.writer.mov(self.ctx, self.arch, &aarch64_reg(Reg(dest)), &aarch64_reg(Reg(r)))?;
+                }
+                Ok(())
+            }
+            // FP = crate::FP (x29); mid-function frame slot.
+            TraceBase::FrameSlot(disp) => self.writer.ldr(
+                self.ctx, self.arch,
+                &aarch64_reg(Reg(dest)),
+                &aarch64_mem_base_disp(crate::FP, disp),
+            ),
+        }
     }
 
     // AArch64: ldr s2,[ptr+disp]; add s2,s2,1; str s2,[ptr+disp]

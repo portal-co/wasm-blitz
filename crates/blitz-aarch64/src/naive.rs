@@ -48,6 +48,10 @@ pub struct State {
     /// Next trace-site id to assign (function entry = site 0; each loop/block
     /// consumes the next).  See `emit_jit_preamble` / Item 1.
     pub next_site_id: u32,
+    /// How mid-function trace sites reach the runtime trace-table base.  The
+    /// NaiveAbi keeps the default (CTX-relative); the SysV ABI sets this to a
+    /// frame slot after spilling its virtual-param base register.
+    pub trace_base: crate::codegen::TraceBase,
 }
 
 /// Represents a control-flow frame.
@@ -214,7 +218,8 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
             let site_id = state.next_site_id;
             state.next_site_id += 1;
-            let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: T1.0 };
+            let trace_base = state.trace_base;
+            let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: T1.0, trace_base };
             portal_solutions_blitz_codegen::emit_jit_preamble(
                 &mut bw, cfg.table_base_off, site_id, T0.0, &mut state.label_index,
             )?;
@@ -683,7 +688,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 state.tracing = data.tracing;
                 state.next_site_id = 1;
                 if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
-                    let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: T1.0 };
+                    let mut bw = crate::codegen::BlitzW::new(self, ctx, arch, T1.0);
                     portal_solutions_blitz_codegen::emit_jit_preamble(
                         &mut bw, cfg.table_base_off, 0,
                         T0.0, &mut state.label_index,

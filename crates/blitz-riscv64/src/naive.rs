@@ -52,6 +52,10 @@ pub struct State {
     /// Total frame size in bytes, set by SysV `StartFn` to locate the RA/FP
     /// save slots at the bottom of the frame (`[FP - sysv_frame_sz]` = RA).
     pub sysv_frame_sz: i32,
+    /// How mid-function trace sites reach the runtime trace-table base.  The
+    /// NaiveAbi keeps the default (CTX-relative); the SysV ABI sets this to a
+    /// frame slot after spilling its virtual-param base register.
+    pub trace_base: crate::codegen::TraceBase,
 }
 
 pub struct Frames(pub [[regalloc::RegAllocFrame<riscv_regalloc::RegKind>; 32]; 2]);
@@ -113,7 +117,8 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
             }
             let site_id = state.next_site_id;
             state.next_site_id += 1;
-            let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: 6 };
+            let trace_base = state.trace_base;
+            let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: 6, trace_base };
             portal_solutions_blitz_codegen::emit_jit_preamble(
                 &mut bw, cfg.table_base_off, site_id, 5, &mut state.label_index,
             )?;
@@ -1623,7 +1628,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 // Trace preamble: after label, before frame setup.
                 // Scratch: t0 (Reg(5)) + t1 (Reg(6)) — caller-saved, not NaiveAbi arg regs.
                 if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
-                    let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: 6 };
+                    let mut bw = crate::codegen::BlitzW::new(self, ctx, arch, 6);
                     portal_solutions_blitz_codegen::emit_jit_preamble(
                         &mut bw, cfg.table_base_off, 0,
                         5, &mut state.label_index,
