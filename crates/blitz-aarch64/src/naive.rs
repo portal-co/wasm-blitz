@@ -21,6 +21,7 @@ use portal_solutions_asm_aarch64::out::arg::MemArg;
 use portal_solutions_blitz_common::{
     asm::Reg,
     ops::{FnData, MachOperator, TracingConfig},
+    shard::{CallTarget, SecondCtxConfig},
     wasm_encoder::{self, Catch, FuncType, Instruction, reencode::{self as reencode, Reencode}},
     wasmparser::Operator,
 };
@@ -30,6 +31,49 @@ use crate::AArch64Label;
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
+
+/// Sharding state for AArch64 functions — same design as x86-64; see
+/// `blitz-x86-64::naive::NaiveShardState` for full documentation.
+#[derive(Clone, Copy)]
+pub struct NaiveShardState {
+    pub config: SecondCtxConfig,
+    pub current_shard: usize,
+    pub imports_len: u32,
+    shard_map_ptr: *const (),
+    shard_for: unsafe fn(*const (), u32) -> usize,
+}
+
+unsafe impl Send for NaiveShardState {}
+unsafe impl Sync for NaiveShardState {}
+
+impl NaiveShardState {
+    pub fn new<S: portal_solutions_blitz_common::shard::ShardMap>(
+        config: SecondCtxConfig,
+        current_shard: usize,
+        imports_len: u32,
+        map: *const S,
+    ) -> Self {
+        unsafe fn trampoline<S: portal_solutions_blitz_common::shard::ShardMap>(
+            ptr: *const (),
+            fn_idx: u32,
+        ) -> usize {
+            unsafe { &*(ptr as *const S) }.shard_for(fn_idx)
+        }
+        Self { config, current_shard, imports_len, shard_map_ptr: map as *const (), shard_for: trampoline::<S> }
+    }
+
+    pub fn call_target(&self, callee_fn: u32) -> CallTarget {
+        if callee_fn < self.imports_len {
+            return CallTarget::Import;
+        }
+        let callee_shard = unsafe { (self.shard_for)(self.shard_map_ptr, callee_fn) };
+        if callee_shard == self.current_shard {
+            CallTarget::Local
+        } else {
+            CallTarget::CrossShard { table_slot: callee_fn }
+        }
+    }
+}
 
 /// Code-generation state for an AArch64 function.
 #[derive(Default)]
@@ -52,6 +96,9 @@ pub struct State {
     /// NaiveAbi keeps the default (CTX-relative); the SysV ABI sets this to a
     /// frame slot after spilling its virtual-param base register.
     pub trace_base: crate::codegen::TraceBase,
+    /// Present when sharding is active. SCR (X27) is pushed in the prologue
+    /// and popped before return.
+    pub shard: Option<NaiveShardState>,
 }
 
 /// Represents a control-flow frame.
@@ -77,6 +124,11 @@ const SP: Reg = Reg(31);
 const FP: Reg = Reg(29);
 /// Link register.
 const LR: Reg = Reg(30);
+/// Static Context Register (SCR) — X27 on AArch64.
+///
+/// Callee-saved register used to hold the cross-shard function-pointer table
+/// pointer when sharding is active. See `docs/second-context-register.md`.
+pub const SCR: Reg = Reg(27);
 /// Scratch registers (caller-saved / temporaries).
 const T0: Reg = Reg(9);
 const T1: Reg = Reg(10);
@@ -628,16 +680,27 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
 
             // ---- function calls ----
             Instruction::Call(fn_idx) => {
-                match func_imports.get(*fn_idx as usize) {
-                    Some((module, name)) => {
-                        let sym = alloc::format!("{module}__{name}");
-                        self.adr_label(ctx, arch, &reg(T0), AArch64Label::External { name: sym })?;
+                let fn_idx_val = *fn_idx;
+                let target = state.shard.as_ref().map(|s| s.call_target(fn_idx_val));
+                match target {
+                    Some(CallTarget::CrossShard { table_slot }) => {
+                        // Cross-shard: load fn ptr from [SCR + table_slot * 8].
+                        self.ldr(ctx, arch, &reg(T0), &mem_base_disp(SCR, table_slot as i32 * 8))?;
                         self.bl(ctx, arch, &reg(T0))?;
                     }
-                    None => {
-                        let idx = *fn_idx - func_imports.len() as u32;
-                        self.adr_label(ctx, arch, &reg(T0), AArch64Label::Func { r#fn: idx })?;
-                        self.bl(ctx, arch, &reg(T0))?;
+                    _ => {
+                        match func_imports.get(fn_idx_val as usize) {
+                            Some((module, name)) => {
+                                let sym = alloc::format!("{module}__{name}");
+                                self.adr_label(ctx, arch, &reg(T0), AArch64Label::External { name: sym })?;
+                                self.bl(ctx, arch, &reg(T0))?;
+                            }
+                            None => {
+                                let idx = fn_idx_val - func_imports.len() as u32;
+                                self.adr_label(ctx, arch, &reg(T0), AArch64Label::Func { r#fn: idx })?;
+                                self.bl(ctx, arch, &reg(T0))?;
+                            }
+                        }
                     }
                 }
                 Ok(())
@@ -647,6 +710,10 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 // Restore SP from FP, reload FP+LR, return.
                 self.mov(ctx, arch, &reg(SP), &reg(FP))?;
                 self.ldp(ctx, arch, &reg(FP), &reg(LR), &mem_post(SP, 16))?;
+                // Restore SCR if sharding active (T0 gets discarded garbage — OK).
+                if state.shard.is_some() {
+                    self.ldp(ctx, arch, &reg(SCR), &reg(T0), &mem_post(SP, 16))?;
+                }
                 self.ret(ctx, arch)
             }
 
@@ -695,6 +762,10 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                     ).map_err(Err::from)?;
                 }
 
+                // Save SCR (X27) in a 16-byte aligned pair before FP+LR.
+                if state.shard.is_some() {
+                    self.stp(ctx, arch, &reg(SCR), &reg(T0), &mem_pre(SP, -16)).map_err(Err::from)?;
+                }
                 self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16)).map_err(Err::from)?;
                 self.mov(ctx, arch, &reg(FP), &reg(SP)).map_err(Err::from)?;
 

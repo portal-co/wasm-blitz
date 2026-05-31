@@ -54,6 +54,7 @@ pub const TRACE_BASE_REG: u8 = 11;
 // ---- register shortcuts ----
 const RAX: Reg = Reg(0);
 const RBP: Reg = Reg(5);
+use crate::naive::SCR; // r14 — Static Context Register
 
 /// Integer argument registers in System V AMD64 ABI order.
 const ARG_REGS: [Reg; 6] = [
@@ -119,6 +120,9 @@ pub struct SysVState {
     /// `StartFn` when tracing is enabled.  Mid-function sites load the base from
     /// `[RBP + trace_base_disp]`.
     pub trace_base_disp: i32,
+    /// Present when sharding is active. SCR (r14) is pushed in the prologue and
+    /// popped in all return paths. Cross-shard calls load the target from SCR.
+    pub shard: Option<crate::naive::NaiveShardState>,
 }
 
 /// Extension trait for generating System V AMD64-compatible functions.
@@ -230,6 +234,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
                 if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
                 self.mov(ctx, arch, &RSP, &RBP)?;
+                if state.shard.is_some() { self.pop(ctx, arch, &SCR)?; }
                 self.pop(ctx, arch, &RBP)?;
                 self.ret(ctx, arch)
             }
@@ -238,6 +243,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
                 if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
                 self.mov(ctx, arch, &RSP, &RBP)?;
+                if state.shard.is_some() { self.pop(ctx, arch, &SCR)?; }
                 self.pop(ctx, arch, &RBP)?;
                 self.ret(ctx, arch)
             }
@@ -296,6 +302,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                         body_labels: core::mem::take(&mut state.body_labels),
                         tracing: None,
                         next_site_id: 0,
+                        shard: state.shard,
                     };
                     let result = self._handle_op(ctx, arch, &mut naive_state, func_imports, &[], &[], &other, target);
                     state.label_index = naive_state.label_index;
@@ -331,6 +338,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                     if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
                     if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
                     self.mov(ctx, arch, &RSP, &RBP)?;
+                    if state.shard.is_some() { self.pop(ctx, arch, &SCR)?; }
                     self.pop(ctx, arch, &RBP)?;
                     self.ret(ctx, arch)
                 }
@@ -352,6 +360,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                     if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
                     if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
                     self.mov(ctx, arch, &RSP, &RBP)?;
+                    if state.shard.is_some() { self.pop(ctx, arch, &SCR)?; }
                     self.pop(ctx, arch, &RBP)?;
                     self.ret(ctx, arch)?;
                 }
@@ -360,6 +369,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
             Instruction::BrTable(targets, default) => {
                 // Pop selector once; for each target: if selector==0 branch, else decrement.
                 self.pop(ctx, arch, &RAX)?;
+                let has_shard = state.shard.is_some();
                 let ctrl = &state.ctrl_stack;
                 macro_rules! do_br {
                     ($depth:expr) => {{
@@ -369,6 +379,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                             self.jmp_label(ctx, arch, X64Label::Indexed { idx: lbl })?;
                         } else {
                             self.mov(ctx, arch, &RSP, &RBP)?;
+                            if has_shard { self.pop(ctx, arch, &SCR)?; }
                             self.pop(ctx, arch, &RBP)?;
                             self.ret(ctx, arch)?;
                         }
@@ -405,6 +416,8 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                     body_labels: core::mem::take(&mut state.body_labels),
                     tracing: None,
                     next_site_id: 0,
+                    // Propagate shard state so cross-shard Call dispatch works.
+                    shard: state.shard,
                 };
                 let result = self._handle_op(ctx, arch, &mut naive_state, func_imports, &[], &[], other, target);
                 state.label_index = naive_state.label_index;
@@ -461,6 +474,11 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 }
 
                 self.push(ctx, arch, &RBP).map_err(Err::from)?;
+                // SCR save: push r14 (callee-saved) if sharding is active so that
+                // imported functions that follow SysV don't clobber the shard table.
+                if state.shard.is_some() {
+                    self.push(ctx, arch, &SCR).map_err(Err::from)?;
+                }
                 self.mov(ctx, arch, &RBP, &RSP).map_err(Err::from)?;
 
                 // One extra slot (at the frame bottom) holds the spilled trace

@@ -114,3 +114,9 @@ pub mod abi;
 /// Provides [`sink::WaxHandle`] (the wax-core `Context` type) and
 /// [`sink::WasmSink`] (the sink wrapper that holds WASM state).
 pub mod sink;
+
+/// Backend sharding: splitting a compiled module across multiple output writers.
+///
+/// Provides [`shard::ShardMap`], [`shard::WriterSet`], [`shard::ShardCoordinator`],
+/// [`shard::ShardConfig`], and [`shard::SecondCtxConfig`].
+pub mod shard;

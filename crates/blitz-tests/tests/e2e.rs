@@ -5040,3 +5040,661 @@ fn assert_sysv_tracing_entry_spec(arch: NativeArch) {
 #[test] fn test_sysv_tracing_counters_riscv64() { assert_sysv_tracing_counters(NativeArch::Riscv64); }
 #[test] fn test_sysv_tracing_entry_spec_aarch64() { assert_sysv_tracing_entry_spec(NativeArch::AArch64); }
 #[test] fn test_sysv_tracing_entry_spec_riscv64() { assert_sysv_tracing_entry_spec(NativeArch::Riscv64); }
+
+// ---------------------------------------------------------------------------
+// Tests — backend sharding
+// ---------------------------------------------------------------------------
+
+/// Build a 2-function WASM module where fn0 (no args) calls fn1 (i64 → i64).
+/// fn0 pushes 42 and calls fn1; fn1 returns its argument + 1.
+/// Expected: calling fn0 returns 43.
+fn make_two_func_cross_call_module() -> Vec<u8> {
+    use wasm_encoder::{
+        CodeSection, ExportKind, ExportSection, Function, FunctionSection, TypeSection,
+    };
+
+    let mut module = wasm_encoder::Module::new();
+
+    // Two types: () → [i64],  [i64] → [i64]
+    let mut types = TypeSection::new();
+    types.ty().function([], [ValType::I64]); // type 0: fn0
+    types.ty().function([ValType::I64], [ValType::I64]); // type 1: fn1
+    module.section(&types);
+
+    let mut functions = FunctionSection::new();
+    functions.function(0); // fn0 → type 0
+    functions.function(1); // fn1 → type 1
+    module.section(&functions);
+
+    let mut exports = ExportSection::new();
+    exports.export("f0", ExportKind::Func, 0);
+    exports.export("f1", ExportKind::Func, 1);
+    module.section(&exports);
+
+    let mut code = CodeSection::new();
+
+    // fn0: i64.const 42; call fn1; return
+    let mut f0 = Function::new([]);
+    f0.instruction(&Instruction::I64Const(42));
+    f0.instruction(&Instruction::Call(1));
+    f0.instruction(&Instruction::Return);
+    f0.instruction(&Instruction::End);
+    code.function(&f0);
+
+    // fn1: local.get 0; i64.const 1; i64.add; return
+    let mut f1 = Function::new([]);
+    f1.instruction(&Instruction::LocalGet(0));
+    f1.instruction(&Instruction::I64Const(1));
+    f1.instruction(&Instruction::I64Add);
+    f1.instruction(&Instruction::Return);
+    f1.instruction(&Instruction::End);
+    code.function(&f1);
+
+    module.section(&code);
+    module.finish()
+}
+
+/// Compile `wasm` to N C shards using `RoundRobinShardMap`.
+/// Returns `(cross_shard_decls_per_shard, shard_bodies)`.
+/// `cross_shard_decls_per_shard[k]` contains extern declarations for functions NOT in shard k.
+/// `shard_bodies[k]` contains the function bodies for shard k.
+fn compile_c_sharded_raw(wasm: &[u8], n: usize) -> (Vec<String>, Vec<String>) {
+    use portal_solutions_blitz_common::shard::{RoundRobinShardMap, ShardMap};
+    use portal_solutions_blitz_c::shard::c_emit_cross_shard_decls;
+
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(wasm);
+    let imports_len = {
+        let mut body_count = 0u32;
+        for p in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+            if let wasmparser::Payload::CodeSectionEntry(_) = p { body_count += 1; }
+        }
+        fsigs.len() as u32 - body_count
+    };
+
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+
+    let shard_map = RoundRobinShardMap { n };
+    let mut decls: Vec<String> = (0..n).map(|_| String::new()).collect();
+    let mut bodies_out: Vec<String> = (0..n).map(|_| String::new()).collect();
+
+    for shard_idx in 0..n {
+        c_emit_cross_shard_decls(&mut decls[shard_idx], shard_idx, &sigs_enc, &fsigs, imports_len, &shard_map).unwrap();
+    }
+
+    let mut current_shard = 0usize;
+    let mut state = CState::default();
+    let mut reencoder = RoundtripReencoder;
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, imports_len);
+    let ops = dce_pass!(raw_ops);
+    for op in ops {
+        let op = op.unwrap();
+        if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = &op {
+            current_shard = shard_map.shard_for(*id + imports_len);
+            state = CState::default();
+        }
+        CWrite::on_mach(&mut bodies_out[current_shard], &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+    }
+    (decls, bodies_out)
+}
+
+/// Compile `wasm` to N C shards and also return a preamble.
+/// `preamble` has static forward declarations for ALL functions so they can be
+/// referenced before being defined (needed when shards are concatenated for testing).
+fn compile_c_sharded_with_preamble(wasm: &[u8], n: usize) -> (String, Vec<String>) {
+    use portal_solutions_blitz_c::shard::c_emit_cross_shard_decls;
+
+    let (_, bodies) = compile_c_sharded_raw(wasm, n);
+
+    // Build preamble: scan all shard bodies for `static const struct{...}__sig_N={...};`
+    // and `static uint64_t __rets_N[R];` and the function signature `static uint64_t*fn_N(`.
+    // Emit static forward declarations for each function found.
+    let mut preamble = String::new();
+    let all = bodies.concat();
+    // Extract each `__sig_N = { ... };` definition so we can forward-declare before use.
+    // Strategy: scan for `static const struct{int params;int rets;}__sig_` and extract the full definition.
+    let mut s = all.as_str();
+    let mut found_sigs: std::collections::BTreeSet<&str> = Default::default();
+    while let Some(pos) = s.find("static const struct{int params;int rets;}__sig_") {
+        let end = s[pos..].find(';').map(|e| pos + e + 1).unwrap_or(s.len());
+        preamble.push_str(&s[pos..end]);
+        preamble.push('\n');
+        s = &s[end..];
+    }
+    // Forward declarations for functions.
+    s = all.as_str();
+    while let Some(pos) = s.find("static uint64_t*fn_") {
+        let rest = &s[pos + 19..]; // after "static uint64_t*fn_"
+        let end = rest.find('(').unwrap_or(rest.len());
+        let n_str = &rest[..end];
+        if n_str.chars().all(|c| c.is_ascii_digit()) {
+            let fwd = format!("static uint64_t*fn_{n_str}(uint64_t*restrict);\n");
+            if !preamble.contains(&fwd) { preamble.push_str(&fwd); }
+        }
+        s = &s[pos + 1..];
+    }
+    // Also emit `static uint64_t __rets_N[R];` forward declarations.
+    s = all.as_str();
+    while let Some(pos) = s.find("static uint64_t __rets_") {
+        let semicolon = s[pos..].find(';').map(|e| pos + e + 1).unwrap_or(s.len());
+        let decl = &s[pos..semicolon];
+        if !preamble.contains(decl) { preamble.push_str(decl); preamble.push('\n'); }
+        s = &s[pos + 1..];
+    }
+
+    (preamble, bodies)
+}
+
+/// Convenience wrapper: returns just the shard bodies (without extern decls).
+/// Shards can be concatenated and compiled in a single TU for execution testing.
+fn compile_c_sharded(wasm: &[u8], n: usize) -> Vec<String> {
+    compile_c_sharded_raw(wasm, n).1
+}
+
+/// Run C shards: concatenate all shards into one translation unit and compile.
+///
+/// The C backend emits `static` functions, so separate-TU linking doesn't work.
+/// We need a preamble with forward declarations so all functions are visible before
+/// their definitions appear. Use `compile_c_sharded_with_preamble` to get the preamble.
+fn run_c_sharded_with_preamble(preamble: &str, shards: &[String], fn_id: u32, args: &[u64], rets: usize) -> Vec<u64> {
+    let combined = format!("{preamble}\n{}", shards.join("\n"));
+    run_c(&combined, fn_id, args, rets)
+}
+
+/// Run C shards: extracts `__sig_N`/`__rets_N` definitions and function forward
+/// declarations into a preamble, then concatenates function bodies.  This allows
+/// shards with cross-shard calls to compile as a single TU regardless of definition order.
+fn run_c_sharded(shards: &[String], fn_id: u32, args: &[u64], rets: usize) -> Vec<u64> {
+    let tag = "static const struct{int params;int rets;}__sig_";
+    let fn_tag = "static uint64_t*fn_";
+
+    let mut preamble = String::new();
+    let mut fn_bodies: Vec<String> = Vec::new();
+
+    for shard in shards {
+        let mut s = shard.as_str();
+        let mut body = String::new();
+        while !s.is_empty() {
+            if let Some(sig_pos) = s.find(tag) {
+                // Everything before sig_pos is non-function content; add to body.
+                body.push_str(&s[..sig_pos]);
+                s = &s[sig_pos..];
+                // Find the function definition start that follows.
+                if let Some(fn_rel) = s.find(fn_tag) {
+                    // Headers: __sig_ + __rets_ definitions before fn_tag.
+                    let header = &s[..fn_rel];
+                    if !preamble.contains(header) { preamble.push_str(header); }
+                    // Function forward declaration.
+                    let rest = &s[fn_rel + fn_tag.len()..];
+                    let idx_end = rest.find('(').unwrap_or(rest.len());
+                    let n_str = &rest[..idx_end];
+                    if n_str.chars().all(|c: char| c.is_ascii_digit()) {
+                        let fwd = format!("{fn_tag}{n_str}(uint64_t*restrict);\n");
+                        if !preamble.contains(&fwd) { preamble.push_str(&fwd); }
+                    }
+                    // Function body: from fn_tag to the next __sig_ or end.
+                    let fn_start = fn_rel;
+                    let next_sig = s[fn_start + 1..].find(tag).map(|p| fn_start + 1 + p);
+                    let fn_end = next_sig.unwrap_or(s.len());
+                    body.push_str(&s[fn_start..fn_end]);
+                    s = &s[fn_end..];
+                } else {
+                    body.push_str(s);
+                    s = "";
+                }
+            } else {
+                body.push_str(s);
+                s = "";
+            }
+        }
+        fn_bodies.push(body);
+    }
+
+    let combined = format!("{preamble}\n{}", fn_bodies.join("\n"));
+    run_c(&combined, fn_id, args, rets)
+}
+
+/// Compile `wasm` to N JS ESM shards.
+/// Returns one String per shard. `shard_paths[k]` is used in import specifiers.
+fn compile_js_sharded(wasm: &[u8], n: usize, shard_paths: &[&str]) -> Vec<String> {
+    use portal_solutions_blitz_common::shard::{RoundRobinShardMap, ShardMap};
+    use portal_solutions_blitz_js::shard::{js_emit_cross_shard_imports, js_emit_shard_exports};
+
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(wasm);
+    let imports_len = {
+        let mut body_count = 0u32;
+        for p in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+            if let wasmparser::Payload::CodeSectionEntry(_) = p { body_count += 1; }
+        }
+        fsigs.len() as u32 - body_count
+    };
+    let local_fn_count = fsigs.len() as u32 - imports_len;
+
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+
+    let shard_map = RoundRobinShardMap { n };
+    let mut shards: Vec<String> = (0..n).map(|_| String::new()).collect();
+
+    // Emit ESM imports at the top of each shard.
+    for shard_idx in 0..n {
+        js_emit_cross_shard_imports(&mut shards[shard_idx], shard_idx, imports_len, local_fn_count, &shard_map, shard_paths).unwrap();
+    }
+
+    // Route operators to the correct shard.
+    let mut current_shard = 0usize;
+    let mut state = JsState::default();
+    let mut reencoder = RoundtripReencoder;
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, imports_len);
+    let ops = dce_pass!(raw_ops);
+    for op in ops {
+        let op = op.unwrap();
+        if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = &op {
+            current_shard = shard_map.shard_for(*id + imports_len);
+            state = JsState::default();
+        }
+        JsWrite::on_mach(&mut shards[current_shard], &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+    }
+
+    // Emit ESM exports at the bottom of each shard.
+    for shard_idx in 0..n {
+        js_emit_shard_exports(&mut shards[shard_idx], shard_idx, imports_len, local_fn_count, &shard_map).unwrap();
+    }
+
+    shards
+}
+
+/// Compile `wasm` to N JS ESM shards and run the entry shard with node.
+///
+/// Computes temp file paths first, passes them as import specifiers to the compiler,
+/// then writes the shards to those exact paths so node can resolve the imports.
+fn run_js_sharded_esm(wasm: &[u8], n: usize, entry_shard: usize, harness: &str) -> Vec<i64> {
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let dir = std::env::temp_dir();
+
+    let paths: Vec<_> = (0..n)
+        .map(|i| dir.join(format!("blitz_shard_{pid}_{seq}_{i}.mjs")))
+        .collect();
+    // Relative import specifiers for ESM: `./blitz_shard_N_S_I.mjs`
+    let rel_paths: Vec<String> = (0..n)
+        .map(|i| format!("./blitz_shard_{pid}_{seq}_{i}.mjs"))
+        .collect();
+    let rel_path_refs: Vec<&str> = rel_paths.iter().map(String::as_str).collect();
+
+    let shards = compile_js_sharded(wasm, n, &rel_path_refs);
+
+    for (i, (shard, path)) in shards.iter().zip(&paths).enumerate() {
+        let content = if i == entry_shard {
+            format!("{shard}\n{harness}")
+        } else {
+            shard.clone()
+        };
+        std::fs::write(path, content).unwrap();
+    }
+
+    let out = std::process::Command::new("node")
+        .arg(&paths[entry_shard])
+        .output()
+        .expect("node not found in PATH");
+
+    for path in &paths { let _ = std::fs::remove_file(path); }
+
+    assert!(out.status.success(), "node exited non-zero:\nstderr: {}\n", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8(out.stdout).unwrap()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.trim().parse::<i64>().expect("expected int from node"))
+        .collect()
+}
+
+/// Compile `wasm` to N native ASM shards (text), with sharding enabled.
+fn compile_native_asm_sharded(wasm: &[u8], arch: NativeArch, abi: NativeAbi, n: usize) -> Vec<String> {
+    use portal_solutions_blitz_common::shard::{
+        RoundRobinShardMap, SecondCtxConfig, ShardConfig, ShardMap,
+    };
+
+    let (sigs_wp, _sigs_enc, fsigs) = parse_sigs(wasm);
+    let imports_len = {
+        let mut bodies = 0u32;
+        for p in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+            if let wasmparser::Payload::CodeSectionEntry(_) = p { bodies += 1; }
+        }
+        fsigs.len() as u32 - bodies
+    };
+
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+
+    let shard_map = RoundRobinShardMap { n };
+    let total_fns = fsigs.len() as u32;
+    let second_ctx = SecondCtxConfig::for_shard(ShardConfig { imports_len, total_fns });
+
+    let mut shards: Vec<String> = (0..n).map(|_| String::new()).collect();
+    let mut reencoder = RoundtripReencoder;
+
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, imports_len);
+    let ops: Vec<_> = dce_pass!(raw_ops).collect::<Result<Vec<_>, _>>().unwrap();
+
+    match (arch, abi) {
+        (NativeArch::X86_64, NativeAbi::Naive) => {
+            use portal_solutions_blitz_x86_64::{naive, X64Arch};
+            let mut state = naive::State::default();
+            let mut current_shard = 0usize;
+            let mut ctx = ();
+            for op in &ops {
+                if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = op {
+                    current_shard = shard_map.shard_for(*id + imports_len);
+                    state = naive::State {
+                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map as *const _)),
+                        ..Default::default()
+                    };
+                }
+                let mut out = NativeAsmWriter(String::new());
+                naive::WriterExt::handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, X64Arch::default(),
+                    &mut state, &[], &[], &[], op, &mut reencoder, 0,
+                ).unwrap();
+                shards[current_shard].push_str(&out.0);
+            }
+        }
+        (NativeArch::X86_64, NativeAbi::Sysv) => {
+            use portal_solutions_blitz_x86_64::{naive, sysv, X64Arch};
+            let mut state = sysv::SysVState::default();
+            let mut current_shard = 0usize;
+            let mut ctx = ();
+            for op in &ops {
+                if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = op {
+                    current_shard = shard_map.shard_for(*id + imports_len);
+                    state = sysv::SysVState {
+                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map as *const _)),
+                        ..Default::default()
+                    };
+                }
+                let mut out = NativeAsmWriter(String::new());
+                sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, X64Arch::default(),
+                    &mut state, &[], op, &mut reencoder, 0,
+                ).unwrap();
+                shards[current_shard].push_str(&out.0);
+            }
+        }
+        (NativeArch::AArch64, NativeAbi::Naive) => {
+            use portal_solutions_blitz_aarch64::{naive, AArch64Arch};
+            let mut state = naive::State::default();
+            let mut current_shard = 0usize;
+            let mut ctx = ();
+            for op in &ops {
+                if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = op {
+                    current_shard = shard_map.shard_for(*id + imports_len);
+                    state = naive::State {
+                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map as *const _)),
+                        ..Default::default()
+                    };
+                }
+                let mut out = NativeAsmWriter(String::new());
+                naive::WriterExt::handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, AArch64Arch::default(),
+                    &mut state, &[], &[], &[], op, &mut reencoder, 0,
+                ).unwrap();
+                shards[current_shard].push_str(&out.0);
+            }
+        }
+        (NativeArch::AArch64, NativeAbi::Sysv) => {
+            use portal_solutions_blitz_aarch64::{naive, sysv, AArch64Arch};
+            let mut state = naive::State::default();
+            let mut current_shard = 0usize;
+            let mut ctx = ();
+            for op in &ops {
+                if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = op {
+                    current_shard = shard_map.shard_for(*id + imports_len);
+                    state = naive::State {
+                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map as *const _)),
+                        ..Default::default()
+                    };
+                }
+                let mut out = NativeAsmWriter(String::new());
+                sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, AArch64Arch::default(),
+                    &mut state, &[], op, &mut reencoder, 0,
+                ).unwrap();
+                shards[current_shard].push_str(&out.0);
+            }
+        }
+        (NativeArch::Riscv64, NativeAbi::Naive) => {
+            use portal_solutions_blitz_riscv64::{naive, RiscV64Arch};
+            let mut state = naive::State::default();
+            let mut current_shard = 0usize;
+            let mut ctx = ();
+            for op in &ops {
+                if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = op {
+                    current_shard = shard_map.shard_for(*id + imports_len);
+                    state = naive::State {
+                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map as *const _)),
+                        ..Default::default()
+                    };
+                }
+                let mut out = NativeAsmWriter(String::new());
+                naive::WriterExt::handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, RiscV64Arch::default(),
+                    &mut state, &[], &[], &[], op, &mut reencoder, 0,
+                ).unwrap();
+                shards[current_shard].push_str(&out.0);
+            }
+        }
+        (NativeArch::Riscv64, NativeAbi::Sysv) => {
+            use portal_solutions_blitz_riscv64::{naive, sysv, RiscV64Arch};
+            let mut state = naive::State::default();
+            let mut current_shard = 0usize;
+            let mut ctx = ();
+            for op in &ops {
+                if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = op {
+                    current_shard = shard_map.shard_for(*id + imports_len);
+                    state = naive::State {
+                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map as *const _)),
+                        ..Default::default()
+                    };
+                }
+                let mut out = NativeAsmWriter(String::new());
+                sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, RiscV64Arch::default(),
+                    &mut state, &[], op, &mut reencoder, 0,
+                ).unwrap();
+                shards[current_shard].push_str(&out.0);
+            }
+        }
+        _ => unimplemented!("sharding not supported for LFI ABI"),
+    }
+
+    shards
+}
+
+// ---- shard_single_equiv: single-shard output must match non-sharded --------
+
+#[test]
+fn shard_single_equiv_c() {
+    let wasm = make_module(&[ValType::I64], &[ValType::I64], &[
+        Instruction::LocalGet(0),
+        Instruction::I64Const(10),
+        Instruction::I64Add,
+    ]);
+    let shards = compile_c_sharded(&wasm, 1);
+    // Single-shard output contains fn_0 and no cross-shard calls.
+    assert!(shards[0].contains("fn_0"), "shard 0 must contain fn_0 body");
+    // Run and verify correct result.
+    assert_eq!(run_c_sharded(&shards, 0, &[5], 1), vec![15]);
+    // Matches non-sharded result.
+    assert_eq!(run_c(&compile_c(&wasm), 0, &[5], 1), vec![15]);
+}
+
+#[test]
+fn shard_single_equiv_js() {
+    let wasm = make_module(&[ValType::I64], &[ValType::I64], &[
+        Instruction::LocalGet(0),
+        Instruction::I64Const(10),
+        Instruction::I64Add,
+    ]);
+    // Verify shard body contains fn definition.
+    let check_shards = compile_js_sharded(&wasm, 1, &["./shard_0.mjs"]);
+    assert!(check_shards[0].contains("$0"), "shard 0 must contain $0 body\n{}", check_shards[0]);
+    // Run via ESM.
+    let result = run_js_sharded_esm(&wasm, 1, 0, "console.log(String($0(5n)));");
+    assert_eq!(result, vec![15]);
+}
+
+// ---- shard_two_fn_cross_call: 2 functions in different shards ----------
+
+#[test]
+fn shard_two_fn_cross_call_c() {
+    // fn0() → i64: push 42, call fn1 → returns 43
+    // fn1(i64) → i64: arg + 1
+    let wasm = make_two_func_cross_call_module();
+    let (decls, shards) = compile_c_sharded_raw(&wasm, 2);
+    // Verify cross-shard extern declarations are present in at least one shard.
+    assert!(decls[0].contains("extern") || decls[1].contains("extern"),
+        "at least one shard must have cross-shard extern decl\ndecls[0]:\n{}\ndecls[1]:\n{}", decls[0], decls[1]);
+    // Execute: call fn0 (which calls fn1) and expect 43.
+    let result = run_c_sharded(&shards, 0, &[], 1);
+    assert_eq!(result, vec![43], "fn0() must return fn1(42) = 43");
+}
+
+#[test]
+fn shard_two_fn_cross_call_js() {
+    let wasm = make_two_func_cross_call_module();
+    // Entry shard is shard 0 (fn0 is WASM idx 0, 0 % 2 = 0).
+    let result = run_js_sharded_esm(&wasm, 2, 0, "console.log(String($0()));");
+    assert_eq!(result, vec![43], "fn0() must return fn1(42n) = 43n via cross-shard ESM import");
+}
+
+#[test]
+fn shard_three_fn_mixed_c() {
+    // 3-function module: fn0 calls fn1 (cross-shard) then fn2 (intra-shard if 3 shards split 0→shard0, 1→shard1, 2→shard0).
+    // fn0() → i64: call fn1 then add result with call fn2
+    // Actually simpler: 3 functions, split into 2 shards:
+    // shard 0 gets fn0 (idx%2==0) and fn2 (idx%2==0 → idx=2, 2%2=0)
+    // shard 1 gets fn1 (idx%2==1 → idx=1)
+    // fn0: call fn1; call fn2; return result of fn2
+    // fn1(i64) → i64: arg + 10
+    // fn2(i64) → i64: arg * 2
+    // fn0 passes 5 to fn1 → 15, then passes 15 to fn2 → 30.
+    use wasm_encoder::{CodeSection, ExportKind, ExportSection, Function, FunctionSection, TypeSection};
+
+    let mut module = wasm_encoder::Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([], [ValType::I64]);         // type 0: fn0
+    types.ty().function([ValType::I64], [ValType::I64]); // type 1: fn1, fn2
+    module.section(&types);
+
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    functions.function(1);
+    functions.function(1);
+    module.section(&functions);
+
+    let mut exports = ExportSection::new();
+    exports.export("f0", ExportKind::Func, 0);
+    module.section(&exports);
+
+    let mut code = CodeSection::new();
+    // fn0: i64.const 5; call fn1; call fn2; return
+    let mut f0 = Function::new([]);
+    f0.instruction(&Instruction::I64Const(5));
+    f0.instruction(&Instruction::Call(1));
+    f0.instruction(&Instruction::Call(2));
+    f0.instruction(&Instruction::Return);
+    f0.instruction(&Instruction::End);
+    code.function(&f0);
+    // fn1: local.get 0; i64.const 10; i64.add; return
+    let mut f1 = Function::new([]);
+    f1.instruction(&Instruction::LocalGet(0));
+    f1.instruction(&Instruction::I64Const(10));
+    f1.instruction(&Instruction::I64Add);
+    f1.instruction(&Instruction::Return);
+    f1.instruction(&Instruction::End);
+    code.function(&f1);
+    // fn2: local.get 0; i64.const 2; i64.mul; return
+    let mut f2 = Function::new([]);
+    f2.instruction(&Instruction::LocalGet(0));
+    f2.instruction(&Instruction::I64Const(2));
+    f2.instruction(&Instruction::I64Mul);
+    f2.instruction(&Instruction::Return);
+    f2.instruction(&Instruction::End);
+    code.function(&f2);
+    module.section(&code);
+    let wasm = module.finish();
+
+    let shards = compile_c_sharded(&wasm, 2);
+    let result = run_c_sharded(&shards, 0, &[], 1);
+    assert_eq!(result, vec![30], "fn0 should return fn2(fn1(5)) = fn2(15) = 30");
+}
+
+// ---- shard_asm_*: native assembly backend structural tests -----------------
+
+/// Single-shard native ASM sharding produces non-empty output that
+/// contains the expected intra-shard call pattern (direct label call, no SCR load).
+fn assert_shard_single_asm_contains_no_scr_load(arch: NativeArch, abi: NativeAbi, scr_pattern: &str) {
+    let wasm = make_two_func_cross_call_module();
+    // n=1: both functions in shard 0, call is intra-shard, no SCR-relative load.
+    let shards = compile_native_asm_sharded(&wasm, arch, abi, 1);
+    assert!(!shards[0].is_empty(), "single-shard asm must be non-empty");
+    assert!(!shards[0].contains(scr_pattern),
+        "single-shard must not emit cross-shard SCR load (all calls are intra-shard):\n{}", shards[0]);
+}
+
+/// Two-shard native ASM sharding: the shard containing fn0 must emit a
+/// SCR-relative indirect load for the cross-shard call to fn1.
+fn assert_shard_cross_asm_contains_scr_load(arch: NativeArch, abi: NativeAbi, scr_pattern: &str) {
+    let wasm = make_two_func_cross_call_module();
+    let shards = compile_native_asm_sharded(&wasm, arch, abi, 2);
+    assert!(!shards[0].is_empty(), "shard 0 must be non-empty");
+    assert!(!shards[1].is_empty(), "shard 1 must be non-empty");
+    assert!(shards[0].contains(scr_pattern) || shards[1].contains(scr_pattern),
+        "at least one shard must contain the SCR-relative indirect load\nshard0:\n{}\nshard1:\n{}", shards[0], shards[1]);
+}
+
+// Cross-shard loads use `[r14+...` (x86-64) or `[x27,...` / `[x27` (AArch64).
+// The prologue/epilogue uses `push r14`/`pop r14` which don't match these bracket forms.
+#[test]
+fn shard_asm_single_no_scr_x86_64_naive() {
+    assert_shard_single_asm_contains_no_scr_load(NativeArch::X86_64, NativeAbi::Naive, "[r14");
+}
+#[test]
+fn shard_asm_single_no_scr_x86_64_sysv() {
+    assert_shard_single_asm_contains_no_scr_load(NativeArch::X86_64, NativeAbi::Sysv, "[r14");
+}
+#[test]
+fn shard_asm_single_no_scr_aarch64_naive() {
+    assert_shard_single_asm_contains_no_scr_load(NativeArch::AArch64, NativeAbi::Naive, "[x27");
+}
+#[test]
+fn shard_asm_single_no_scr_aarch64_sysv() {
+    assert_shard_single_asm_contains_no_scr_load(NativeArch::AArch64, NativeAbi::Sysv, "[x27");
+}
+#[test]
+fn shard_asm_cross_scr_load_x86_64_naive() {
+    assert_shard_cross_asm_contains_scr_load(NativeArch::X86_64, NativeAbi::Naive, "[r14");
+}
+#[test]
+fn shard_asm_cross_scr_load_x86_64_sysv() {
+    assert_shard_cross_asm_contains_scr_load(NativeArch::X86_64, NativeAbi::Sysv, "[r14");
+}
+#[test]
+fn shard_asm_cross_scr_load_aarch64_naive() {
+    assert_shard_cross_asm_contains_scr_load(NativeArch::AArch64, NativeAbi::Naive, "[x27");
+}
+#[test]
+fn shard_asm_cross_scr_load_aarch64_sysv() {
+    assert_shard_cross_asm_contains_scr_load(NativeArch::AArch64, NativeAbi::Sysv, "[x27");
+}

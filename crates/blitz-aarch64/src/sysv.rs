@@ -33,7 +33,7 @@ use portal_solutions_blitz_common::{
     wasm_encoder::{FuncType, reencode::Reencode},
 };
 
-use crate::naive::{State, WriterExt};
+use crate::naive::{State, WriterExt, SCR};
 use crate::AArch64Label;
 use crate::codegen::TraceBase;
 use crate::{FP, LR, SP};
@@ -131,6 +131,10 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 if state.num_returns > 1 { self.wasm_pop(ctx, arch, Reg(1))?; }
                 self.mov(ctx, arch, &reg(SP), &reg(FP))?;
                 self.ldp(ctx, arch, &reg(FP), &reg(LR), &mem_post(SP, 16))?;
+                // Restore SCR if sharding active (Reg(9) = x9 gets discarded — OK).
+                if state.shard.is_some() {
+                    self.ldp(ctx, arch, &reg(SCR), &reg(Reg(9)), &mem_post(SP, 16))?;
+                }
                 self.ret(ctx, arch)
             }
             // ---- Function-level End (empty if_stack) ----
@@ -139,6 +143,9 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 if state.num_returns > 1 { self.wasm_pop(ctx, arch, Reg(1))?; }
                 self.mov(ctx, arch, &reg(SP), &reg(FP))?;
                 self.ldp(ctx, arch, &reg(FP), &reg(LR), &mem_post(SP, 16))?;
+                if state.shard.is_some() {
+                    self.ldp(ctx, arch, &reg(SCR), &reg(Reg(9)), &mem_post(SP, 16))?;
+                }
                 self.ret(ctx, arch)
             }
             other => self.handle_insn(ctx, arch, state, func_imports, &[], &[], other, target),
@@ -184,6 +191,10 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                     ).map_err(Err::from)?;
                 }
 
+                // Save SCR (X27) in a 16-byte aligned pair before FP+LR.
+                if state.shard.is_some() {
+                    self.stp(ctx, arch, &reg(SCR), &reg(Reg(9)), &mem_pre(SP, -16)).map_err(Err::from)?;
+                }
                 self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16)).map_err(Err::from)?;
                 self.mov(ctx, arch, &reg(FP), &reg(SP)).map_err(Err::from)?;
 

@@ -34,6 +34,8 @@ use core::{
     error::Error,
     fmt::{Display, Formatter, Write},
 };
+
+pub mod shard;
 #[doc(hidden)]
 pub mod __ {
     pub use portal_solutions_blitz_common::DisplayFn;

@@ -6,13 +6,77 @@
 use alloc::collections::btree_map::BTreeMap;
 use portal_solutions_asm_x86_64::RegisterClass;
 use portal_solutions_asm_x86_64::out::arg::{ArgKind, MemArg, MemArgKind};
+use portal_solutions_blitz_common::asm::Reg;
 use portal_solutions_blitz_common::ops::TracingConfig;
+use portal_solutions_blitz_common::shard::{CallTarget, SecondCtxConfig};
 use portal_solutions_blitz_common::wasm_encoder::{self, Catch, FuncType, Instruction, reencode::{self as reencode, Reencode}};
+
+/// Static Context Register (SCR) — r14 on x86-64.
+///
+/// Holds a pointer to the cross-shard function-pointer table when sharding is
+/// active. See `docs/second-context-register.md`.
+pub const SCR: Reg = Reg(14);
 
 use crate::{
     out::{Writer, arg::Arg},
     *,
 };
+
+/// Sharding state carried in [`State`] when cross-shard call dispatch is needed.
+///
+/// Uses a type-erased pointer + trampoline so `State` stays `'static` without
+/// heap allocation.  The caller is responsible for keeping the backing
+/// `ShardMap` alive for the duration of the compilation.
+#[derive(Clone, Copy)]
+pub struct NaiveShardState {
+    pub config: SecondCtxConfig,
+    /// Shard index of the function currently being compiled.
+    pub current_shard: usize,
+    pub imports_len: u32,
+    /// Type-erased pointer to a `ShardMap` implementation.
+    shard_map_ptr: *const (),
+    /// Trampoline: cast `shard_map_ptr` back to the concrete type and call `shard_for`.
+    shard_for: unsafe fn(*const (), u32) -> usize,
+}
+
+// SAFETY: compilation is single-threaded; the raw pointer is only read during
+// the compilation of a single WASM module.
+unsafe impl Send for NaiveShardState {}
+unsafe impl Sync for NaiveShardState {}
+
+impl NaiveShardState {
+    /// Construct a `NaiveShardState` for the given shard map.
+    ///
+    /// # Safety
+    /// `map` must outlive this `NaiveShardState`.
+    pub fn new<S: portal_solutions_blitz_common::shard::ShardMap>(
+        config: SecondCtxConfig,
+        current_shard: usize,
+        imports_len: u32,
+        map: *const S,
+    ) -> Self {
+        unsafe fn trampoline<S: portal_solutions_blitz_common::shard::ShardMap>(
+            ptr: *const (),
+            fn_idx: u32,
+        ) -> usize {
+            unsafe { &*(ptr as *const S) }.shard_for(fn_idx)
+        }
+        Self { config, current_shard, imports_len, shard_map_ptr: map as *const (), shard_for: trampoline::<S> }
+    }
+
+    /// Classify a call to `callee_fn` (WASM-space function index).
+    pub fn call_target(&self, callee_fn: u32) -> CallTarget {
+        if callee_fn < self.imports_len {
+            return CallTarget::Import;
+        }
+        let callee_shard = unsafe { (self.shard_for)(self.shard_map_ptr, callee_fn) };
+        if callee_shard == self.current_shard {
+            CallTarget::Local
+        } else {
+            CallTarget::CrossShard { table_slot: callee_fn }
+        }
+    }
+}
 
 /// State tracker for x86-64 code generation.
 ///
@@ -34,6 +98,9 @@ pub struct State {
     /// Next trace-site id to assign (function entry consumes site 0; each
     /// loop/block consumes the next).  See `emit_jit_preamble` / Item 1.
     pub next_site_id: u32,
+    /// Present when sharding is active. Used to classify `Call` instructions
+    /// as intra-shard (direct label) or cross-shard (SCR-relative indirect).
+    pub shard: Option<NaiveShardState>,
 }
 
 /// Magic sentinel pushed onto the CTX stack to mark a TryTable frame.
@@ -987,16 +1054,36 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.set_label(ctx, arch, X64Label::Indexed { idx: exit_idx })?;
             }
             Instruction::Call(function_index) => {
-                match func_imports.get(*function_index as usize) {
-                    Some((module, name)) => {
-                        let sym = alloc::format!("{module}__{name}");
-                        self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: sym })?;
+                let fn_idx = *function_index;
+                // Classify the call when sharding is active.
+                let target = state.shard.as_ref().map(|s| s.call_target(fn_idx));
+                match target {
+                    Some(CallTarget::CrossShard { table_slot }) => {
+                        // Cross-shard: load fn ptr from [SCR + table_slot * 8].
+                        self.mov(ctx, arch, &Reg(0), &MemArgKind::Mem {
+                            base: SCR,
+                            offset: None,
+                            disp: table_slot.wrapping_mul(8),
+                            size: MemorySize::_64,
+                            reg_class: RegisterClass::Gpr,
+                            segment: Default::default(),
+                        })?;
                         self.call(ctx, arch, &Reg(0))?;
                     }
-                    None => {
-                        let idx = *function_index - func_imports.len() as u32;
-                        self.lea_label(ctx, arch, &Reg(0), X64Label::Func { r#fn: idx })?;
-                        self.call(ctx, arch, &Reg(0))?;
+                    _ => {
+                        // Import or local (or no sharding): existing label-call path.
+                        match func_imports.get(fn_idx as usize) {
+                            Some((module, name)) => {
+                                let sym = alloc::format!("{module}__{name}");
+                                self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: sym })?;
+                                self.call(ctx, arch, &Reg(0))?;
+                            }
+                            None => {
+                                let idx = fn_idx - func_imports.len() as u32;
+                                self.lea_label(ctx, arch, &Reg(0), X64Label::Func { r#fn: idx })?;
+                                self.call(ctx, arch, &Reg(0))?;
+                            }
+                        }
                     }
                 }
             }

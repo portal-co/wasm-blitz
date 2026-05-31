@@ -30,7 +30,7 @@ use portal_solutions_asm_riscv64::{RegisterClass, out::arg::{ArgKind, MemArgKind
 
 use crate::RiscvLabel;
 use crate::codegen::TraceBase;
-use crate::naive::{State, WriterExt as NaiveExt, flush_regalloc, push, pop, pop_regalloc_to};
+use crate::naive::{State, WriterExt as NaiveExt, flush_regalloc, push, pop, pop_regalloc_to, SCR};
 
 /// Blitz register number of the RISC-V psABI **trace-base virtual parameter**
 /// (`t2` / x7).
@@ -127,6 +127,9 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                 self.addi(ctx, arch, &SP, &FP, -state.sysv_frame_sz)?;
                 self.ld(ctx, arch, &RA, &mem64(SP, 0))?;
                 self.ld(ctx, arch, &FP, &mem64(SP, 8))?;
+                if state.shard.is_some() {
+                    self.ld(ctx, arch, &SCR, &mem64(SP, 24))?;
+                }
                 self.jalr(ctx, arch, &Reg(0), &RA, 0)
             }
             // Function-level End (empty if_stack) acts as implicit return.
@@ -141,6 +144,9 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                 self.addi(ctx, arch, &SP, &FP, -state.sysv_frame_sz)?;
                 self.ld(ctx, arch, &RA, &mem64(SP, 0))?;
                 self.ld(ctx, arch, &FP, &mem64(SP, 8))?;
+                if state.shard.is_some() {
+                    self.ld(ctx, arch, &SCR, &mem64(SP, 24))?;
+                }
                 self.jalr(ctx, arch, &Reg(0), &RA, 0)
             }
 
@@ -193,15 +199,20 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                 // Frame layout (from FP downward):
                 //   [FP-(1*8)]  = local 0   ← same offsets as naive, regalloc-compatible
                 //   ...
+                //   [SP+24] = saved SCR (s10)    ← extra slot when sharding active
                 //   [SP+16] = spilled trace base  ← extra slot for mid-function sites
                 //   [SP+8]  = saved old-FP   ← bottom two slots for callee-saves
                 //   [SP+0]  = saved RA
-                let frame_slots = data.num_params + 2 + state.control_depth * 2 + 3;
+                let shard_extra = if state.shard.is_some() { 1 } else { 0 };
+                let frame_slots = data.num_params + 2 + state.control_depth * 2 + 3 + shard_extra;
                 let frame_sz = (frame_slots * 8) as i32;
                 state.sysv_frame_sz = frame_sz;
                 self.addi(ctx, arch, &SP, &SP, -frame_sz).map_err(Err::from)?;
                 self.sd(ctx, arch, &RA, &mem64(SP, 0)).map_err(Err::from)?;
                 self.sd(ctx, arch, &FP, &mem64(SP, 8)).map_err(Err::from)?;
+                if state.shard.is_some() {
+                    self.sd(ctx, arch, &SCR, &mem64(SP, 24)).map_err(Err::from)?;
+                }
                 self.addi(ctx, arch, &FP, &SP, frame_sz).map_err(Err::from)?;
 
                 // Spill the virtual-param base (t2) to the [SP+16] slot and point

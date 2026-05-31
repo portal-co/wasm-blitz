@@ -20,6 +20,7 @@ use portal_solutions_asm_riscv64::out::Writer;
 
 use portal_solutions_blitz_common::asm::Reg;
 use portal_solutions_blitz_common::ops::{MachOperator, TracingConfig};
+use portal_solutions_blitz_common::shard::{CallTarget, SecondCtxConfig};
 use portal_solutions_blitz_common::wasm_encoder;
 use portal_solutions_blitz_common::wasm_encoder::reencode::{self as reencode, Reencode};
 
@@ -31,6 +32,54 @@ use core::ops::{Index, IndexMut};
 use portal_solutions_asm_regalloc as regalloc;
 use portal_solutions_asm_riscv64 as asm_riscv;
 use portal_solutions_asm_riscv64::regalloc as riscv_regalloc;
+
+/// Static Context Register (SCR) — S10 (x26) on RISC-V 64.
+///
+/// Callee-saved; holds the cross-shard function-pointer table pointer when
+/// sharding is active. See `docs/second-context-register.md`.
+pub const SCR: Reg = Reg(26);
+
+/// Sharding state for RISC-V 64 functions — same design as x86-64/AArch64.
+#[derive(Clone, Copy)]
+pub struct NaiveShardState {
+    pub config: SecondCtxConfig,
+    pub current_shard: usize,
+    pub imports_len: u32,
+    shard_map_ptr: *const (),
+    shard_for: unsafe fn(*const (), u32) -> usize,
+}
+
+unsafe impl Send for NaiveShardState {}
+unsafe impl Sync for NaiveShardState {}
+
+impl NaiveShardState {
+    pub fn new<S: portal_solutions_blitz_common::shard::ShardMap>(
+        config: SecondCtxConfig,
+        current_shard: usize,
+        imports_len: u32,
+        map: *const S,
+    ) -> Self {
+        unsafe fn trampoline<S: portal_solutions_blitz_common::shard::ShardMap>(
+            ptr: *const (),
+            fn_idx: u32,
+        ) -> usize {
+            unsafe { &*(ptr as *const S) }.shard_for(fn_idx)
+        }
+        Self { config, current_shard, imports_len, shard_map_ptr: map as *const (), shard_for: trampoline::<S> }
+    }
+
+    pub fn call_target(&self, callee_fn: u32) -> CallTarget {
+        if callee_fn < self.imports_len {
+            return CallTarget::Import;
+        }
+        let callee_shard = unsafe { (self.shard_for)(self.shard_map_ptr, callee_fn) };
+        if callee_shard == self.current_shard {
+            CallTarget::Local
+        } else {
+            CallTarget::CrossShard { table_slot: callee_fn }
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct State {
@@ -56,6 +105,9 @@ pub struct State {
     /// NaiveAbi keeps the default (CTX-relative); the SysV ABI sets this to a
     /// frame slot after spilling its virtual-param base register.
     pub trace_base: crate::codegen::TraceBase,
+    /// Present when sharding is active. SCR (S10/x26) is saved in the SysV
+    /// frame. Naive functions use SCR read-only (the runtime sets it).
+    pub shard: Option<NaiveShardState>,
 }
 
 pub struct Frames(pub [[regalloc::RegAllocFrame<riscv_regalloc::RegKind>; 32]; 2]);
@@ -1452,19 +1504,33 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     trace!("handle_op_: Call flush done ({n} cmds)");
                 }
                 // Use ra (x1) as the link register so the callee can return correctly.
-                // `jal ra, label` is the canonical RISC-V direct call — it jumps to
-                // label and writes (PC+4) into ra.  The previous code used a0 as the
-                // link register and then did `call a0`, which caused a0 to point at
-                // the `call a0` instruction itself, creating an infinite loop.
-                let ra = portal_solutions_blitz_common::asm::Reg(1);
-                match func_imports.get(*function_index as usize) {
-                    Some((module, name)) => {
-                        let sym = alloc::format!("{module}__{name}");
-                        self.jal_label(ctx, arch, &ra, RiscvLabel::External { name: sym })?;
+                let ra = Reg(1);
+                let target = state.shard.as_ref().map(|s| s.call_target(*function_index));
+                match target {
+                    Some(CallTarget::CrossShard { table_slot }) => {
+                        // Cross-shard: load fn ptr from [SCR + table_slot * 8] into t0.
+                        let t0 = Reg(5);
+                        let mem = MemArgKind::Mem {
+                            base: ArgKind::Reg { reg: SCR, size: MemorySize::_64 },
+                            offset: None,
+                            disp: table_slot as i32 * 8,
+                            size: MemorySize::_64,
+                            reg_class: RegisterClass::Gpr,
+                        };
+                        self.ld(ctx, arch, &t0, &mem)?;
+                        self.jalr(ctx, arch, &ra, &t0, 0)?;
                     }
-                    None => {
-                        let idx = *function_index - func_imports.len() as u32;
-                        self.jal_label(ctx, arch, &ra, RiscvLabel::Func { r#fn: idx })?;
+                    _ => {
+                        match func_imports.get(*function_index as usize) {
+                            Some((module, name)) => {
+                                let sym = alloc::format!("{module}__{name}");
+                                self.jal_label(ctx, arch, &ra, RiscvLabel::External { name: sym })?;
+                            }
+                            None => {
+                                let idx = *function_index - func_imports.len() as u32;
+                                self.jal_label(ctx, arch, &ra, RiscvLabel::Func { r#fn: idx })?;
+                            }
+                        }
                     }
                 }
             }
