@@ -87,51 +87,55 @@ impl<State: Default, Arch: Copy + Default> WasmSink<State, Arch> {
     }
 }
 
-impl<State, Arch: Copy> WasmSink<State, Arch> {
+impl<S, Arch: Copy> WasmSink<S, Arch> {
     /// Emit the function prologue via `Abi::emit_prologue` and record `id` as
     /// the current compilation target.
-    pub fn start_fn<W, AsmCtx, Abi>(
-        &mut self,
+    ///
+    /// The lifetime `'a` is the lifetime of any references held inside `S`
+    /// (e.g. a borrowed [`crate::shard::ShardMap`]).  For states that hold no
+    /// references, `'a` is inferred as `'static`.
+    pub fn start_fn<'a, W, AsmCtx, Abi>(
+        &'a mut self,
         ctx: &mut WaxHandle<W, AsmCtx>,
         id: u32,
         data: &FnData,
     ) -> Result<(), Abi::Error>
     where
-        Abi: BackendAbi<W, AsmCtx, State = State, Arch = Arch>,
+        Abi: BackendAbi<W, AsmCtx, State<'a> = S, Arch = Arch> + 'a,
     {
         self.target = id;
         Abi::emit_prologue(&mut ctx.writer, &mut ctx.asm_ctx, self.arch, &mut self.state, id, data)
     }
 
     /// Emit initialisation for one new local variable slot.
-    pub fn new_local<W, AsmCtx, Abi>(
-        &mut self,
+    pub fn new_local<'a, W, AsmCtx, Abi>(
+        &'a mut self,
         ctx: &mut WaxHandle<W, AsmCtx>,
     ) -> Result<(), Abi::Error>
     where
-        Abi: BackendAbi<W, AsmCtx, State = State, Arch = Arch>,
+        Abi: BackendAbi<W, AsmCtx, State<'a> = S, Arch = Arch> + 'a,
     {
         Abi::emit_new_local(&mut ctx.writer, &mut ctx.asm_ctx, self.arch, &mut self.state)
     }
 
     /// Emit start-of-body code (called after all locals are declared).
-    pub fn start_body<W, AsmCtx, Abi>(
-        &mut self,
+    pub fn start_body<'a, W, AsmCtx, Abi>(
+        &'a mut self,
         ctx: &mut WaxHandle<W, AsmCtx>,
     ) -> Result<(), Abi::Error>
     where
-        Abi: BackendAbi<W, AsmCtx, State = State, Arch = Arch>,
+        Abi: BackendAbi<W, AsmCtx, State<'a> = S, Arch = Arch> + 'a,
     {
         Abi::emit_start_body(&mut ctx.writer, &mut ctx.asm_ctx, self.arch, &mut self.state)
     }
 
     /// Emit a function return.
-    pub fn emit_return<W, AsmCtx, Abi>(
-        &mut self,
+    pub fn emit_return<'a, W, AsmCtx, Abi>(
+        &'a mut self,
         ctx: &mut WaxHandle<W, AsmCtx>,
     ) -> Result<(), Abi::Error>
     where
-        Abi: BackendAbi<W, AsmCtx, State = State, Arch = Arch>,
+        Abi: BackendAbi<W, AsmCtx, State<'a> = S, Arch = Arch> + 'a,
     {
         Abi::emit_return(&mut ctx.writer, &mut ctx.asm_ctx, self.arch, &self.state)
     }

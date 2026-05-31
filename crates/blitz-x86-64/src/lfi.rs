@@ -40,7 +40,7 @@ where
     W: LfiWriterExt<Context>,
 {
     type Error = W::Error;
-    type State = State<'static>;
+    type State<'s> = State<'s> where Self: 's;
     type Arch = X64Arch;
 
     fn emit_prologue(
@@ -126,7 +126,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        _state: &State<'static>,
+        _state: &State<'_>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.xchg(ctx, arch, &RSP, &Reg::CTX)?;
@@ -149,7 +149,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        _state: &State<'static>,
+        _state: &State<'_>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.pop(ctx, arch, &Reg(0))?;
@@ -172,7 +172,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &State<'static>,
+        state: &State<'_>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.pop(ctx, arch, &Reg(0))?;
@@ -185,7 +185,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        _state: &State<'static>,
+        _state: &State<'_>,
         func_imports: &[(&str, &str)],
         fn_idx: u32,
         _sigs: &[FuncType],
@@ -231,7 +231,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &State<'static>,
+        state: &State<'_>,
     ) -> Result<(), W::Error> {
         // Restore RSP to frame base (same as NaiveAbi).
         w.mov(ctx, arch, &Reg(1), &RSP)?;

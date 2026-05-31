@@ -35,7 +35,7 @@ pub struct NaiveShardState<'a> {
     /// Shard index of the function currently being compiled.
     pub current_shard: usize,
     pub imports_len: u32,
-    pub map: &'a dyn portal_solutions_blitz_common::shard::ShardMap,
+    pub map: &'a (dyn portal_solutions_blitz_common::shard::ShardMap + 'a),
 }
 
 impl<'a> NaiveShardState<'a> {
@@ -43,7 +43,7 @@ impl<'a> NaiveShardState<'a> {
         config: SecondCtxConfig,
         current_shard: usize,
         imports_len: u32,
-        map: &'a dyn portal_solutions_blitz_common::shard::ShardMap,
+        map: &'a (dyn portal_solutions_blitz_common::shard::ShardMap + 'a),
     ) -> Self {
         Self { config, current_shard, imports_len, map }
     }

@@ -51,14 +51,14 @@ where
     W: NaiveWriterExt<Context>,
 {
     type Error = W::Error;
-    type State = crate::naive::State<'static>;
+    type State<'s> = crate::naive::State<'s> where Self: 's;
     type Arch = X64Arch;
 
     fn emit_prologue(
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &mut Self::State,
+        state: &mut Self::State<'_>,
         id: u32,
         data: &FnData,
     ) -> Result<(), W::Error> {
@@ -90,7 +90,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &mut Self::State,
+        state: &mut Self::State<'_>,
     ) -> Result<(), W::Error> {
         state.local_count += 1;
         w.push(ctx, arch, &Reg(0))
@@ -100,7 +100,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &mut Self::State,
+        state: &mut Self::State<'_>,
     ) -> Result<(), W::Error> {
         // Emit tracing preamble. Use Reg(2) (RDX) as scratch; Reg(0)/Reg(1)
         // hold old-CTX and return-addr consumed by the pushes below.
@@ -140,7 +140,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        _state: &Self::State,
+        _state: &Self::State<'_>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.xchg(ctx, arch, &RSP, &Reg::CTX)?;
@@ -179,7 +179,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        _state: &Self::State,
+        _state: &Self::State<'_>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.pop(ctx, arch, &Reg(0))?;
@@ -218,7 +218,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        _state: &Self::State,
+        _state: &Self::State<'_>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.pop(ctx, arch, &Reg(0))?;
@@ -258,7 +258,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        _state: &Self::State,
+        _state: &Self::State<'_>,
         func_imports: &[(&str, &str)],
         fn_idx: u32,
         _sigs: &[FuncType],
@@ -282,7 +282,7 @@ where
         _w: &mut W,
         _ctx: &mut Context,
         _arch: X64Arch,
-        _state: &mut Self::State,
+        _state: &mut Self::State<'_>,
         _tag_index: u32,
         _arity: u32,
     ) -> Result<(), W::Error> {
@@ -296,7 +296,7 @@ where
         _w: &mut W,
         _ctx: &mut Context,
         _arch: X64Arch,
-        _state: &mut Self::State,
+        _state: &mut Self::State<'_>,
         _catches: &[Catch],
         _sigs: &[FuncType],
         _tags: &[u32],
@@ -308,7 +308,7 @@ where
         _w: &mut W,
         _ctx: &mut Context,
         _arch: X64Arch,
-        _state: &mut Self::State,
+        _state: &mut Self::State<'_>,
         _catches: &[Catch],
         _sigs: &[FuncType],
         _tags: &[u32],
@@ -320,7 +320,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &Self::State,
+        state: &Self::State<'_>,
     ) -> Result<(), W::Error> {
         w.mov(ctx, arch, &Reg(1), &RSP)?;
         w.mov(ctx, arch, &Reg(0), &Reg::CTX)?;
@@ -361,7 +361,7 @@ where
     W: SysVWriterExt<Context>,
 {
     type Error = W::Error;
-    type State = SysVState<'static>;
+    type State<'s> = SysVState<'s> where Self: 's;
     type Arch = X64Arch;
 
     fn emit_prologue(

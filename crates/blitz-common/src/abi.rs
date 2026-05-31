@@ -61,9 +61,15 @@ pub trait BackendAbi<W: ?Sized, Context> {
 
     /// Per-function mutable state managed by the ABI implementation.
     ///
+    /// This is a Generic Associated Type parameterised by the lifetime `'s` of
+    /// any references the state holds (e.g. a `ShardMap` borrow).  When no
+    /// references are held `'s` can be `'static`.
+    ///
     /// Must implement [`Default`] so callers can create fresh instances without
     /// knowing the concrete state layout.
-    type State: Default;
+    type State<'s>: Default
+    where
+        Self: 's;
 
     /// Architecture descriptor (e.g. `X64Arch`, `AArch64Arch`, `RiscV64Arch`).
     ///
@@ -80,7 +86,7 @@ pub trait BackendAbi<W: ?Sized, Context> {
         w: &mut W,
         ctx: &mut Context,
         arch: Self::Arch,
-        state: &mut Self::State,
+        state: &mut Self::State<'_>,
         id: u32,
         data: &FnData,
     ) -> Result<(), Self::Error>;
@@ -93,7 +99,7 @@ pub trait BackendAbi<W: ?Sized, Context> {
         w: &mut W,
         ctx: &mut Context,
         arch: Self::Arch,
-        state: &mut Self::State,
+        state: &mut Self::State<'_>,
     ) -> Result<(), Self::Error>;
 
     /// Emit the start-of-body code (after all locals have been declared).
@@ -103,7 +109,7 @@ pub trait BackendAbi<W: ?Sized, Context> {
         w: &mut W,
         ctx: &mut Context,
         arch: Self::Arch,
-        state: &mut Self::State,
+        state: &mut Self::State<'_>,
     ) -> Result<(), Self::Error>;
 
     // ---- local variable access ---------------------------------------------
@@ -113,7 +119,7 @@ pub trait BackendAbi<W: ?Sized, Context> {
         w: &mut W,
         ctx: &mut Context,
         arch: Self::Arch,
-        state: &Self::State,
+        state: &Self::State<'_>,
         n: u32,
     ) -> Result<(), Self::Error>;
 
@@ -122,7 +128,7 @@ pub trait BackendAbi<W: ?Sized, Context> {
         w: &mut W,
         ctx: &mut Context,
         arch: Self::Arch,
-        state: &Self::State,
+        state: &Self::State<'_>,
         n: u32,
     ) -> Result<(), Self::Error>;
 
@@ -132,7 +138,7 @@ pub trait BackendAbi<W: ?Sized, Context> {
         w: &mut W,
         ctx: &mut Context,
         arch: Self::Arch,
-        state: &Self::State,
+        state: &Self::State<'_>,
         n: u32,
     ) -> Result<(), Self::Error>;
 
@@ -151,7 +157,7 @@ pub trait BackendAbi<W: ?Sized, Context> {
         w: &mut W,
         ctx: &mut Context,
         arch: Self::Arch,
-        state: &Self::State,
+        state: &Self::State<'_>,
         func_imports: &[(&str, &str)],
         fn_idx: u32,
         sigs: &[FuncType],
@@ -163,7 +169,7 @@ pub trait BackendAbi<W: ?Sized, Context> {
         w: &mut W,
         ctx: &mut Context,
         arch: Self::Arch,
-        state: &Self::State,
+        state: &Self::State<'_>,
     ) -> Result<(), Self::Error>;
 
     // ---- exception handling ------------------------------------------------
@@ -187,7 +193,7 @@ pub trait BackendAbi<W: ?Sized, Context> {
         w: &mut W,
         ctx: &mut Context,
         arch: Self::Arch,
-        state: &mut Self::State,
+        state: &mut Self::State<'_>,
         tag_index: u32,
         arity: u32,
     ) -> Result<(), Self::Error>;
@@ -205,7 +211,7 @@ pub trait BackendAbi<W: ?Sized, Context> {
         w: &mut W,
         ctx: &mut Context,
         arch: Self::Arch,
-        state: &mut Self::State,
+        state: &mut Self::State<'_>,
         catches: &[Catch],
         sigs: &[FuncType],
         tags: &[u32],
@@ -221,7 +227,7 @@ pub trait BackendAbi<W: ?Sized, Context> {
         w: &mut W,
         ctx: &mut Context,
         arch: Self::Arch,
-        state: &mut Self::State,
+        state: &mut Self::State<'_>,
         catches: &[Catch],
         sigs: &[FuncType],
         tags: &[u32],
