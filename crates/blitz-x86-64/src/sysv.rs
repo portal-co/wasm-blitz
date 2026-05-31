@@ -100,8 +100,13 @@ impl SysVCtrl {
 }
 
 /// State tracker for System V x86-64 code generation.
+///
+/// The lifetime `'a` is the lifetime of the [`ShardMap`] reference in
+/// [`shard`][SysVState::shard]; it has no constraints when `shard` is `None`.
+///
+/// [`ShardMap`]: portal_solutions_blitz_common::shard::ShardMap
 #[derive(Default)]
-pub struct SysVState {
+pub struct SysVState<'a> {
     pub param_count: usize,
     pub ret_count: usize,
     pub local_count: usize,
@@ -122,7 +127,7 @@ pub struct SysVState {
     pub trace_base_disp: i32,
     /// Present when sharding is active. SCR (r14) is pushed in the prologue and
     /// popped in all return paths. Cross-shard calls load the target from SCR.
-    pub shard: Option<crate::naive::NaiveShardState>,
+    pub shard: Option<crate::naive::NaiveShardState<'a>>,
 }
 
 /// Extension trait for generating System V AMD64-compatible functions.
@@ -163,7 +168,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
     /// (`[RBP + trace_base_disp]`) since the virtual-param register `r11` has
     /// been clobbered by the body.  Uses `RAX` as scratch (free at a block
     /// boundary — operands live on the WASM stack).
-    fn sysv_emit_trace_site(&mut self, ctx: &mut Context, arch: X64Arch, state: &mut SysVState)
+    fn sysv_emit_trace_site(&mut self, ctx: &mut Context, arch: X64Arch, state: &mut SysVState<'_>)
         -> Result<(), Self::Error>
     where
         Self: Sized,
@@ -187,7 +192,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
         &mut self,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &mut SysVState,
+        state: &mut SysVState<'_>,
         func_imports: &[(&str, &str)],
         op: &Instruction<'_>,
         target: u32,
@@ -434,7 +439,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
         &mut self,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &mut SysVState,
+        state: &mut SysVState<'_>,
         func_imports: &[(&str, &str)],
         op: &MachOperator<'_>,
         rewriter: &mut (dyn Reencode<Error = E> + '_),

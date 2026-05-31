@@ -32,41 +32,30 @@ use crate::AArch64Label;
 // State
 // ---------------------------------------------------------------------------
 
-/// Sharding state for AArch64 functions — same design as x86-64; see
-/// `blitz-x86-64::naive::NaiveShardState` for full documentation.
+/// Sharding state for AArch64 functions — same design as x86-64.
 #[derive(Clone, Copy)]
-pub struct NaiveShardState {
+pub struct NaiveShardState<'a> {
     pub config: SecondCtxConfig,
     pub current_shard: usize,
     pub imports_len: u32,
-    shard_map_ptr: *const (),
-    shard_for: unsafe fn(*const (), u32) -> usize,
+    pub map: &'a dyn portal_solutions_blitz_common::shard::ShardMap,
 }
 
-unsafe impl Send for NaiveShardState {}
-unsafe impl Sync for NaiveShardState {}
-
-impl NaiveShardState {
-    pub fn new<S: portal_solutions_blitz_common::shard::ShardMap>(
+impl<'a> NaiveShardState<'a> {
+    pub fn new(
         config: SecondCtxConfig,
         current_shard: usize,
         imports_len: u32,
-        map: *const S,
+        map: &'a dyn portal_solutions_blitz_common::shard::ShardMap,
     ) -> Self {
-        unsafe fn trampoline<S: portal_solutions_blitz_common::shard::ShardMap>(
-            ptr: *const (),
-            fn_idx: u32,
-        ) -> usize {
-            unsafe { &*(ptr as *const S) }.shard_for(fn_idx)
-        }
-        Self { config, current_shard, imports_len, shard_map_ptr: map as *const (), shard_for: trampoline::<S> }
+        Self { config, current_shard, imports_len, map }
     }
 
     pub fn call_target(&self, callee_fn: u32) -> CallTarget {
         if callee_fn < self.imports_len {
             return CallTarget::Import;
         }
-        let callee_shard = unsafe { (self.shard_for)(self.shard_map_ptr, callee_fn) };
+        let callee_shard = self.map.shard_for(callee_fn);
         if callee_shard == self.current_shard {
             CallTarget::Local
         } else {
@@ -76,8 +65,13 @@ impl NaiveShardState {
 }
 
 /// Code-generation state for an AArch64 function.
+///
+/// The lifetime `'a` is the lifetime of the [`ShardMap`] reference in
+/// [`shard`][State::shard]; it is unconstrained when `shard` is `None`.
+///
+/// [`ShardMap`]: portal_solutions_blitz_common::shard::ShardMap
 #[derive(Default)]
-pub struct State {
+pub struct State<'a> {
     pub local_count: usize,
     pub num_returns: usize,
     pub control_depth: usize,
@@ -98,7 +92,7 @@ pub struct State {
     pub trace_base: crate::codegen::TraceBase,
     /// Present when sharding is active. SCR (X27) is pushed in the prologue
     /// and popped before return.
-    pub shard: Option<NaiveShardState>,
+    pub shard: Option<NaiveShardState<'a>>,
 }
 
 /// Represents a control-flow frame.
@@ -235,7 +229,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
     }
 
     // ---- branch helper ----
-    fn do_br(&mut self, ctx: &mut Context, arch: AArch64Arch, state: &State, depth: u32)
+    fn do_br(&mut self, ctx: &mut Context, arch: AArch64Arch, state: &State<'_>, depth: u32)
         -> Result<(), Self::Error>
     {
         let len = state.if_stack.len();
@@ -262,7 +256,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
     /// Emit a tracing/specialization preamble for a loop/block control-flow
     /// site, consuming the next `site_id`.  No-op when tracing is disabled.
     /// Uses T0 as scratch (T1 as the inner `inc_mem64` scratch).
-    fn emit_trace_site(&mut self, ctx: &mut Context, arch: AArch64Arch, state: &mut State)
+    fn emit_trace_site(&mut self, ctx: &mut Context, arch: AArch64Arch, state: &mut State<'_>)
         -> Result<(), Self::Error>
     where
         Self: Sized,
@@ -284,7 +278,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         &mut self,
         ctx: &mut Context,
         arch: AArch64Arch,
-        state: &mut State,
+        state: &mut State<'_>,
         func_imports: &[(&str, &str)],
         sigs: &[FuncType],
         tags: &[u32],
@@ -732,7 +726,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         &mut self,
         ctx: &mut Context,
         arch: AArch64Arch,
-        state: &mut State,
+        state: &mut State<'_>,
         func_imports: &[(&str, &str)],
         sigs: &[FuncType],
         tags: &[u32],

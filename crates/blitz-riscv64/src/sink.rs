@@ -30,7 +30,7 @@ use crate::sysv::SysVWriterExt;
 /// - `NaiveAbi` (default) — blitz WASM stack convention
 /// - `SysVAbi`            — RISC-V psABI LP64
 pub struct RiscV64WasmSink<Abi = NaiveAbi>(
-    pub WasmSink<naive::State, RiscV64Arch>,
+    pub WasmSink<naive::State<'static>, RiscV64Arch>,
     PhantomData<Abi>,
 );
 
@@ -41,7 +41,7 @@ impl<Abi> RiscV64WasmSink<Abi> {
 }
 
 impl<Abi> Deref for RiscV64WasmSink<Abi> {
-    type Target = WasmSink<naive::State, RiscV64Arch>;
+    type Target = WasmSink<naive::State<'static>, RiscV64Arch>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }

@@ -88,14 +88,14 @@ where
     W: NaiveWriterExt<Context>,
 {
     type Error = W::Error;
-    type State = NaiveState;
+    type State = NaiveState<'static>;
     type Arch = AArch64Arch;
 
     fn emit_prologue(
         w: &mut W,
         ctx: &mut Context,
         arch: AArch64Arch,
-        state: &mut NaiveState,
+        state: &mut NaiveState<'static>,
         id: u32,
         data: &FnData,
     ) -> Result<(), W::Error> {
@@ -133,7 +133,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: AArch64Arch,
-        state: &mut NaiveState,
+        state: &mut NaiveState<'static>,
     ) -> Result<(), W::Error> {
         w.mov_imm(ctx, arch, &reg(T0), 0)?;
         w.store_local(ctx, arch, T0, state.local_count)?;
@@ -145,7 +145,7 @@ where
         _w: &mut W,
         _ctx: &mut Context,
         _arch: AArch64Arch,
-        _state: &mut NaiveState,
+        _state: &mut NaiveState<'static>,
     ) -> Result<(), W::Error> {
         Ok(())
     }
@@ -154,7 +154,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: AArch64Arch,
-        _state: &NaiveState,
+        _state: &NaiveState<'static>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.load_local(ctx, arch, T0, n as usize)?;
@@ -165,7 +165,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: AArch64Arch,
-        _state: &NaiveState,
+        _state: &NaiveState<'static>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.wasm_pop(ctx, arch, T0)?;
@@ -176,7 +176,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: AArch64Arch,
-        _state: &NaiveState,
+        _state: &NaiveState<'static>,
         n: u32,
     ) -> Result<(), W::Error> {
         // Peek at stack top without popping, then store to local
@@ -188,7 +188,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: AArch64Arch,
-        _state: &NaiveState,
+        _state: &NaiveState<'static>,
         func_imports: &[(&str, &str)],
         fn_idx: u32,
         _sigs: &[FuncType],
@@ -212,7 +212,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: AArch64Arch,
-        _state: &NaiveState,
+        _state: &NaiveState<'static>,
     ) -> Result<(), W::Error> {
         // Restore SP from FP, reload FP+LR, return
         w.mov(ctx, arch, &reg(SP), &reg(FP))?;
@@ -240,14 +240,14 @@ where
     W: SysVWriterExt<Context>,
 {
     type Error = W::Error;
-    type State = NaiveState;
+    type State = NaiveState<'static>;
     type Arch = AArch64Arch;
 
     fn emit_prologue(
         w: &mut W,
         ctx: &mut Context,
         arch: AArch64Arch,
-        state: &mut NaiveState,
+        state: &mut NaiveState<'static>,
         id: u32,
         data: &FnData,
     ) -> Result<(), W::Error> {
@@ -293,7 +293,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: AArch64Arch,
-        state: &mut NaiveState,
+        state: &mut NaiveState<'static>,
     ) -> Result<(), W::Error> {
         w.mov_imm(ctx, arch, &reg(T0), 0)?;
         w.store_local(ctx, arch, T0, state.local_count)?;
@@ -305,7 +305,7 @@ where
         _w: &mut W,
         _ctx: &mut Context,
         _arch: AArch64Arch,
-        _state: &mut NaiveState,
+        _state: &mut NaiveState<'static>,
     ) -> Result<(), W::Error> {
         Ok(())
     }
@@ -314,7 +314,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: AArch64Arch,
-        _state: &NaiveState,
+        _state: &NaiveState<'static>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.load_local(ctx, arch, T0, n as usize)?;
@@ -325,7 +325,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: AArch64Arch,
-        _state: &NaiveState,
+        _state: &NaiveState<'static>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.wasm_pop(ctx, arch, T0)?;
@@ -336,7 +336,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: AArch64Arch,
-        _state: &NaiveState,
+        _state: &NaiveState<'static>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.ldr(ctx, arch, &reg(T0), &mem_base_disp(SP, 0))?;
@@ -347,7 +347,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: AArch64Arch,
-        _state: &NaiveState,
+        _state: &NaiveState<'static>,
         func_imports: &[(&str, &str)],
         fn_idx: u32,
         sigs: &[FuncType],

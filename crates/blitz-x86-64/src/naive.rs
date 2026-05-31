@@ -24,44 +24,28 @@ use crate::{
 
 /// Sharding state carried in [`State`] when cross-shard call dispatch is needed.
 ///
-/// Uses a type-erased pointer + trampoline so `State` stays `'static` without
-/// heap allocation.  The caller is responsible for keeping the backing
-/// `ShardMap` alive for the duration of the compilation.
+/// Holds a reference to the [`ShardMap`] for the duration of the compilation,
+/// allowing [`call_target`][NaiveShardState::call_target] to classify each call
+/// instruction without unsafe code.
+///
+/// [`ShardMap`]: portal_solutions_blitz_common::shard::ShardMap
 #[derive(Clone, Copy)]
-pub struct NaiveShardState {
+pub struct NaiveShardState<'a> {
     pub config: SecondCtxConfig,
     /// Shard index of the function currently being compiled.
     pub current_shard: usize,
     pub imports_len: u32,
-    /// Type-erased pointer to a `ShardMap` implementation.
-    shard_map_ptr: *const (),
-    /// Trampoline: cast `shard_map_ptr` back to the concrete type and call `shard_for`.
-    shard_for: unsafe fn(*const (), u32) -> usize,
+    pub map: &'a dyn portal_solutions_blitz_common::shard::ShardMap,
 }
 
-// SAFETY: compilation is single-threaded; the raw pointer is only read during
-// the compilation of a single WASM module.
-unsafe impl Send for NaiveShardState {}
-unsafe impl Sync for NaiveShardState {}
-
-impl NaiveShardState {
-    /// Construct a `NaiveShardState` for the given shard map.
-    ///
-    /// # Safety
-    /// `map` must outlive this `NaiveShardState`.
-    pub fn new<S: portal_solutions_blitz_common::shard::ShardMap>(
+impl<'a> NaiveShardState<'a> {
+    pub fn new(
         config: SecondCtxConfig,
         current_shard: usize,
         imports_len: u32,
-        map: *const S,
+        map: &'a dyn portal_solutions_blitz_common::shard::ShardMap,
     ) -> Self {
-        unsafe fn trampoline<S: portal_solutions_blitz_common::shard::ShardMap>(
-            ptr: *const (),
-            fn_idx: u32,
-        ) -> usize {
-            unsafe { &*(ptr as *const S) }.shard_for(fn_idx)
-        }
-        Self { config, current_shard, imports_len, shard_map_ptr: map as *const (), shard_for: trampoline::<S> }
+        Self { config, current_shard, imports_len, map }
     }
 
     /// Classify a call to `callee_fn` (WASM-space function index).
@@ -69,7 +53,7 @@ impl NaiveShardState {
         if callee_fn < self.imports_len {
             return CallTarget::Import;
         }
-        let callee_shard = unsafe { (self.shard_for)(self.shard_map_ptr, callee_fn) };
+        let callee_shard = self.map.shard_for(callee_fn);
         if callee_shard == self.current_shard {
             CallTarget::Local
         } else {
@@ -80,10 +64,13 @@ impl NaiveShardState {
 
 /// State tracker for x86-64 code generation.
 ///
-/// Maintains information about the current function being compiled,
-/// including local variables, control flow, and labels.
+/// The lifetime `'a` is the lifetime of the [`ShardMap`] reference held in
+/// [`shard`][State::shard].  When sharding is not active (`shard` is `None`)
+/// the lifetime has no constraints and can be `'static` or elided.
+///
+/// [`ShardMap`]: portal_solutions_blitz_common::shard::ShardMap
 #[derive(Default)]
-pub struct State {
+pub struct State<'a> {
     pub local_count: usize,
     pub num_returns: usize,
     pub control_depth: usize,
@@ -100,7 +87,7 @@ pub struct State {
     pub next_site_id: u32,
     /// Present when sharding is active. Used to classify `Call` instructions
     /// as intra-shard (direct label) or cross-shard (SCR-relative indirect).
-    pub shard: Option<NaiveShardState>,
+    pub shard: Option<NaiveShardState<'a>>,
 }
 
 /// Magic sentinel pushed onto the CTX stack to mark a TryTable frame.
@@ -146,7 +133,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         &mut self,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &mut State,
+        state: &mut State<'_>,
         relative_depth: u32,
     ) -> Result<(), Self::Error> {
         self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
@@ -171,7 +158,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         &mut self,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &mut State,
+        state: &mut State<'_>,
     ) -> Result<(), Self::Error>
     where
         Self: Sized,
@@ -216,7 +203,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         &mut self,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &mut State,
+        state: &mut State<'_>,
         func_imports: &[(&str, &str)],
         sigs: &[FuncType],
         tags: &[u32],
@@ -349,7 +336,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         &mut self,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &mut State,
+        state: &mut State<'_>,
         func_imports: &[(&str, &str)],
         sigs: &[FuncType],
         tags: &[u32],

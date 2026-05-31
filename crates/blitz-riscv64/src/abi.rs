@@ -60,14 +60,14 @@ where
     W: NaiveWriterExt<Context>,
 {
     type Error = W::Error;
-    type State = NaiveState;
+    type State = NaiveState<'static>;
     type Arch = RiscV64Arch;
 
     fn emit_prologue(
         w: &mut W,
         ctx: &mut Context,
         arch: RiscV64Arch,
-        state: &mut NaiveState,
+        state: &mut NaiveState<'static>,
         id: u32,
         data: &FnData,
     ) -> Result<(), W::Error> {
@@ -105,7 +105,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: RiscV64Arch,
-        state: &mut NaiveState,
+        state: &mut NaiveState<'static>,
     ) -> Result<(), W::Error> {
         w.li(ctx, arch, &A0, 0)?;
         let disp = -((state.local_count as i32 + 1) * 8);
@@ -118,7 +118,7 @@ where
         _w: &mut W,
         _ctx: &mut Context,
         _arch: RiscV64Arch,
-        _state: &mut NaiveState,
+        _state: &mut NaiveState<'static>,
     ) -> Result<(), W::Error> {
         Ok(())
     }
@@ -127,7 +127,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: RiscV64Arch,
-        _state: &NaiveState,
+        _state: &NaiveState<'static>,
         n: u32,
     ) -> Result<(), W::Error> {
         let disp = -((n as i32 + 1) * 8);
@@ -139,7 +139,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: RiscV64Arch,
-        _state: &NaiveState,
+        _state: &NaiveState<'static>,
         n: u32,
     ) -> Result<(), W::Error> {
         pop(w, ctx, arch, &A0)?;
@@ -151,7 +151,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: RiscV64Arch,
-        _state: &NaiveState,
+        _state: &NaiveState<'static>,
         n: u32,
     ) -> Result<(), W::Error> {
         // Peek at stack top without popping
@@ -164,7 +164,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: RiscV64Arch,
-        _state: &NaiveState,
+        _state: &NaiveState<'static>,
         func_imports: &[(&str, &str)],
         fn_idx: u32,
         _sigs: &[FuncType],
@@ -188,7 +188,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: RiscV64Arch,
-        state: &NaiveState,
+        state: &NaiveState<'static>,
     ) -> Result<(), W::Error> {
         if state.num_returns > 0 {
             pop(w, ctx, arch, &A0)?;
@@ -220,14 +220,14 @@ where
     W: SysVWriterExt<Context>,
 {
     type Error = W::Error;
-    type State = NaiveState;
+    type State = NaiveState<'static>;
     type Arch = RiscV64Arch;
 
     fn emit_prologue(
         w: &mut W,
         ctx: &mut Context,
         arch: RiscV64Arch,
-        state: &mut NaiveState,
+        state: &mut NaiveState<'static>,
         id: u32,
         data: &FnData,
     ) -> Result<(), W::Error> {
@@ -271,7 +271,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: RiscV64Arch,
-        state: &mut NaiveState,
+        state: &mut NaiveState<'static>,
     ) -> Result<(), W::Error> {
         w.li(ctx, arch, &A0, 0)?;
         w.sysv_store_local(ctx, arch, A0, state.local_count)?;
@@ -283,7 +283,7 @@ where
         _w: &mut W,
         _ctx: &mut Context,
         _arch: RiscV64Arch,
-        _state: &mut NaiveState,
+        _state: &mut NaiveState<'static>,
     ) -> Result<(), W::Error> {
         Ok(())
     }
@@ -292,7 +292,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: RiscV64Arch,
-        _state: &NaiveState,
+        _state: &NaiveState<'static>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.sysv_load_local(ctx, arch, A0, n as usize)?;
@@ -303,7 +303,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: RiscV64Arch,
-        _state: &NaiveState,
+        _state: &NaiveState<'static>,
         n: u32,
     ) -> Result<(), W::Error> {
         pop(w, ctx, arch, &A0)?;
@@ -314,7 +314,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: RiscV64Arch,
-        _state: &NaiveState,
+        _state: &NaiveState<'static>,
         n: u32,
     ) -> Result<(), W::Error> {
         // Peek at stack top without popping
@@ -326,7 +326,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: RiscV64Arch,
-        _state: &NaiveState,
+        _state: &NaiveState<'static>,
         func_imports: &[(&str, &str)],
         fn_idx: u32,
         sigs: &[FuncType],
@@ -375,7 +375,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: RiscV64Arch,
-        state: &NaiveState,
+        state: &NaiveState<'static>,
     ) -> Result<(), W::Error> {
         if state.num_returns > 0 {
             pop(w, ctx, arch, &A0)?;

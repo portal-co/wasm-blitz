@@ -39,17 +39,17 @@ use crate::sysv::{SysVWriterExt, SysVState};
 ///
 /// `Abi` selects the calling convention; `S` is the associated state type
 /// (inferred from the convenience aliases below).
-pub struct X64WasmSink<Abi = NaiveAbi, S = naive::State>(
+pub struct X64WasmSink<Abi = NaiveAbi, S = naive::State<'static>>(
     pub WasmSink<S, X64Arch>,
     PhantomData<Abi>,
 );
 
 /// Convenience alias — blitz WASM stack convention.
-pub type X64NaiveWasmSink = X64WasmSink<NaiveAbi, naive::State>;
+pub type X64NaiveWasmSink = X64WasmSink<NaiveAbi, naive::State<'static>>;
 /// Convenience alias — System V AMD64 ABI.
-pub type X64SysVWasmSink  = X64WasmSink<SysVAbi, SysVState>;
+pub type X64SysVWasmSink  = X64WasmSink<SysVAbi, SysVState<'static>>;
 /// Convenience alias — LFI sandboxed ABI.
-pub type X64LfiWasmSink   = X64WasmSink<LfiAbi, naive::State>;
+pub type X64LfiWasmSink   = X64WasmSink<LfiAbi, naive::State<'static>>;
 
 impl<Abi, S: Default> X64WasmSink<Abi, S> {
     pub fn new(arch: X64Arch) -> Self {
@@ -75,7 +75,7 @@ impl<Abi, S> DerefMut for X64WasmSink<Abi, S> {
 // ---------------------------------------------------------------------------
 
 impl<W, AsmCtx> OperatorSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>>
-    for X64WasmSink<NaiveAbi, naive::State>
+    for X64WasmSink<NaiveAbi, naive::State<'static>>
 where
     W: naive::WriterExt<AsmCtx>,
     HandleOpError<Infallible>: From<W::Error>,
@@ -107,7 +107,7 @@ where
 }
 
 impl<W, AsmCtx> InstructionSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>>
-    for X64WasmSink<NaiveAbi, naive::State>
+    for X64WasmSink<NaiveAbi, naive::State<'static>>
 where
     W: naive::WriterExt<AsmCtx>,
     HandleOpError<Infallible>: From<W::Error>,
@@ -143,7 +143,7 @@ where
 // ---------------------------------------------------------------------------
 
 impl<W, AsmCtx> OperatorSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>>
-    for X64WasmSink<SysVAbi, SysVState>
+    for X64WasmSink<SysVAbi, SysVState<'static>>
 where
     W: SysVWriterExt<AsmCtx>,
     HandleOpError<Infallible>: From<W::Error>,
@@ -171,7 +171,7 @@ where
 }
 
 impl<W, AsmCtx> InstructionSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>>
-    for X64WasmSink<SysVAbi, SysVState>
+    for X64WasmSink<SysVAbi, SysVState<'static>>
 where
     W: SysVWriterExt<AsmCtx>,
     HandleOpError<Infallible>: From<W::Error>,
@@ -203,7 +203,7 @@ where
 // ---------------------------------------------------------------------------
 
 impl<W, AsmCtx> OperatorSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>>
-    for X64WasmSink<LfiAbi, naive::State>
+    for X64WasmSink<LfiAbi, naive::State<'static>>
 where
     W: LfiWriterExt<AsmCtx>,
     HandleOpError<Infallible>: From<W::Error>,
@@ -235,7 +235,7 @@ where
 }
 
 impl<W, AsmCtx> InstructionSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>>
-    for X64WasmSink<LfiAbi, naive::State>
+    for X64WasmSink<LfiAbi, naive::State<'static>>
 where
     W: LfiWriterExt<AsmCtx>,
     HandleOpError<Infallible>: From<W::Error>,

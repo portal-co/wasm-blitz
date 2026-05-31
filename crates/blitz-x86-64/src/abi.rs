@@ -51,7 +51,7 @@ where
     W: NaiveWriterExt<Context>,
 {
     type Error = W::Error;
-    type State = crate::naive::State;
+    type State = crate::naive::State<'static>;
     type Arch = X64Arch;
 
     fn emit_prologue(
@@ -361,14 +361,14 @@ where
     W: SysVWriterExt<Context>,
 {
     type Error = W::Error;
-    type State = SysVState;
+    type State = SysVState<'static>;
     type Arch = X64Arch;
 
     fn emit_prologue(
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &mut SysVState,
+        state: &mut SysVState<'_>,
         id: u32,
         data: &FnData,
     ) -> Result<(), W::Error> {
@@ -412,7 +412,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &mut SysVState,
+        state: &mut SysVState<'_>,
     ) -> Result<(), W::Error> {
         w.mov64(ctx, arch, &RAX, 0)?;
         w.sysv_store_local(ctx, arch, RAX, state.local_count)?;
@@ -424,7 +424,7 @@ where
         _w: &mut W,
         _ctx: &mut Context,
         _arch: X64Arch,
-        _state: &mut SysVState,
+        _state: &mut SysVState<'_>,
     ) -> Result<(), W::Error> {
         Ok(())
     }
@@ -433,7 +433,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        _state: &SysVState,
+        _state: &SysVState<'_>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.sysv_load_local(ctx, arch, RAX, n as usize)?;
@@ -444,7 +444,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        _state: &SysVState,
+        _state: &SysVState<'_>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.pop(ctx, arch, &RAX)?;
@@ -455,7 +455,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        _state: &SysVState,
+        _state: &SysVState<'_>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.sysv_peek(ctx, arch, RAX)?;
@@ -466,7 +466,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        _state: &SysVState,
+        _state: &SysVState<'_>,
         func_imports: &[(&str, &str)],
         fn_idx: u32,
         sigs: &[FuncType],
@@ -533,7 +533,7 @@ where
         _w: &mut W,
         _ctx: &mut Context,
         _arch: X64Arch,
-        _state: &mut SysVState,
+        _state: &mut SysVState<'_>,
         _tag_index: u32,
         _arity: u32,
     ) -> Result<(), W::Error> {
@@ -544,7 +544,7 @@ where
         _w: &mut W,
         _ctx: &mut Context,
         _arch: X64Arch,
-        _state: &mut SysVState,
+        _state: &mut SysVState<'_>,
         _catches: &[Catch],
         _sigs: &[FuncType],
         _tags: &[u32],
@@ -556,7 +556,7 @@ where
         _w: &mut W,
         _ctx: &mut Context,
         _arch: X64Arch,
-        _state: &mut SysVState,
+        _state: &mut SysVState<'_>,
         _catches: &[Catch],
         _sigs: &[FuncType],
         _tags: &[u32],

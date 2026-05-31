@@ -41,38 +41,28 @@ pub const SCR: Reg = Reg(26);
 
 /// Sharding state for RISC-V 64 functions — same design as x86-64/AArch64.
 #[derive(Clone, Copy)]
-pub struct NaiveShardState {
+pub struct NaiveShardState<'a> {
     pub config: SecondCtxConfig,
     pub current_shard: usize,
     pub imports_len: u32,
-    shard_map_ptr: *const (),
-    shard_for: unsafe fn(*const (), u32) -> usize,
+    pub map: &'a dyn portal_solutions_blitz_common::shard::ShardMap,
 }
 
-unsafe impl Send for NaiveShardState {}
-unsafe impl Sync for NaiveShardState {}
-
-impl NaiveShardState {
-    pub fn new<S: portal_solutions_blitz_common::shard::ShardMap>(
+impl<'a> NaiveShardState<'a> {
+    pub fn new(
         config: SecondCtxConfig,
         current_shard: usize,
         imports_len: u32,
-        map: *const S,
+        map: &'a dyn portal_solutions_blitz_common::shard::ShardMap,
     ) -> Self {
-        unsafe fn trampoline<S: portal_solutions_blitz_common::shard::ShardMap>(
-            ptr: *const (),
-            fn_idx: u32,
-        ) -> usize {
-            unsafe { &*(ptr as *const S) }.shard_for(fn_idx)
-        }
-        Self { config, current_shard, imports_len, shard_map_ptr: map as *const (), shard_for: trampoline::<S> }
+        Self { config, current_shard, imports_len, map }
     }
 
     pub fn call_target(&self, callee_fn: u32) -> CallTarget {
         if callee_fn < self.imports_len {
             return CallTarget::Import;
         }
-        let callee_shard = unsafe { (self.shard_for)(self.shard_map_ptr, callee_fn) };
+        let callee_shard = self.map.shard_for(callee_fn);
         if callee_shard == self.current_shard {
             CallTarget::Local
         } else {
@@ -82,7 +72,7 @@ impl NaiveShardState {
 }
 
 #[derive(Default)]
-pub struct State {
+pub struct State<'a> {
     pub label_index: usize,
     pub local_count: usize,
     pub num_returns: usize,
@@ -107,7 +97,7 @@ pub struct State {
     pub trace_base: crate::codegen::TraceBase,
     /// Present when sharding is active. SCR (S10/x26) is saved in the SysV
     /// frame. Naive functions use SCR read-only (the runtime sets it).
-    pub shard: Option<NaiveShardState>,
+    pub shard: Option<NaiveShardState<'a>>,
 }
 
 pub struct Frames(pub [[regalloc::RegAllocFrame<riscv_regalloc::RegKind>; 32]; 2]);
@@ -156,7 +146,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
     /// Flushes regalloc first so the operand stack is materialised at the site
     /// (matching the generic-entry layout the specialization tail-jump expects).
     /// Uses t0 (Reg 5) as scratch, t1 (Reg 6) as the `inc_mem64` scratch.
-    fn emit_trace_site(&mut self, ctx: &mut Context, arch: RiscV64Arch, state: &mut State)
+    fn emit_trace_site(&mut self, ctx: &mut Context, arch: RiscV64Arch, state: &mut State<'_>)
         -> Result<(), Self::Error>
     where
         Self: Sized,
@@ -182,7 +172,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
         &mut self,
         ctx: &mut Context,
         arch: RiscV64Arch,
-        state: &mut State,
+        state: &mut State<'_>,
         relative_depth: u32,
     ) -> Result<(), Self::Error>
     where
@@ -249,7 +239,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
         &mut self,
         ctx: &mut Context,
         arch: RiscV64Arch,
-        state: &mut State,
+        state: &mut State<'_>,
         func_imports: &[(&str, &str)],
         sigs: &[portal_solutions_blitz_common::wasm_encoder::FuncType],
         tags: &[u32],
@@ -1645,7 +1635,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
         &mut self,
         ctx: &mut Context,
         arch: RiscV64Arch,
-        state: &mut State,
+        state: &mut State<'_>,
         func_imports: &[(&str, &str)],
         sigs: &[portal_solutions_blitz_common::wasm_encoder::FuncType],
         tags: &[u32],
@@ -1828,7 +1818,7 @@ pub fn flush_regalloc<W: Writer<RiscvLabel, Context>, Context>(
     w: &mut W,
     ctx: &mut Context,
     arch: RiscV64Arch,
-    state: &mut State,
+    state: &mut State<'_>,
 ) -> Result<(), W::Error> {
     if let Some(ralloc) = state.regalloc.as_mut() {
         let it = ralloc.flush();
@@ -1843,7 +1833,7 @@ pub fn pop_regalloc_to<W: Writer<RiscvLabel, Context>, Context>(
     w: &mut W,
     ctx: &mut Context,
     arch: RiscV64Arch,
-    state: &mut State,
+    state: &mut State<'_>,
     dest: portal_solutions_blitz_common::asm::Reg,
 ) -> Result<(), W::Error> {
     if let Some(ralloc) = state.regalloc.as_mut() {

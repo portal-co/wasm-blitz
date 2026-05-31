@@ -40,14 +40,14 @@ where
     W: LfiWriterExt<Context>,
 {
     type Error = W::Error;
-    type State = State;
+    type State = State<'static>;
     type Arch = X64Arch;
 
     fn emit_prologue(
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &mut State,
+        state: &mut State<'_>,
         id: u32,
         data: &FnData,
     ) -> Result<(), W::Error> {
@@ -78,7 +78,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &mut State,
+        state: &mut State<'_>,
     ) -> Result<(), W::Error> {
         state.local_count += 1;
         w.push(ctx, arch, &Reg(0))
@@ -88,7 +88,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &mut State,
+        state: &mut State<'_>,
     ) -> Result<(), W::Error> {
         state.next_site_id = 1;
         if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
@@ -126,7 +126,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        _state: &State,
+        _state: &State<'static>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.xchg(ctx, arch, &RSP, &Reg::CTX)?;
@@ -149,7 +149,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        _state: &State,
+        _state: &State<'static>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.pop(ctx, arch, &Reg(0))?;
@@ -172,7 +172,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &State,
+        state: &State<'static>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.pop(ctx, arch, &Reg(0))?;
@@ -185,7 +185,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        _state: &State,
+        _state: &State<'static>,
         func_imports: &[(&str, &str)],
         fn_idx: u32,
         _sigs: &[FuncType],
@@ -207,21 +207,21 @@ where
     }
 
     fn emit_throw(
-        _w: &mut W, _ctx: &mut Context, _arch: X64Arch, _state: &mut State,
+        _w: &mut W, _ctx: &mut Context, _arch: X64Arch, _state: &mut State<'_>,
         _tag_index: u32, _arity: u32,
     ) -> Result<(), W::Error> {
         todo!("LFI emit_throw")
     }
 
     fn emit_try_table_start(
-        _w: &mut W, _ctx: &mut Context, _arch: X64Arch, _state: &mut State,
+        _w: &mut W, _ctx: &mut Context, _arch: X64Arch, _state: &mut State<'_>,
         _catches: &[Catch], _sigs: &[FuncType], _tags: &[u32],
     ) -> Result<(), W::Error> {
         todo!("LFI emit_try_table_start")
     }
 
     fn emit_try_table_end(
-        _w: &mut W, _ctx: &mut Context, _arch: X64Arch, _state: &mut State,
+        _w: &mut W, _ctx: &mut Context, _arch: X64Arch, _state: &mut State<'_>,
         _catches: &[Catch], _sigs: &[FuncType], _tags: &[u32],
     ) -> Result<(), W::Error> {
         todo!("LFI emit_try_table_end")
@@ -231,7 +231,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &State,
+        state: &State<'static>,
     ) -> Result<(), W::Error> {
         // Restore RSP to frame base (same as NaiveAbi).
         w.mov(ctx, arch, &Reg(1), &RSP)?;
@@ -333,7 +333,7 @@ pub trait LfiWriterExt<Context>: NaiveWriterExt<Context> {
         &mut self,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &mut State,
+        state: &mut State<'_>,
         func_imports: &[(&str, &str)],
         sigs: &[FuncType],
         tags: &[u32],
@@ -350,7 +350,7 @@ pub trait LfiWriterExt<Context>: NaiveWriterExt<Context> {
         &mut self,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &mut State,
+        state: &mut State<'_>,
         func_imports: &[(&str, &str)],
         sigs: &[FuncType],
         tags: &[u32],
@@ -393,7 +393,7 @@ where
         &mut self,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &mut State,
+        state: &mut State<'_>,
         func_imports: &[(&str, &str)],
         sigs: &[FuncType],
         tags: &[u32],
@@ -541,7 +541,7 @@ where
         &mut self,
         ctx: &mut Context,
         arch: X64Arch,
-        state: &mut State,
+        state: &mut State<'_>,
         func_imports: &[(&str, &str)],
         sigs: &[FuncType],
         tags: &[u32],

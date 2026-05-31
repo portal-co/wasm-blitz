@@ -230,9 +230,9 @@ pub struct ShardConfig {
 /// Signals to the ABI prologue/epilogue that the Static Context Register (SCR)
 /// must be saved and restored.
 ///
-/// This is a superset of [`ShardConfig`]: any feature that consumes the SCR
-/// should produce a `SecondCtxConfig` (possibly embedding feature-specific data
-/// inside a composite context struct in the future).
+/// This is a superset of [`ShardConfig`]: any feature that uses the SCR should
+/// produce a `SecondCtxConfig`.  When multiple features are active, SCR will
+/// point to a composite struct (see `docs/second-context-register.md`).
 ///
 /// When `None`, no SCR save/restore is emitted; the register is invisible to
 /// the compiled function.

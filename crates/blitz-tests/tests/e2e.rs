@@ -5398,7 +5398,7 @@ fn compile_native_asm_sharded(wasm: &[u8], arch: NativeArch, abi: NativeAbi, n: 
                 if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = op {
                     current_shard = shard_map.shard_for(*id + imports_len);
                     state = naive::State {
-                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map as *const _)),
+                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map)),
                         ..Default::default()
                     };
                 }
@@ -5419,7 +5419,7 @@ fn compile_native_asm_sharded(wasm: &[u8], arch: NativeArch, abi: NativeAbi, n: 
                 if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = op {
                     current_shard = shard_map.shard_for(*id + imports_len);
                     state = sysv::SysVState {
-                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map as *const _)),
+                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map)),
                         ..Default::default()
                     };
                 }
@@ -5440,7 +5440,7 @@ fn compile_native_asm_sharded(wasm: &[u8], arch: NativeArch, abi: NativeAbi, n: 
                 if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = op {
                     current_shard = shard_map.shard_for(*id + imports_len);
                     state = naive::State {
-                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map as *const _)),
+                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map)),
                         ..Default::default()
                     };
                 }
@@ -5461,7 +5461,7 @@ fn compile_native_asm_sharded(wasm: &[u8], arch: NativeArch, abi: NativeAbi, n: 
                 if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = op {
                     current_shard = shard_map.shard_for(*id + imports_len);
                     state = naive::State {
-                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map as *const _)),
+                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map)),
                         ..Default::default()
                     };
                 }
@@ -5482,7 +5482,7 @@ fn compile_native_asm_sharded(wasm: &[u8], arch: NativeArch, abi: NativeAbi, n: 
                 if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = op {
                     current_shard = shard_map.shard_for(*id + imports_len);
                     state = naive::State {
-                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map as *const _)),
+                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map)),
                         ..Default::default()
                     };
                 }
@@ -5503,7 +5503,7 @@ fn compile_native_asm_sharded(wasm: &[u8], arch: NativeArch, abi: NativeAbi, n: 
                 if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = op {
                     current_shard = shard_map.shard_for(*id + imports_len);
                     state = naive::State {
-                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map as *const _)),
+                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map)),
                         ..Default::default()
                     };
                 }

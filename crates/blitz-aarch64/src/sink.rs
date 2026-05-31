@@ -33,7 +33,7 @@ use crate::sysv::SysVWriterExt;
 /// - `SysVAbi`            — AAPCS64 / ARM64 System V
 /// - `LfiAbi`             — LFI sandboxed ABI
 pub struct AArch64WasmSink<Abi = NaiveAbi>(
-    pub WasmSink<naive::State, AArch64Arch>,
+    pub WasmSink<naive::State<'static>, AArch64Arch>,
     PhantomData<Abi>,
 );
 
@@ -44,7 +44,7 @@ impl<Abi> AArch64WasmSink<Abi> {
 }
 
 impl<Abi> Deref for AArch64WasmSink<Abi> {
-    type Target = WasmSink<naive::State, AArch64Arch>;
+    type Target = WasmSink<naive::State<'static>, AArch64Arch>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
