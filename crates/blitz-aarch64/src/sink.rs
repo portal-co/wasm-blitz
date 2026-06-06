@@ -15,7 +15,7 @@ use portal_solutions_blitz_common::{
 };
 use portal_solutions_blitz_common::asm::Reg;
 use wax_core::build::{AmbientSink, InstructionSink, OperatorSink};
-use wasm_encoder::{Instruction, reencode::RoundtripReencoder};
+use wasm_encoder::{FuncType, Instruction, reencode::RoundtripReencoder};
 use wasmparser::Operator;
 
 use crate::{AArch64Arch, AArch64Label, naive};
@@ -23,7 +23,9 @@ use crate::abi::{NaiveAbi, SysVAbi};
 use crate::lfi::{LfiAbi, LfiWriterExt};
 use crate::sysv::SysVWriterExt;
 
-/// Scratch register used for ambient label loads (T0 = x9).
+/// AAPCS64 argument registers: X0–X7.
+const AARCH64_ARG_REGS: [Reg; 8] = [Reg(0), Reg(1), Reg(2), Reg(3), Reg(4), Reg(5), Reg(6), Reg(7)];
+/// Scratch register for ambient label loads (T0 = X9, caller-saved, not an arg reg).
 const T0: Reg = Reg(9);
 
 // ---------------------------------------------------------------------------
@@ -142,11 +144,23 @@ where
         ctx.writer.adr_label(&mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, T0).map_err(HandleOpError::from)
     }
-    fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+    fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
+        let n_params = sig.params().len();
+        let n_results = sig.results().len();
+        for i in (0..n_params.min(8)).rev() {
+            ctx.writer.wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i]).map_err(HandleOpError::from)?;
+        }
         ctx.writer.adr_label(&mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
-        ctx.writer.bl(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)
+        ctx.writer.bl(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)?;
+        if n_results > 1 { ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(1)).map_err(HandleOpError::from)?; }
+        if n_results > 0 { ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(0)).map_err(HandleOpError::from)?; }
+        Ok(())
     }
-    fn jump_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+    fn jump_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
+        let n_params = sig.params().len();
+        for i in (0..n_params.min(8)).rev() {
+            ctx.writer.wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i]).map_err(HandleOpError::from)?;
+        }
         ctx.writer.adr_label(&mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         ctx.writer.br(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)
     }
@@ -226,11 +240,23 @@ where
         ctx.writer.adr_label(&mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, T0).map_err(HandleOpError::from)
     }
-    fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+    fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
+        let n_params = sig.params().len();
+        let n_results = sig.results().len();
+        for i in (0..n_params.min(8)).rev() {
+            ctx.writer.wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i]).map_err(HandleOpError::from)?;
+        }
         ctx.writer.adr_label(&mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
-        ctx.writer.bl(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)
+        ctx.writer.bl(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)?;
+        if n_results > 1 { ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(1)).map_err(HandleOpError::from)?; }
+        if n_results > 0 { ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(0)).map_err(HandleOpError::from)?; }
+        Ok(())
     }
-    fn jump_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+    fn jump_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
+        let n_params = sig.params().len();
+        for i in (0..n_params.min(8)).rev() {
+            ctx.writer.wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i]).map_err(HandleOpError::from)?;
+        }
         ctx.writer.adr_label(&mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         ctx.writer.br(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)
     }
@@ -318,11 +344,23 @@ where
         ctx.writer.adr_label(&mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, T0).map_err(HandleOpError::from)
     }
-    fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+    fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
+        let n_params = sig.params().len();
+        let n_results = sig.results().len();
+        for i in (0..n_params.min(8)).rev() {
+            ctx.writer.wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i]).map_err(HandleOpError::from)?;
+        }
         ctx.writer.adr_label(&mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
-        ctx.writer.bl(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)
+        ctx.writer.bl(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)?;
+        if n_results > 1 { ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(1)).map_err(HandleOpError::from)?; }
+        if n_results > 0 { ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(0)).map_err(HandleOpError::from)?; }
+        Ok(())
     }
-    fn jump_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+    fn jump_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
+        let n_params = sig.params().len();
+        for i in (0..n_params.min(8)).rev() {
+            ctx.writer.wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i]).map_err(HandleOpError::from)?;
+        }
         ctx.writer.adr_label(&mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         ctx.writer.br(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)
     }

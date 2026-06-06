@@ -14,14 +14,20 @@ use portal_solutions_blitz_common::{
 };
 use portal_solutions_blitz_common::asm::Reg;
 use wax_core::build::{AmbientSink, InstructionSink, OperatorSink};
-use wasm_encoder::{Instruction, reencode::RoundtripReencoder};
+use wasm_encoder::{FuncType, Instruction, reencode::RoundtripReencoder};
 use wasmparser::Operator;
 
 use crate::{RiscV64Arch, RiscvLabel, naive};
 use crate::abi::{NaiveAbi, SysVAbi};
 use crate::sysv::SysVWriterExt;
 
-/// Scratch register for ambient label loads (t0 = x5).
+/// RISC-V psABI argument registers: a0–a7 (x10–x17).
+const RV64_ARG_REGS: [Reg; 8] = [Reg(10), Reg(11), Reg(12), Reg(13), Reg(14), Reg(15), Reg(16), Reg(17)];
+/// First return value register (a0 = x10).
+const A0: Reg = Reg(10);
+/// Second return value register (a1 = x11).
+const A1: Reg = Reg(11);
+/// Scratch register for ambient label loads (t0 = x5, caller-saved, not an arg reg).
 const T0: Reg = Reg(5);
 /// Return address register (ra = x1).
 const RA: Reg = Reg(1);
@@ -144,11 +150,23 @@ where
         ctx.writer.la_label(&mut ctx.asm_ctx, self.0.arch, &T0, RiscvLabel::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         naive::push(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, T0).map_err(HandleOpError::from)
     }
-    fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+    fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
+        let n_params = sig.params().len();
+        let n_results = sig.results().len();
+        for i in (0..n_params.min(8)).rev() {
+            naive::pop(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &RV64_ARG_REGS[i]).map_err(HandleOpError::from)?;
+        }
         ctx.writer.la_label(&mut ctx.asm_ctx, self.0.arch, &T0, RiscvLabel::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
-        ctx.writer.jalr(&mut ctx.asm_ctx, self.0.arch, &RA, &T0, 0).map_err(HandleOpError::from)
+        ctx.writer.jalr(&mut ctx.asm_ctx, self.0.arch, &RA, &T0, 0).map_err(HandleOpError::from)?;
+        if n_results > 1 { naive::push(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, A1).map_err(HandleOpError::from)?; }
+        if n_results > 0 { naive::push(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, A0).map_err(HandleOpError::from)?; }
+        Ok(())
     }
-    fn jump_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+    fn jump_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
+        let n_params = sig.params().len();
+        for i in (0..n_params.min(8)).rev() {
+            naive::pop(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &RV64_ARG_REGS[i]).map_err(HandleOpError::from)?;
+        }
         ctx.writer.la_label(&mut ctx.asm_ctx, self.0.arch, &T0, RiscvLabel::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         ctx.writer.jalr(&mut ctx.asm_ctx, self.0.arch, &Reg(0), &T0, 0).map_err(HandleOpError::from)
     }
@@ -231,11 +249,23 @@ where
         ctx.writer.la_label(&mut ctx.asm_ctx, self.0.arch, &T0, RiscvLabel::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         naive::push(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, T0).map_err(HandleOpError::from)
     }
-    fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+    fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
+        let n_params = sig.params().len();
+        let n_results = sig.results().len();
+        for i in (0..n_params.min(8)).rev() {
+            naive::pop(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &RV64_ARG_REGS[i]).map_err(HandleOpError::from)?;
+        }
         ctx.writer.la_label(&mut ctx.asm_ctx, self.0.arch, &T0, RiscvLabel::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
-        ctx.writer.jalr(&mut ctx.asm_ctx, self.0.arch, &RA, &T0, 0).map_err(HandleOpError::from)
+        ctx.writer.jalr(&mut ctx.asm_ctx, self.0.arch, &RA, &T0, 0).map_err(HandleOpError::from)?;
+        if n_results > 1 { naive::push(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, A1).map_err(HandleOpError::from)?; }
+        if n_results > 0 { naive::push(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, A0).map_err(HandleOpError::from)?; }
+        Ok(())
     }
-    fn jump_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+    fn jump_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
+        let n_params = sig.params().len();
+        for i in (0..n_params.min(8)).rev() {
+            naive::pop(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &RV64_ARG_REGS[i]).map_err(HandleOpError::from)?;
+        }
         ctx.writer.la_label(&mut ctx.asm_ctx, self.0.arch, &T0, RiscvLabel::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         ctx.writer.jalr(&mut ctx.asm_ctx, self.0.arch, &Reg(0), &T0, 0).map_err(HandleOpError::from)
     }
