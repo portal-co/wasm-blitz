@@ -140,6 +140,7 @@ where
     fn as_ambient_sink(&mut self) -> Option<&mut (dyn AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>> + '_)> {
         Some(self)
     }
+    fn has_ambient_sink(&self) -> bool { true }
 }
 
 impl<W, AsmCtx> AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>>
@@ -223,6 +224,7 @@ where
     fn as_ambient_sink(&mut self) -> Option<&mut (dyn AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>> + '_)> {
         Some(self)
     }
+    fn has_ambient_sink(&self) -> bool { true }
 }
 
 impl<W, AsmCtx> AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>>
@@ -314,6 +316,7 @@ where
     fn as_ambient_sink(&mut self) -> Option<&mut (dyn AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>> + '_)> {
         Some(self)
     }
+    fn has_ambient_sink(&self) -> bool { true }
 }
 
 impl<W, AsmCtx> AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>>
