@@ -42,6 +42,10 @@ pub enum AArch64Label {
     /// An external symbol resolved by the linker/loader at runtime.
     /// Used for imports (`{module}__{name}`), `__wasm_mem_pages`, and `__wasm_memory_grow`.
     External { name: alloc::string::String },
+    /// An ambient symbol referencing a pre-existing, unrecompiled native library.
+    /// Rendered as `__ambient_{name}`. Resolved at link/load time via
+    /// [`wax_core::build::AmbientInfo`].
+    Ambient { name: alloc::string::String },
 }
 
 impl Display for AArch64Label {
@@ -50,6 +54,7 @@ impl Display for AArch64Label {
             AArch64Label::Indexed { idx } => write!(f, "_idx_{idx}"),
             AArch64Label::Func { r#fn } => write!(f, "f{}", r#fn),
             AArch64Label::External { name } => write!(f, "{name}"),
+            AArch64Label::Ambient { name } => write!(f, "__ambient_{name}"),
         }
     }
 }

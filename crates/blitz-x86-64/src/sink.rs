@@ -22,11 +22,12 @@ use portal_solutions_blitz_common::{
     ops::MachOperator,
     sink::{WaxHandle, WasmSink},
 };
-use wax_core::build::{InstructionSink, OperatorSink};
+use wax_core::build::{AmbientSink, InstructionSink, OperatorSink};
 use wasm_encoder::{Instruction, reencode::RoundtripReencoder};
 use wasmparser::Operator;
 
-use crate::{X64Arch, naive};
+use portal_solutions_blitz_common::asm::Reg;
+use crate::{X64Arch, X64Label, naive};
 use crate::abi::{NaiveAbi, SysVAbi};
 use crate::lfi::{LfiAbi, LfiWriterExt};
 use crate::sysv::{SysVWriterExt, SysVState};
@@ -136,6 +137,29 @@ where
             self.0.target,
         )
     }
+    fn as_ambient_sink(&mut self) -> Option<&mut (dyn AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>> + '_)> {
+        Some(self)
+    }
+}
+
+impl<W, AsmCtx> AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>>
+    for X64WasmSink<NaiveAbi, naive::State<'static>>
+where
+    W: naive::WriterExt<AsmCtx>,
+    HandleOpError<Infallible>: From<W::Error>,
+{
+    fn push_ambient_addr(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+        ctx.writer.lea_label(&mut ctx.asm_ctx, self.0.arch, &Reg(0), X64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
+        ctx.writer.push(&mut ctx.asm_ctx, self.0.arch, &Reg(0)).map_err(HandleOpError::from)
+    }
+    fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+        ctx.writer.lea_label(&mut ctx.asm_ctx, self.0.arch, &Reg(0), X64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
+        ctx.writer.call(&mut ctx.asm_ctx, self.0.arch, &Reg(0)).map_err(HandleOpError::from)
+    }
+    fn jump_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+        ctx.writer.lea_label(&mut ctx.asm_ctx, self.0.arch, &Reg(0), X64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
+        ctx.writer.jmp(&mut ctx.asm_ctx, self.0.arch, &Reg(0)).map_err(HandleOpError::from)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +219,29 @@ where
             &mut RoundtripReencoder,
             self.0.target,
         )
+    }
+    fn as_ambient_sink(&mut self) -> Option<&mut (dyn AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>> + '_)> {
+        Some(self)
+    }
+}
+
+impl<W, AsmCtx> AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>>
+    for X64WasmSink<SysVAbi, SysVState<'static>>
+where
+    W: SysVWriterExt<AsmCtx>,
+    HandleOpError<Infallible>: From<W::Error>,
+{
+    fn push_ambient_addr(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+        ctx.writer.lea_label(&mut ctx.asm_ctx, self.0.arch, &Reg(0), X64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
+        ctx.writer.push(&mut ctx.asm_ctx, self.0.arch, &Reg(0)).map_err(HandleOpError::from)
+    }
+    fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+        ctx.writer.lea_label(&mut ctx.asm_ctx, self.0.arch, &Reg(0), X64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
+        ctx.writer.call(&mut ctx.asm_ctx, self.0.arch, &Reg(0)).map_err(HandleOpError::from)
+    }
+    fn jump_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+        ctx.writer.lea_label(&mut ctx.asm_ctx, self.0.arch, &Reg(0), X64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
+        ctx.writer.jmp(&mut ctx.asm_ctx, self.0.arch, &Reg(0)).map_err(HandleOpError::from)
     }
 }
 
@@ -263,5 +310,28 @@ where
             &mut RoundtripReencoder,
             self.0.target,
         )
+    }
+    fn as_ambient_sink(&mut self) -> Option<&mut (dyn AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>> + '_)> {
+        Some(self)
+    }
+}
+
+impl<W, AsmCtx> AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>>
+    for X64WasmSink<LfiAbi, naive::State<'static>>
+where
+    W: LfiWriterExt<AsmCtx>,
+    HandleOpError<Infallible>: From<W::Error>,
+{
+    fn push_ambient_addr(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+        ctx.writer.lea_label(&mut ctx.asm_ctx, self.0.arch, &Reg(0), X64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
+        ctx.writer.push(&mut ctx.asm_ctx, self.0.arch, &Reg(0)).map_err(HandleOpError::from)
+    }
+    fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+        ctx.writer.lea_label(&mut ctx.asm_ctx, self.0.arch, &Reg(0), X64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
+        ctx.writer.call(&mut ctx.asm_ctx, self.0.arch, &Reg(0)).map_err(HandleOpError::from)
+    }
+    fn jump_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
+        ctx.writer.lea_label(&mut ctx.asm_ctx, self.0.arch, &Reg(0), X64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
+        ctx.writer.jmp(&mut ctx.asm_ctx, self.0.arch, &Reg(0)).map_err(HandleOpError::from)
     }
 }

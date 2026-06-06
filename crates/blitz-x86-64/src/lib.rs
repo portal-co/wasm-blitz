@@ -56,6 +56,10 @@ pub enum X64Label {
     /// An external symbol that the linker/loader resolves at runtime.
     /// Used for imports (`{module}__{name}`), `__wasm_mem_pages`, and `__wasm_memory_grow`.
     External { name: alloc::string::String },
+    /// An ambient symbol referencing a pre-existing, unrecompiled native library.
+    /// Rendered as `__ambient_{name}` to distinguish from WASM import symbols.
+    /// Resolved at link/load time via [`wax_core::build::AmbientInfo`].
+    Ambient { name: alloc::string::String },
 }
 
 impl Display for X64Label {
@@ -64,6 +68,7 @@ impl Display for X64Label {
             X64Label::Indexed { idx } => write!(f, "_idx_{idx}"),
             X64Label::Func { r#fn } => write!(f, "f{}", r#fn),
             X64Label::External { name } => write!(f, "{name}"),
+            X64Label::Ambient { name } => write!(f, "__ambient_{name}"),
         }
     }
 }

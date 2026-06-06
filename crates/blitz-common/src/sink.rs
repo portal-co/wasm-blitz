@@ -13,7 +13,7 @@
 use crate::abi::BackendAbi;
 use crate::ops::FnData;
 use crate::wasm_encoder::FuncType;
-use alloc::{string::String, vec::Vec};
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
 // ---------------------------------------------------------------------------
 // WaxHandle — the wax-core Context type
@@ -38,11 +38,24 @@ pub struct WaxHandle<W, AsmCtx> {
     pub writer: W,
     /// The context passed through every writer method.
     pub asm_ctx: AsmCtx,
+    /// Name → address registry for ambient (unrecompiled) library symbols.
+    ///
+    /// Populated by the caller before code generation. The addresses are used
+    /// at link/load time to resolve `Ambient { name }` labels emitted by
+    /// [`AmbientSink`] implementations — they are never inlined as immediate
+    /// values in generated machine code.
+    pub ambient_addrs: BTreeMap<String, u64>,
 }
 
 impl<W, AsmCtx> WaxHandle<W, AsmCtx> {
     pub fn new(writer: W, asm_ctx: AsmCtx) -> Self {
-        Self { writer, asm_ctx }
+        Self { writer, asm_ctx, ambient_addrs: BTreeMap::new() }
+    }
+}
+
+impl<W, AsmCtx> wax_core::build::AmbientInfo for WaxHandle<W, AsmCtx> {
+    fn lookup_ambient_addr(&self, name: &str) -> Option<u64> {
+        self.ambient_addrs.get(name).copied()
     }
 }
 
