@@ -1178,6 +1178,11 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: "__wasm_memory_grow".into() })?;
                 self.call(ctx, arch, &Reg(0))?;
             }
+            // `unreachable` traps. Emit HLT — privileged in user mode, so it
+            // faults deterministically rather than executing past the trap.
+            Instruction::Unreachable => {
+                self.hlt(ctx, arch)?;
+            }
             other => panic!("unimplemented WASM instruction in x86-64 naive _handle_op: {other:?}"),
         };
         Ok(())
