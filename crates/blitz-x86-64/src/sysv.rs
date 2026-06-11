@@ -128,6 +128,9 @@ pub struct SysVState<'a> {
     /// Present when sharding is active. SCR (r14) is pushed in the prologue and
     /// popped in all return paths. Cross-shard calls load the target from SCR.
     pub shard: Option<crate::naive::NaiveShardState<'a>>,
+    /// How linear-memory load/store addresses are translated. Propagated to the
+    /// naive backend that lowers memory ops. Defaults to [`crate::naive::MemBase::Raw`].
+    pub mem_base: crate::naive::MemBase,
 }
 
 /// Extension trait for generating System V AMD64-compatible functions.
@@ -308,6 +311,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                         tracing: None,
                         next_site_id: 0,
                         shard: state.shard,
+                        mem_base: state.mem_base,
                     };
                     let result = self._handle_op(ctx, arch, &mut naive_state, func_imports, &[], &[], &other, target);
                     state.label_index = naive_state.label_index;
@@ -423,6 +427,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                     next_site_id: 0,
                     // Propagate shard state so cross-shard Call dispatch works.
                     shard: state.shard,
+                    mem_base: state.mem_base,
                 };
                 let result = self._handle_op(ctx, arch, &mut naive_state, func_imports, &[], &[], other, target);
                 state.label_index = naive_state.label_index;

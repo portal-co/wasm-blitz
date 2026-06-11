@@ -17,6 +17,26 @@ use portal_solutions_blitz_common::wasm_encoder::{self, Catch, FuncType, Instruc
 /// active. See `docs/second-context-register.md`.
 pub const SCR: Reg = Reg(14);
 
+/// How WASM linear-memory addresses are translated to host addresses by the
+/// load/store lowering.
+///
+/// The naive backend historically used [`MemBase::Raw`]: the WASM address is
+/// used directly as a host pointer, so the runtime (or emulator) must map linear
+/// memory such that the WASM offset equals the host virtual address. That works
+/// under Unicorn and for runtimes that can `mmap` at a fixed VA, but not for an
+/// ordinary OS process. [`MemBase::WasmMemSymbol`] matches the C backend: each
+/// access is computed as `__wasm_mem + (uint32_t)addr`, where `__wasm_mem` is a
+/// `uint8_t*` the runtime defines. The full-binary recompiler selects the symbol
+/// mode; existing tests keep the default raw mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MemBase {
+    /// WASM address used directly as a host pointer (default; legacy behavior).
+    #[default]
+    Raw,
+    /// Address as `__wasm_mem + (uint32_t)addr`, matching the C backend.
+    WasmMemSymbol,
+}
+
 use crate::{
     out::{Writer, arg::Arg},
     *,
@@ -88,6 +108,9 @@ pub struct State<'a> {
     /// Present when sharding is active. Used to classify `Call` instructions
     /// as intra-shard (direct label) or cross-shard (SCR-relative indirect).
     pub shard: Option<NaiveShardState<'a>>,
+    /// How linear-memory load/store addresses are translated. Defaults to
+    /// [`MemBase::Raw`] (legacy raw-pointer behavior).
+    pub mem_base: MemBase,
 }
 
 /// Magic sentinel pushed onto the CTX stack to mark a TryTable frame.
@@ -332,6 +355,49 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         }
         Ok(())
     }
+    /// Apply the [`MemBase::WasmMemSymbol`] address transform to a load/store
+    /// effective address already held in `addr` (i.e. `wasm_addr + memarg.offset`):
+    /// wrap it to 32 bits and add the `__wasm_mem` base pointer, leaving the final
+    /// host address in `addr`. `scratch` is clobbered. No-op for [`MemBase::Raw`].
+    fn apply_mem_base(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        state: &State<'_>,
+        addr: Reg,
+        scratch: Reg,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        if state.mem_base != MemBase::WasmMemSymbol {
+            return Ok(());
+        }
+        // addr := (uint32_t)addr — writing the 32-bit subregister zero-extends.
+        let addr32 = MemArgKind::NoMem(ArgKind::Reg { reg: addr, size: MemorySize::_32 });
+        self.mov(ctx, arch, &addr32, &addr32)?;
+        // scratch := __wasm_mem (load the base pointer value).
+        self.lea_label(ctx, arch, &scratch, X64Label::External { name: "__wasm_mem".into() })?;
+        self.mov(ctx, arch, &scratch, &MemArgKind::Mem {
+            base: scratch,
+            offset: None,
+            disp: 0,
+            size: MemorySize::_64,
+            reg_class: RegisterClass::Gpr,
+            segment: Default::default(),
+        })?;
+        // addr := addr + scratch.
+        self.lea(ctx, arch, &addr, &MemArgKind::Mem {
+            base: addr,
+            offset: Some((scratch, 1)),
+            disp: 0,
+            size: MemorySize::_64,
+            reg_class: RegisterClass::Gpr,
+            segment: Default::default(),
+        })?;
+        Ok(())
+    }
+
     fn _handle_op(
         &mut self,
         ctx: &mut Context,
@@ -607,6 +673,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         segment: Default::default(),
                     },
                 )?;
+                self.apply_mem_base(ctx, arch, state, Reg(0), Reg(1))?;
                 // Dereference: load 64-bit value from [rax] into rax.
                 self.mov(ctx, arch, &Reg(0), &MemArgKind::Mem {
                     base: Reg(0),
@@ -635,6 +702,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         segment: Default::default(),
                     },
                 )?;
+                self.apply_mem_base(ctx, arch, state, Reg(0), Reg(1))?;
                 // Store 64-bit value from RDX to [RAX].
                 self.mov(ctx, arch, &MemArgKind::Mem {
                     base: Reg(0),
@@ -661,6 +729,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         segment: Default::default(),
                     },
                 )?;
+                self.apply_mem_base(ctx, arch, state, Reg(0), Reg(1))?;
                 // Dereference: load 32-bit value into eax (zero-extends to rax).
                 // Previously this was `mov rax, rax`, a register-to-register
                 // no-op that left the *address* in rax instead of loading the
@@ -698,6 +767,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         segment: Default::default(),
                     },
                 )?;
+                self.apply_mem_base(ctx, arch, state, Reg(0), Reg(1))?;
                 // Store 32-bit value from EDX to [RAX].
                 let edx = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(2), size: MemorySize::_32 });
                 self.mov(ctx, arch, &MemArgKind::Mem {
@@ -1135,4 +1205,60 @@ where
         w.jmp_label(ctx, arch, X64Label::Func { r#fn: *id })?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod membase_tests {
+    use super::*;
+    use crate::{X64Arch, X64Label};
+    use alloc::string::String;
+    use alloc::vec::Vec;
+    use portal_solutions_asm_x86_64::out::iced::IcedWriter;
+    use portal_solutions_blitz_common::wasm_encoder::MemArg;
+
+    /// Assemble a single `I64Load` and return the unresolved external symbol
+    /// names produced (i.e. labels never internally defined).
+    fn load_externals(mem_base: MemBase) -> Vec<String> {
+        let mut out = IcedWriter::<X64Label>::new(0x1000);
+        let mut ctx = ();
+        let mut state = State { mem_base, ..State::default() };
+        let op = Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 });
+        WriterExt::_handle_op(&mut out, &mut ctx, X64Arch::default(), &mut state, &[], &[], &[], &op, 0)
+            .unwrap();
+        let (_bytes, _labels, relocs) = out.into_parts_with_relocs();
+        relocs
+            .into_iter()
+            .filter_map(|r| match r.label {
+                X64Label::External { name } => Some(name),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn raw_mode_emits_no_wasm_mem_reference() {
+        // Default raw-pointer addressing references no runtime memory symbol.
+        assert!(!load_externals(MemBase::Raw).iter().any(|n| n == "__wasm_mem"));
+    }
+
+    #[test]
+    fn wasm_mem_symbol_mode_references_base() {
+        // Symbol mode loads the `__wasm_mem` base, producing exactly one such ref.
+        let externs = load_externals(MemBase::WasmMemSymbol);
+        assert_eq!(externs.iter().filter(|n| *n == "__wasm_mem").count(), 1);
+    }
+
+    #[test]
+    fn wasm_mem_symbol_mode_emits_more_code() {
+        // The base+wrap transform adds instructions over raw addressing.
+        let mut raw = IcedWriter::<X64Label>::new(0x1000);
+        let mut sym = IcedWriter::<X64Label>::new(0x1000);
+        let mut ctx = ();
+        let op = Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 });
+        let mut s_raw = State { mem_base: MemBase::Raw, ..State::default() };
+        let mut s_sym = State { mem_base: MemBase::WasmMemSymbol, ..State::default() };
+        WriterExt::_handle_op(&mut raw, &mut ctx, X64Arch::default(), &mut s_raw, &[], &[], &[], &op, 0).unwrap();
+        WriterExt::_handle_op(&mut sym, &mut ctx, X64Arch::default(), &mut s_sym, &[], &[], &[], &op, 0).unwrap();
+        assert!(sym.into_bytes().len() > raw.into_bytes().len());
+    }
 }

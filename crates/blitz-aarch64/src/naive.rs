@@ -70,6 +70,22 @@ impl<'a> NaiveShardState<'a> {
 /// [`shard`][State::shard]; it is unconstrained when `shard` is `None`.
 ///
 /// [`ShardMap`]: portal_solutions_blitz_common::shard::ShardMap
+/// How WASM linear-memory addresses are translated to host addresses by the
+/// load/store lowering. See the x86-64 `naive::MemBase` for the rationale.
+///
+/// [`MemBase::Raw`] (default) uses the WASM address directly as a host pointer;
+/// [`MemBase::WasmMemSymbol`] computes `__wasm_mem + (uint32_t)addr`, matching
+/// the C backend, for ordinary OS processes where linear memory cannot be mapped
+/// at a fixed virtual address. The full-binary recompiler selects symbol mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MemBase {
+    /// WASM address used directly as a host pointer (default; legacy behavior).
+    #[default]
+    Raw,
+    /// Address as `__wasm_mem + (uint32_t)addr`, matching the C backend.
+    WasmMemSymbol,
+}
+
 #[derive(Default)]
 pub struct State<'a> {
     pub local_count: usize,
@@ -93,6 +109,9 @@ pub struct State<'a> {
     /// Present when sharding is active. SCR (X27) is pushed in the prologue
     /// and popped before return.
     pub shard: Option<NaiveShardState<'a>>,
+    /// How linear-memory load/store addresses are translated. Defaults to
+    /// [`MemBase::Raw`] (legacy raw-pointer behavior).
+    pub mem_base: MemBase,
 }
 
 /// Represents a control-flow frame.
@@ -270,6 +289,35 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 &mut bw, cfg.table_base_off, site_id, T0.0, &mut state.label_index,
             )?;
         }
+        Ok(())
+    }
+
+    /// Apply the [`MemBase::WasmMemSymbol`] transform to a load/store address in
+    /// `addr`: wrap it to 32 bits and add the `__wasm_mem` base, leaving the host
+    /// address in `addr`. `scratch` is clobbered. No-op for [`MemBase::Raw`]. The
+    /// static `memarg.offset` is still added afterwards by the load/store's
+    /// addressing-mode displacement, matching `__wasm_mem + (uint32_t)addr + off`.
+    fn apply_mem_base(
+        &mut self,
+        ctx: &mut Context,
+        arch: AArch64Arch,
+        state: &State<'_>,
+        addr: Reg,
+        scratch: Reg,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        if state.mem_base != MemBase::WasmMemSymbol {
+            return Ok(());
+        }
+        // addr := (uint32_t)addr — zero-extend the low 32 bits.
+        self.uxt(ctx, arch, &reg(addr), &reg32(addr))?;
+        // scratch := __wasm_mem (load the base pointer value).
+        self.adr_label(ctx, arch, &reg(scratch), AArch64Label::External { name: "__wasm_mem".into() })?;
+        self.ldr(ctx, arch, &reg(scratch), &mem_base_disp(scratch, 0))?;
+        // addr := addr + scratch.
+        self.add(ctx, arch, &reg(addr), &reg(addr), &reg(scratch))?;
         Ok(())
     }
 
@@ -451,6 +499,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             // ---- memory loads (linear memory) ----
             Instruction::I64Load(m) => {
                 self.wasm_pop(ctx, arch, T0)?; // address
+                self.apply_mem_base(ctx, arch, state, T0, T2)?;
                 let mem = MemArgKind::Mem {
                     base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
                     offset: None,
@@ -464,6 +513,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             }
             Instruction::I32Load(m) => {
                 self.wasm_pop(ctx, arch, T0)?;
+                self.apply_mem_base(ctx, arch, state, T0, T2)?;
                 let mem = MemArgKind::Mem {
                     base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
                     offset: None,
@@ -481,6 +531,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             Instruction::I64Store(m) => {
                 self.wasm_pop(ctx, arch, T1)?; // value
                 self.wasm_pop(ctx, arch, T0)?; // address
+                self.apply_mem_base(ctx, arch, state, T0, T2)?;
                 let mem = MemArgKind::Mem {
                     base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
                     offset: None,
@@ -494,6 +545,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             Instruction::I32Store(m) => {
                 self.wasm_pop(ctx, arch, T1)?; // value
                 self.wasm_pop(ctx, arch, T0)?; // address
+                self.apply_mem_base(ctx, arch, state, T0, T2)?;
                 let mem = MemArgKind::Mem {
                     base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
                     offset: None,
@@ -818,4 +870,42 @@ where
         w.b_label(ctx, arch, AArch64Label::Func { r#fn: *id })?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod membase_tests {
+    use super::*;
+    use crate::{AArch64Arch, AArch64Label};
+    use alloc::string::String;
+    use alloc::vec::Vec;
+    use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+    use portal_solutions_blitz_common::wasm_encoder::MemArg;
+
+    fn load_externals(mem_base: MemBase) -> Vec<String> {
+        let mut out = AArch64Writer::<AArch64Label>::new();
+        let mut ctx = ();
+        let mut state = State { mem_base, ..State::default() };
+        let op = Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 });
+        WriterExt::handle_insn(&mut out, &mut ctx, AArch64Arch::default(), &mut state, &[], &[], &[], &op, 0)
+            .unwrap();
+        let (_bytes, _labels, relocs) = out.into_parts_with_relocs();
+        relocs
+            .into_iter()
+            .filter_map(|r| match r.label {
+                AArch64Label::External { name } => Some(name),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn raw_mode_emits_no_wasm_mem_reference() {
+        assert!(!load_externals(MemBase::Raw).iter().any(|n| n == "__wasm_mem"));
+    }
+
+    #[test]
+    fn wasm_mem_symbol_mode_references_base() {
+        let externs = load_externals(MemBase::WasmMemSymbol);
+        assert_eq!(externs.iter().filter(|n| *n == "__wasm_mem").count(), 1);
+    }
 }
