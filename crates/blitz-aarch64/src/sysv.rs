@@ -218,6 +218,18 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                     self.str(ctx, arch, &reg(ARG_REGS[i]), &mem_base_disp(FP, disp))
                         .map_err(Err::from)?;
                 }
+                // Params 9+ (index >= 8) are passed by the caller on the stack,
+                // above the saved FP/LR pair (and saved SCR/x9 pair if sharding).
+                // With `mov FP, SP` taken after those stores, incoming arg `i` is
+                // at [FP + 16 + scr_extra + (i-8)*8]. Copy each into its local
+                // slot so functions with >8 params receive all their arguments.
+                let scr_extra: i32 = if state.shard.is_some() { 16 } else { 0 };
+                for i in 8..data.num_params {
+                    let src_disp = 16 + scr_extra + ((i as i32 - 8) * 8);
+                    self.ldr(ctx, arch, &reg(Reg(9)), &mem_base_disp(FP, src_disp))
+                        .map_err(Err::from)?;
+                    self.store_local(ctx, arch, Reg(9), i).map_err(Err::from)?;
+                }
                 Ok(())
             }
 

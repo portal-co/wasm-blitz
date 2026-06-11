@@ -510,6 +510,20 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 for i in 0..data.num_params.min(6) {
                     self.sysv_store_local(ctx, arch, ARG_REGS[i], i).map_err(Err::from)?;
                 }
+                // Params 7+ (index >= 6) are passed by the caller on the stack,
+                // above the saved RBP (and the saved SCR, if sharding pushed it)
+                // and the return address. With `mov RBP, RSP` taken right after
+                // those pushes, incoming arg `i` lives at
+                //   [RBP + 16 + scr_extra + (i-6)*8]
+                // where scr_extra = 8 when SCR was pushed. Copy each into its
+                // local slot so functions with >6 params (e.g. recompiled
+                // register-file functions) receive all their arguments.
+                let scr_extra: u32 = if state.shard.is_some() { 8 } else { 0 };
+                for i in 6..data.num_params {
+                    let src_disp = 16 + scr_extra + ((i - 6) as u32) * 8;
+                    self.mov(ctx, arch, &RAX, &mem64(RBP, src_disp)).map_err(Err::from)?;
+                    self.sysv_store_local(ctx, arch, RAX, i).map_err(Err::from)?;
+                }
                 Ok(())
             }
 

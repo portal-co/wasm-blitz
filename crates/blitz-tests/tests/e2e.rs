@@ -5094,6 +5094,137 @@ fn make_two_func_cross_call_module() -> Vec<u8> {
     module.finish()
 }
 
+/// Build a module with one exported function `(i64 x8) -> i64` that returns its
+/// 8th parameter (local 7). Exercises SysV argument passing for params beyond
+/// the 6 integer argument registers (i.e. stack-passed args 7 and 8).
+fn make_eight_param_return_last_module() -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([ValType::I64; 8], [ValType::I64]);
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("f0", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    let mut f0 = Function::new([]);
+    f0.instruction(&Instruction::LocalGet(7));
+    f0.instruction(&Instruction::Return);
+    f0.instruction(&Instruction::End);
+    code.function(&f0);
+    module.section(&code);
+    module.finish()
+}
+
+/// Verify the SysV backend loads stack-passed parameters (index >= 6), not just
+/// the six register arguments. Compiles the 8-param function and calls it under
+/// Unicorn with args 7 and 8 placed on the stack per the System V ABI.
+#[test]
+fn test_native_x86_64_sysv_stack_params() {
+    use unicorn_engine::{
+        unicorn_const::{Arch, Mode, Prot},
+        RegisterX86, Unicorn,
+    };
+
+    let wasm = make_eight_param_return_last_module();
+    let code = compile_native_binary(&wasm, NativeArch::X86_64, NativeAbi::Sysv);
+
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x200000;
+    const STACK_SIZE: u64 = 0x10000;
+
+    let mut uc = Unicorn::new(Arch::X86, Mode::MODE_64).unwrap();
+    uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+    uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+    uc.mem_write(CODE, &code).unwrap();
+
+    let args: [u64; 8] = [10, 11, 12, 13, 14, 15, 16, 17];
+    // Register args 0..6 → RDI, RSI, RDX, RCX, R8, R9.
+    uc.reg_write(RegisterX86::RDI, args[0]).unwrap();
+    uc.reg_write(RegisterX86::RSI, args[1]).unwrap();
+    uc.reg_write(RegisterX86::RDX, args[2]).unwrap();
+    uc.reg_write(RegisterX86::RCX, args[3]).unwrap();
+    uc.reg_write(RegisterX86::R8, args[4]).unwrap();
+    uc.reg_write(RegisterX86::R9, args[5]).unwrap();
+    // Stack args 7,8 (index 6,7) sit above the return address:
+    //   [rsp] = return addr, [rsp+8] = arg6, [rsp+16] = arg7.
+    let rsp = STACK + STACK_SIZE - 64;
+    uc.mem_write(rsp, &(CODE + code.len() as u64).to_le_bytes()).unwrap();
+    uc.mem_write(rsp + 8, &args[6].to_le_bytes()).unwrap();
+    uc.mem_write(rsp + 16, &args[7].to_le_bytes()).unwrap();
+    uc.reg_write(RegisterX86::RSP, rsp).unwrap();
+
+    uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+    assert_eq!(uc.reg_read(RegisterX86::RAX).unwrap(), 17, "should return the 8th argument");
+}
+
+/// Build a module with one exported function `(i64 x10) -> i64` that returns its
+/// 10th parameter (local 9), exercising AAPCS64 stack-passed args (9th and 10th).
+fn make_ten_param_return_last_module() -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([ValType::I64; 10], [ValType::I64]);
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("f0", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    let mut f0 = Function::new([]);
+    f0.instruction(&Instruction::LocalGet(9));
+    f0.instruction(&Instruction::Return);
+    f0.instruction(&Instruction::End);
+    code.function(&f0);
+    module.section(&code);
+    module.finish()
+}
+
+/// Verify the AArch64 SysV (AAPCS64) backend loads stack-passed parameters
+/// (index >= 8), calling the 10-param function under Unicorn with args 9 and 10
+/// on the stack.
+#[test]
+fn test_native_aarch64_sysv_stack_params() {
+    use unicorn_engine::{
+        unicorn_const::{Arch, Mode, Prot},
+        RegisterARM64, Unicorn,
+    };
+
+    let wasm = make_ten_param_return_last_module();
+    let code = compile_native_binary(&wasm, NativeArch::AArch64, NativeAbi::Sysv);
+
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x200000;
+    const STACK_SIZE: u64 = 0x10000;
+
+    let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+    uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+    uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+    uc.mem_write(CODE, &code).unwrap();
+
+    let args: [u64; 10] = [20, 21, 22, 23, 24, 25, 26, 27, 28, 29];
+    let arg_regs = [
+        RegisterARM64::X0, RegisterARM64::X1, RegisterARM64::X2, RegisterARM64::X3,
+        RegisterARM64::X4, RegisterARM64::X5, RegisterARM64::X6, RegisterARM64::X7,
+    ];
+    for (r, &v) in arg_regs.iter().zip(args.iter()) {
+        uc.reg_write(*r, v).unwrap();
+    }
+    // AAPCS64 stack args: [SP] = arg8, [SP+8] = arg9 (no return address on stack;
+    // the return address is in LR).
+    let sp = STACK + STACK_SIZE - 32;
+    uc.mem_write(sp, &args[8].to_le_bytes()).unwrap();
+    uc.mem_write(sp + 8, &args[9].to_le_bytes()).unwrap();
+    uc.reg_write(RegisterARM64::SP, sp).unwrap();
+    uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64).unwrap();
+
+    uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+    assert_eq!(uc.reg_read(RegisterARM64::X0).unwrap(), 29, "should return the 10th argument");
+}
+
 /// Compile `wasm` to N C shards using `RoundRobinShardMap`.
 /// Returns `(cross_shard_decls_per_shard, shard_bodies)`.
 /// `cross_shard_decls_per_shard[k]` contains extern declarations for functions NOT in shard k.
