@@ -467,6 +467,10 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 self.set_label(ctx, arch, X64Label::Indexed {
                     idx: *id as usize | (1 << 28),
                 }).map_err(Err::from)?;
+                // Also publish the `Func{id}` label at the entry so that
+                // inter-function calls (which the delegated naive Call/ReturnCall
+                // path emits as `Func{idx}`) resolve to this C-ABI entry.
+                self.set_label(ctx, arch, X64Label::Func { r#fn: *id }).map_err(Err::from)?;
 
                 // Function-entry site (site 0): the trace-table base arrives in
                 // the virtual-param register r11; read it directly so the

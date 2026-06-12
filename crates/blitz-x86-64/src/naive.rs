@@ -606,6 +606,20 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
                 self.push(ctx, arch, &Reg(0))?;
             }
+            // Sign-extend the low 32 bits to 64 (MOVSXD).
+            Instruction::I64ExtendI32S => {
+                self.pop(ctx, arch, &Reg(0))?;
+                let dst = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_64 });
+                let src = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 });
+                self.movsx(ctx, arch, &dst, &src)?;
+                self.push(ctx, arch, &Reg(0))?;
+            }
+            // Zero-extend the low 32 bits to 64 (writing a 32-bit reg zero-extends).
+            Instruction::I64ExtendI32U => {
+                self.pop(ctx, arch, &Reg(0))?;
+                { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
+                self.push(ctx, arch, &Reg(0))?;
+            }
             Instruction::I32Eqz | Instruction::I64Eqz => {
                 self.pop(ctx, arch, &Reg(0))?;
                 self.mov64(ctx, arch, &Reg(1), 0)?;
@@ -1182,6 +1196,16 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
             // faults deterministically rather than executing past the trap.
             Instruction::Unreachable => {
                 self.hlt(ctx, arch)?;
+            }
+            // `return_call $f` ≡ `call $f; return`: identical observable behavior
+            // (same args in, $f's results returned to our caller). This is a
+            // correct lowering that uses native stack per call; true tail-call
+            // optimization (no stack growth) is a follow-up. speet's per-instruction
+            // chains rely on this, so without it no recompiled guest can run.
+            Instruction::ReturnCall(function_index) => {
+                let call = Instruction::Call(*function_index);
+                self._handle_op(ctx, arch, state, func_imports, sigs, tags, &call, target)?;
+                self._handle_op(ctx, arch, state, func_imports, sigs, tags, &Instruction::Return, target)?;
             }
             other => panic!("unimplemented WASM instruction in x86-64 naive _handle_op: {other:?}"),
         };
