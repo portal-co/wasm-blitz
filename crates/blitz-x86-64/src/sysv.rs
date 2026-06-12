@@ -131,6 +131,34 @@ pub struct SysVState<'a> {
     /// How linear-memory load/store addresses are translated. Propagated to the
     /// naive backend that lowers memory ops. Defaults to [`crate::naive::MemBase::Raw`].
     pub mem_base: crate::naive::MemBase,
+    /// Calling convention for inter-function calls and the function prologue.
+    /// Defaults to [`CallAbi::RegSysv`] (the legacy behavior, used by tests where
+    /// each function is invoked directly with register arguments).
+    pub call_abi: CallAbi,
+    /// Number of imported functions (their WASM indices `0..n_imports` are calls
+    /// to external `module__name` symbols using the C ABI). Only used in
+    /// [`CallAbi::AllStack`].
+    pub n_imports: u32,
+    /// Param count per WASM function index (imports first, then internal
+    /// functions). Only used in [`CallAbi::AllStack`] to marshal call arguments.
+    pub call_params: Vec<u32>,
+    /// Result count per WASM function index. Only used in [`CallAbi::AllStack`].
+    pub call_results: Vec<u32>,
+}
+
+/// Inter-function calling convention selected by the recompiler.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CallAbi {
+    /// Legacy: each function reads its first 6 params from the SysV integer
+    /// argument registers (and the rest from the stack); calls are *not*
+    /// marshalled (the delegated naive path). Used by direct-invocation tests.
+    #[default]
+    RegSysv,
+    /// Recompiler mode: internal functions pass *all* params on the stack
+    /// (`param i` at `[RBP + 16 + i*8]`), so the per-instruction register-file
+    /// threading round-trips. Import calls still use the C ABI (register args).
+    /// The entry stays C-callable (its params are unused initial register values).
+    AllStack,
 }
 
 /// Extension trait for generating System V AMD64-compatible functions.
@@ -190,6 +218,85 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
         Ok(())
     }
 
+    /// Marshal `arity` operand-stack arguments and call `target`.
+    ///
+    /// Operand stack on entry (RSP-based): `param_{arity-1}` at `[RSP]`, …,
+    /// `param 0` at `[RSP + (arity-1)*8]`. `R15` holds the operand base across the
+    /// call (saved in a scratch slot so nested calls can clobber it).
+    /// - `is_import`: the target is a C-ABI host import — pass the first ≤6 params
+    ///   in the SysV integer argument registers (these imports take ≤6 args).
+    /// - otherwise (`CallAbi::AllStack`): write *all* params to `[SP_call + i*8]`
+    ///   so the callee's prologue reads `param i` at `[RBP + 16 + i*8]`.
+    /// `results` (0 or 1) values are pushed back onto the operand stack from RAX.
+    fn sysv_emit_marshalled_call(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        target: X64Label,
+        arity: u32,
+        results: u32,
+        is_import: bool,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        let r15 = Reg(15);
+        let lit = |v: u64| MemArgKind::NoMem(ArgKind::Lit(v));
+        self.mov(ctx, arch, &r15, &RSP)?; // R15 = operand base
+        if is_import {
+            for i in 0..arity.min(6) {
+                let disp = (arity - 1 - i) * 8;
+                self.mov(ctx, arch, &ARG_REGS[i as usize], &mem64(r15, disp))?;
+            }
+            self.mov(ctx, arch, &RSP, &r15)?;
+            self.mov64(ctx, arch, &RAX, 16)?;
+            self.sub(ctx, arch, &RSP, &RAX)?;
+            self.and(ctx, arch, &RSP, &lit((-16i64) as u64))?;
+            self.mov(ctx, arch, &mem64(RSP, 0), &r15)?; // save base
+            self.lea_label(ctx, arch, &RAX, target)?;
+            self.call(ctx, arch, &RAX)?;
+            self.mov(ctx, arch, &r15, &mem64(RSP, 0))?; // restore base
+            self.lea(ctx, arch, &RSP, &mem64(r15, arity * 8))?; // pop args
+        } else {
+            self.mov(ctx, arch, &RSP, &r15)?;
+            self.mov64(ctx, arch, &RAX, (arity as u64 + 1) * 8)?;
+            self.sub(ctx, arch, &RSP, &RAX)?;
+            self.and(ctx, arch, &RSP, &lit((-16i64) as u64))?;
+            for i in 0..arity {
+                self.mov(ctx, arch, &RAX, &mem64(r15, (arity - 1 - i) * 8))?;
+                self.mov(ctx, arch, &mem64(RSP, i * 8), &RAX)?;
+            }
+            self.mov(ctx, arch, &mem64(RSP, arity * 8), &r15)?; // save base above args
+            self.lea_label(ctx, arch, &RAX, target)?;
+            self.call(ctx, arch, &RAX)?;
+            self.mov(ctx, arch, &r15, &mem64(RSP, arity * 8))?; // restore base
+            self.lea(ctx, arch, &RSP, &mem64(r15, arity * 8))?; // pop args
+        }
+        if results > 0 {
+            self.push(ctx, arch, &RAX)?;
+        }
+        Ok(())
+    }
+
+    /// Resolve a call/return_call target index to its label + (arity, results, is_import).
+    fn sysv_call_target(
+        state: &SysVState<'_>,
+        func_imports: &[(&str, &str)],
+        idx: u32,
+    ) -> (X64Label, u32, u32, bool) {
+        let widx = idx as usize;
+        let is_import = idx < state.n_imports;
+        let arity = state.call_params.get(widx).copied().unwrap_or(0);
+        let results = state.call_results.get(widx).copied().unwrap_or(0);
+        let label = if is_import {
+            let (m, n) = func_imports[widx];
+            X64Label::External { name: alloc::format!("{m}__{n}") }
+        } else {
+            X64Label::Func { r#fn: idx - state.n_imports }
+        };
+        (label, arity, results, is_import)
+    }
+
     /// Handle an instruction using the SysV ABI (overrides local access and Return).
     fn sysv_handle_insn(
         &mut self,
@@ -235,6 +342,25 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 // Peek (don't pop), store
                 self.sysv_peek(ctx, arch, RAX)?;
                 self.sysv_store_local(ctx, arch, RAX, *n as usize)
+            }
+
+            // ---- Calls: marshal operand-stack args per the selected CallAbi ----
+            Instruction::Call(idx) if state.call_abi == CallAbi::AllStack => {
+                let (label, arity, results, is_import) =
+                    Self::sysv_call_target(state, func_imports, *idx);
+                self.sysv_emit_marshalled_call(ctx, arch, label, arity, results, is_import)
+            }
+            Instruction::ReturnCall(idx) if state.call_abi == CallAbi::AllStack => {
+                let (label, arity, results, is_import) =
+                    Self::sysv_call_target(state, func_imports, *idx);
+                self.sysv_emit_marshalled_call(ctx, arch, label, arity, results, is_import)?;
+                // Tail: return our (= callee's) results to our caller (SysV epilogue).
+                if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
+                if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
+                self.mov(ctx, arch, &RSP, &RBP)?;
+                if state.shard.is_some() { self.pop(ctx, arch, &SCR)?; }
+                self.pop(ctx, arch, &RBP)?;
+                self.ret(ctx, arch)
             }
 
             // ---- Return: always emit SysV epilogue regardless of block depth ----
@@ -511,22 +637,30 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                         .map_err(Err::from)?;
                 }
 
-                for i in 0..data.num_params.min(6) {
-                    self.sysv_store_local(ctx, arch, ARG_REGS[i], i).map_err(Err::from)?;
-                }
-                // Params 7+ (index >= 6) are passed by the caller on the stack,
-                // above the saved RBP (and the saved SCR, if sharding pushed it)
-                // and the return address. With `mov RBP, RSP` taken right after
-                // those pushes, incoming arg `i` lives at
-                //   [RBP + 16 + scr_extra + (i-6)*8]
-                // where scr_extra = 8 when SCR was pushed. Copy each into its
-                // local slot so functions with >6 params (e.g. recompiled
-                // register-file functions) receive all their arguments.
                 let scr_extra: u32 = if state.shard.is_some() { 8 } else { 0 };
-                for i in 6..data.num_params {
-                    let src_disp = 16 + scr_extra + ((i - 6) as u32) * 8;
-                    self.mov(ctx, arch, &RAX, &mem64(RBP, src_disp)).map_err(Err::from)?;
-                    self.sysv_store_local(ctx, arch, RAX, i).map_err(Err::from)?;
+                match state.call_abi {
+                    CallAbi::RegSysv => {
+                        for i in 0..data.num_params.min(6) {
+                            self.sysv_store_local(ctx, arch, ARG_REGS[i], i).map_err(Err::from)?;
+                        }
+                        // Params 7+ (index >= 6) are passed by the caller on the
+                        // stack, above the saved RBP (and saved SCR) and the
+                        // return address: incoming arg `i` at [RBP+16+scr_extra+(i-6)*8].
+                        for i in 6..data.num_params {
+                            let src_disp = 16 + scr_extra + ((i - 6) as u32) * 8;
+                            self.mov(ctx, arch, &RAX, &mem64(RBP, src_disp)).map_err(Err::from)?;
+                            self.sysv_store_local(ctx, arch, RAX, i).map_err(Err::from)?;
+                        }
+                    }
+                    CallAbi::AllStack => {
+                        // All params arrive on the stack; param `i` at
+                        // [RBP + 16 + scr_extra + i*8].
+                        for i in 0..data.num_params {
+                            let src_disp = 16 + scr_extra + (i as u32) * 8;
+                            self.mov(ctx, arch, &RAX, &mem64(RBP, src_disp)).map_err(Err::from)?;
+                            self.sysv_store_local(ctx, arch, RAX, i).map_err(Err::from)?;
+                        }
+                    }
                 }
                 Ok(())
             }
