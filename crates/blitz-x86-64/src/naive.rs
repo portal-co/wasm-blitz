@@ -624,7 +624,10 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.pop(ctx, arch, &Reg(0))?;
                 self.mov64(ctx, arch, &Reg(1), 0)?;
                 self.cmp0(ctx, arch, &Reg(0))?;
-                self.cmovcc(ctx, arch, ConditionCode::E, &Reg(1), &1u64)?;
+                // CMOV has no immediate form: materialize 1 in a scratch reg.
+                // (`mov` does not disturb the flags set by `cmp0`.)
+                self.mov64(ctx, arch, &Reg(2), 1)?;
+                self.cmovcc(ctx, arch, ConditionCode::E, &Reg(1), &Reg(2))?;
                 self.push(ctx, arch, &Reg(1))?;
             }
             Instruction::I32Eq | Instruction::I64Eq => {
@@ -646,7 +649,8 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 )?;
                 self.mov64(ctx, arch, &Reg(1), 0)?;
                 self.cmp0(ctx, arch, &Reg(0))?;
-                self.cmovcc(ctx, arch, ConditionCode::E, &Reg(1), &1u64)?;
+                self.mov64(ctx, arch, &Reg(2), 1)?;
+                self.cmovcc(ctx, arch, ConditionCode::E, &Reg(1), &Reg(2))?;
                 self.push(ctx, arch, &Reg(1))?;
             }
             Instruction::I32Ne | Instruction::I64Ne => {
@@ -668,7 +672,8 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 )?;
                 self.mov64(ctx, arch, &Reg(1), 1)?;
                 self.cmp0(ctx, arch, &Reg(0))?;
-                self.cmovcc(ctx, arch, ConditionCode::E, &Reg(1), &0u64)?;
+                self.mov64(ctx, arch, &Reg(2), 0)?;
+                self.cmovcc(ctx, arch, ConditionCode::E, &Reg(1), &Reg(2))?;
                 self.push(ctx, arch, &Reg(1))?;
             }
             Instruction::I64Load(memarg) => {

@@ -2625,6 +2625,309 @@ fn test_unicorn_riscv64_sysv_backend() {
 }
 
 // ---------------------------------------------------------------------------
+// Many-argument SysV/AAPCS64 call marshalling — executed under Unicorn.
+//
+// These drive the recompiler's `CallAbi::AllStack` path (the mode speet uses to
+// thread the full guest register file across `return_call` tail chains) and run
+// the produced machine code, so they verify the *behaviour* of the >register
+// argument marshalling, not just its shape.
+// ---------------------------------------------------------------------------
+
+/// Two-function module, both `(i64 * n) -> i64`: `f0` (entry) forwards its `n`
+/// params to `f1` via `return_call`; `f1` returns their sum.
+fn manyarg_sum_tailcall_wasm(n: u32) -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    let params: Vec<ValType> = (0..n).map(|_| ValType::I64).collect();
+    types.ty().function(params.iter().cloned(), [ValType::I64]);
+    module.section(&types);
+
+    let mut functions = FunctionSection::new();
+    functions.function(0); // f0 (entry)
+    functions.function(0); // f1 (sum)
+    module.section(&functions);
+
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+
+    let mut code = CodeSection::new();
+    let mut f0 = Function::new([]);
+    for i in 0..n {
+        f0.instruction(&Instruction::LocalGet(i));
+    }
+    f0.instruction(&Instruction::ReturnCall(1));
+    f0.instruction(&Instruction::End);
+    code.function(&f0);
+
+    let mut f1 = Function::new([]);
+    f1.instruction(&Instruction::LocalGet(0));
+    for i in 1..n {
+        f1.instruction(&Instruction::LocalGet(i));
+        f1.instruction(&Instruction::I64Add);
+    }
+    f1.instruction(&Instruction::Return);
+    f1.instruction(&Instruction::End);
+    code.function(&f1);
+    module.section(&code);
+    module.finish()
+}
+
+/// Compile `wasm` with the SysV backend in `CallAbi::AllStack` mode into one
+/// code buffer (all internal labels bind), returning the bytes and the byte
+/// offset of `f0`'s entry. Panics if any external relocation survives.
+fn compile_allstack_binary(wasm: &[u8], arch: NativeArch) -> (Vec<u8>, u64) {
+    let (sigs_wp, _enc, fsigs) = parse_sigs(wasm);
+    let call_params: Vec<u32> =
+        fsigs.iter().map(|&ti| sigs_wp[ti as usize].params().len() as u32).collect();
+    let call_results: Vec<u32> =
+        fsigs.iter().map(|&ti| sigs_wp[ti as usize].results().len() as u32).collect();
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut reencoder = RoundtripReencoder;
+    let mut ctx = ();
+    match arch {
+        NativeArch::X86_64 => {
+            use portal_solutions_blitz_x86_64::{sysv, X64Arch, X64Label};
+            use portal_solutions_asm_x86_64::out::iced::IcedWriter;
+            let mut out = IcedWriter::<X64Label>::new(0x100000);
+            let mut state = sysv::SysVState::default();
+            state.call_abi = sysv::CallAbi::AllStack;
+            state.call_params = call_params;
+            state.call_results = call_results;
+            for op in ops {
+                sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, X64Arch::default(), &mut state, &[], &op.unwrap(),
+                    &mut reencoder, 0,
+                )
+                .unwrap();
+            }
+            let (bytes, labels, relocs) = out.into_parts_with_relocs();
+            assert!(relocs.is_empty(), "unexpected external relocs: {relocs:?}");
+            (bytes, labels[&X64Label::Func { r#fn: 0 }] as u64)
+        }
+        NativeArch::AArch64 => {
+            use portal_solutions_blitz_aarch64::{naive, sysv, AArch64Arch, AArch64Label};
+            use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+            let mut out = AArch64Writer::<AArch64Label>::new();
+            let mut state = naive::State::default();
+            state.call_abi = naive::CallAbi::AllStack;
+            state.call_params = call_params;
+            state.call_results = call_results;
+            for op in ops {
+                sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, AArch64Arch::default(), &mut state, &[], &op.unwrap(),
+                    &mut reencoder, 0,
+                )
+                .unwrap();
+            }
+            let (bytes, labels, relocs) = out.into_parts_with_relocs();
+            assert!(relocs.is_empty(), "unexpected external relocs: {relocs:?}");
+            // AArch64 SysV entry label is `Indexed { id + 0x8000_0000 }`.
+            (bytes, labels[&AArch64Label::Indexed { idx: 0x8000_0000 }] as u64)
+        }
+        NativeArch::Riscv64 => panic!("many-arg test covers x86-64 and aarch64 only"),
+    }
+}
+
+/// Invoke an `AllStack` entry under Unicorn with `args` (i64 each) and return X0/RAX.
+/// `count` caps emulated instructions (0 = unlimited).
+fn run_allstack_entry(arch: NativeArch, code: &[u8], entry_off: u64, args: &[u64], count: u64) -> u64 {
+    use unicorn_engine::{
+        unicorn_const::{Arch, Mode, Prot},
+        Unicorn,
+    };
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x200000;
+    const STACK_SIZE: u64 = 0x40000;
+    let n = args.len();
+    let ret = CODE + code.len() as u64; // emu stops when control returns here
+
+    match arch {
+        NativeArch::X86_64 => {
+            use unicorn_engine::RegisterX86;
+            let mut uc = Unicorn::new(Arch::X86, Mode::MODE_64).unwrap();
+            uc.mem_map(CODE, 0x40000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            // AllStack (x86): every param is read from the incoming stack.
+            // [rsp] = ret addr, [rsp + 8 + i*8] = param i; keep rsp 16-aligned.
+            let frame = ((n as u64 + 2) * 8 + 15) & !15;
+            let rsp = (STACK + STACK_SIZE - frame - 16) & !15;
+            uc.mem_write(rsp, &ret.to_le_bytes()).unwrap();
+            for (i, &a) in args.iter().enumerate() {
+                uc.mem_write(rsp + 8 + (i as u64) * 8, &a.to_le_bytes()).unwrap();
+            }
+            uc.reg_write(RegisterX86::RSP, rsp).unwrap();
+            attach_trace_hook(&mut uc, arch, CODE, code.len());
+            uc.emu_start(CODE + entry_off, ret, 0, count as usize).unwrap();
+            uc.reg_read(RegisterX86::RAX).unwrap()
+        }
+        NativeArch::AArch64 => {
+            use unicorn_engine::RegisterARM64;
+            let argregs = [
+                RegisterARM64::X0, RegisterARM64::X1, RegisterARM64::X2, RegisterARM64::X3,
+                RegisterARM64::X4, RegisterARM64::X5, RegisterARM64::X6, RegisterARM64::X7,
+            ];
+            let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+            uc.mem_map(CODE, 0x40000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            // AllStack (aarch64) is true AAPCS64: params 0..7 in X0..X7, rest on stack.
+            let stack_args = n.saturating_sub(8) as u64;
+            let frame = (stack_args * 8 + 15) & !15;
+            let sp = (STACK + STACK_SIZE - frame - 16) & !15;
+            for i in 8..n {
+                uc.mem_write(sp + ((i - 8) as u64) * 8, &args[i].to_le_bytes()).unwrap();
+            }
+            for i in 0..n.min(8) {
+                uc.reg_write(argregs[i], args[i]).unwrap();
+            }
+            uc.reg_write(RegisterARM64::SP, sp).unwrap();
+            uc.reg_write(RegisterARM64::LR, ret).unwrap();
+            attach_trace_hook(&mut uc, arch, CODE, code.len());
+            uc.emu_start(CODE + entry_off, ret, 0, count as usize).unwrap();
+            uc.reg_read(RegisterARM64::X0).unwrap()
+        }
+        NativeArch::Riscv64 => panic!("many-arg test covers x86-64 and aarch64 only"),
+    }
+}
+
+fn assert_manyarg_sum(arch: NativeArch) {
+    let n = 10u32;
+    let wasm = manyarg_sum_tailcall_wasm(n);
+    let (code, entry) = compile_allstack_binary(&wasm, arch);
+    let args: Vec<u64> = (1..=n as u64).collect();
+    let expected: u64 = args.iter().sum();
+    assert_eq!(run_allstack_entry(arch, &code, entry, &args, 0), expected);
+}
+
+#[test]
+fn test_unicorn_x86_64_manyarg_tailcall() {
+    assert_manyarg_sum(NativeArch::X86_64);
+}
+
+#[test]
+fn test_unicorn_aarch64_manyarg_tailcall() {
+    assert_manyarg_sum(NativeArch::AArch64);
+}
+
+/// Self-recursive `(i64 n, i64 acc) -> i64`: `if n==0 { acc } else { f(n-1, acc+n) }`
+/// via `return_call` to itself. A genuine tail call runs in O(1) machine stack.
+fn deep_tailchain_wasm() -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([ValType::I64, ValType::I64], [ValType::I64]);
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    let mut f = Function::new([]);
+    f.instruction(&Instruction::LocalGet(0)); // n
+    f.instruction(&Instruction::I64Eqz);
+    f.instruction(&Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
+    f.instruction(&Instruction::LocalGet(1)); // n == 0 -> acc
+    f.instruction(&Instruction::Else);
+    f.instruction(&Instruction::LocalGet(0)); // n
+    f.instruction(&Instruction::I64Const(1));
+    f.instruction(&Instruction::I64Sub); // n-1  (param 0)
+    f.instruction(&Instruction::LocalGet(1)); // acc
+    f.instruction(&Instruction::LocalGet(0)); // n
+    f.instruction(&Instruction::I64Add); // acc+n  (param 1)
+    f.instruction(&Instruction::ReturnCall(0));
+    f.instruction(&Instruction::End); // end if
+    f.instruction(&Instruction::Return);
+    f.instruction(&Instruction::End);
+    code.function(&f);
+    module.section(&code);
+    module.finish()
+}
+
+/// Single function `(i64 n) -> i64` = `if n==0 { 111 } else { 222 }` — no calls.
+/// Isolates if/else lowering in the SysV binary backend from tail-call logic.
+fn ifelse_probe_wasm() -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([ValType::I64], [ValType::I64]);
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    let mut f = Function::new([]);
+    f.instruction(&Instruction::LocalGet(0));
+    f.instruction(&Instruction::I64Eqz);
+    f.instruction(&Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
+    f.instruction(&Instruction::I64Const(111));
+    f.instruction(&Instruction::Else);
+    f.instruction(&Instruction::I64Const(222));
+    f.instruction(&Instruction::End);
+    f.instruction(&Instruction::Return);
+    f.instruction(&Instruction::End);
+    code.function(&f);
+    module.section(&code);
+    module.finish()
+}
+
+#[test]
+fn test_unicorn_x86_64_ifelse_probe() {
+    let (code, entry) = compile_allstack_binary(&ifelse_probe_wasm(), NativeArch::X86_64);
+    assert_eq!(run_allstack_entry(NativeArch::X86_64, &code, entry, &[0], 100_000), 111);
+    assert_eq!(run_allstack_entry(NativeArch::X86_64, &code, entry, &[1], 100_000), 222);
+}
+
+#[test]
+fn test_unicorn_aarch64_ifelse_probe() {
+    let (code, entry) = compile_allstack_binary(&ifelse_probe_wasm(), NativeArch::AArch64);
+    assert_eq!(run_allstack_entry(NativeArch::AArch64, &code, entry, &[0], 100_000), 111);
+    assert_eq!(run_allstack_entry(NativeArch::AArch64, &code, entry, &[1], 100_000), 222);
+}
+
+fn run_deep_tailchain(arch: NativeArch, n: u64, count: u64) -> u64 {
+    let wasm = deep_tailchain_wasm();
+    let (code, entry) = compile_allstack_binary(&wasm, arch);
+    run_allstack_entry(arch, &code, entry, &[n, 0], count)
+}
+
+#[test]
+fn test_unicorn_x86_64_deep_tailchain_small() {
+    // Bounded instruction count so a regression can't hang the suite.
+    assert_eq!(run_deep_tailchain(NativeArch::X86_64, 5, 100_000), 15);
+}
+
+#[test]
+fn test_unicorn_aarch64_deep_tailchain_small() {
+    assert_eq!(run_deep_tailchain(NativeArch::AArch64, 5, 100_000), 15);
+}
+
+#[test]
+fn test_unicorn_x86_64_deep_tailchain() {
+    // 20k self-tail-calls: a fake tail call (real call + ret) grows the machine
+    // stack ~20k frames and faults the 256 KiB stack; a true tail call stays O(1).
+    let n = 20_000u64;
+    assert_eq!(run_deep_tailchain(NativeArch::X86_64, n, 0), n * (n + 1) / 2);
+}
+
+#[test]
+fn test_unicorn_aarch64_deep_tailchain() {
+    let n = 20_000u64;
+    assert_eq!(run_deep_tailchain(NativeArch::AArch64, n, 0), n * (n + 1) / 2);
+}
+
+// ---------------------------------------------------------------------------
 // Stubs and helpers for native execution tests
 // ---------------------------------------------------------------------------
 

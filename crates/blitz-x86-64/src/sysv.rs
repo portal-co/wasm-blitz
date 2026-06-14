@@ -287,6 +287,40 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
         Ok(())
     }
 
+    /// Emit a **true tail call** to an internal `target` with `arity` args.
+    ///
+    /// Unlike `sysv_emit_marshalled_call` (a real `call`), this reuses the current
+    /// frame: the `arity` operand-stack args overwrite our own incoming-arg slots
+    /// (`[RBP + 16 + scr_extra + i*8]`), the SysV epilogue restores the caller's
+    /// frame leaving RSP at the return address, and a `jmp` transfers control so
+    /// the callee returns straight to our caller. The machine stack therefore stays
+    /// O(1) across a `return_call` chain. Requires `arity <= param_count` (checked
+    /// by the caller) so the overwrite stays within our incoming-arg region.
+    fn sysv_emit_tail_call(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        target: X64Label,
+        arity: u32,
+        shard: bool,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        let r15 = Reg(15);
+        let scr_extra: u32 = if shard { 8 } else { 0 };
+        self.mov(ctx, arch, &r15, &RSP)?; // operand base (args are below RBP)
+        for i in 0..arity {
+            self.mov(ctx, arch, &RAX, &mem64(r15, (arity - 1 - i) * 8))?;
+            self.mov(ctx, arch, &mem64(RBP, 16 + scr_extra + i * 8), &RAX)?;
+        }
+        // Restore caller frame; RSP ends at the return address.
+        self.mov(ctx, arch, &RSP, &RBP)?;
+        if shard { self.pop(ctx, arch, &SCR)?; }
+        self.pop(ctx, arch, &RBP)?;
+        self.jmp_label(ctx, arch, target)
+    }
+
     /// Resolve a call/return_call target index to its label + (arity, results, is_import).
     fn sysv_call_target(
         state: &SysVState<'_>,
@@ -362,14 +396,22 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
             Instruction::ReturnCall(idx) if state.call_abi == CallAbi::AllStack => {
                 let (label, arity, results, is_import) =
                     Self::sysv_call_target(state, func_imports, *idx);
-                self.sysv_emit_marshalled_call(ctx, arch, label, arity, results, is_import)?;
-                // Tail: return our (= callee's) results to our caller (SysV epilogue).
-                if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
-                if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
-                self.mov(ctx, arch, &RSP, &RBP)?;
-                if state.shard.is_some() { self.pop(ctx, arch, &SCR)?; }
-                self.pop(ctx, arch, &RBP)?;
-                self.ret(ctx, arch)
+                if is_import || arity as usize > state.param_count {
+                    // Fake tail: a real call then the SysV epilogue. Required for C-ABI
+                    // imports (proper alignment/return), and a safe fallback when the
+                    // callee wants more args than our incoming-arg frame can hold.
+                    self.sysv_emit_marshalled_call(ctx, arch, label, arity, results, is_import)?;
+                    if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
+                    if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
+                    self.mov(ctx, arch, &RSP, &RBP)?;
+                    if state.shard.is_some() { self.pop(ctx, arch, &SCR)?; }
+                    self.pop(ctx, arch, &RBP)?;
+                    self.ret(ctx, arch)
+                } else {
+                    // True tail call to an internal function: O(1) machine stack for
+                    // long `return_call` chains (speet emits one cell per guest insn).
+                    self.sysv_emit_tail_call(ctx, arch, label, arity, state.shard.is_some())
+                }
             }
 
             // ---- Return: always emit SysV epilogue regardless of block depth ----

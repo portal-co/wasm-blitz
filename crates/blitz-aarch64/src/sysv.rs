@@ -151,7 +151,11 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         let stack_args = arity.saturating_sub(8);
         let needed = (stack_args as u64) * 8 + 8;
         self.sub(ctx, arch, &reg(s9), &reg(base), &lit(needed))?;
-        self.and(ctx, arch, &reg(s9), &reg(s9), &lit((-16i64) as u64))?;
+        // Align the call SP down to 16 bytes (AArch64 requires it for sp-relative
+        // accesses and at the callee's frame setup). The binary `and` only encodes
+        // the register form, so materialize the mask in x10 first.
+        self.mov_imm(ctx, arch, &reg(s10), (-16i64) as u64)?;
+        self.and(ctx, arch, &reg(s9), &reg(s9), &reg(s10))?;
         self.mov(ctx, arch, &reg(SP), &reg(s9))?;
         // Spill args 8.. to [sp + (i-8)*8].
         for i in 8..arity {
@@ -172,6 +176,54 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         if results > 1 { self.wasm_push(ctx, arch, Reg(1))?; }
         if results > 0 { self.wasm_push(ctx, arch, Reg(0))?; }
         Ok(())
+    }
+
+    /// Emit a **true tail call** to an internal `target` with `arity` args.
+    ///
+    /// The `arity` operand-stack args are loaded into X0–X7 and (for arity>8)
+    /// overwrite our own incoming stack-arg slots (`[FP + 16 + scr_extra +
+    /// (i-8)*8]`); the AAPCS64 epilogue restores the caller's frame (SP, FP, LR)
+    /// and a `b` transfers control so the callee returns straight to our caller.
+    /// The machine stack stays O(1) across a `return_call` chain. Requires
+    /// `arity <= param_count` (checked by the caller) so the overwrite of the
+    /// stack args stays within our incoming-arg region.
+    fn sysv_emit_tail_call(
+        &mut self,
+        ctx: &mut Context,
+        arch: AArch64Arch,
+        target: AArch64Label,
+        arity: u32,
+        shard: bool,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        let base = Reg(15);
+        let s9 = Reg(9);
+        // base = operand stack pointer.
+        self.mov(ctx, arch, &reg(base), &reg(SP))?;
+        // First min(arity,8) args -> X0..X7.
+        for i in 0..arity.min(8) {
+            let disp = ((arity - 1 - i) * 8) as i32;
+            self.ldr(ctx, arch, &reg(ARG_REGS[i as usize]), &mem_base_disp(base, disp))?;
+        }
+        // Overwrite our incoming stack-arg slots with args 8.. (they sit at the
+        // same place the callee will read its incoming stack args after we restore SP).
+        let scr_extra: i32 = if shard { 16 } else { 0 };
+        for i in 8..arity {
+            let src = ((arity - 1 - i) * 8) as i32;
+            self.ldr(ctx, arch, &reg(s9), &mem_base_disp(base, src))?;
+            let dst = 16 + scr_extra + ((i as i32 - 8) * 8);
+            self.str(ctx, arch, &reg(s9), &mem_base_disp(FP, dst))?;
+        }
+        // Restore the caller frame (no `ret`): SP, FP, LR.
+        self.mov(ctx, arch, &reg(SP), &reg(FP))?;
+        self.ldp(ctx, arch, &reg(FP), &reg(LR), &mem_post(SP, 16))?;
+        if shard {
+            self.ldp(ctx, arch, &reg(SCR), &reg(Reg(9)), &mem_post(SP, 16))?;
+        }
+        // Tail-branch (no link); the callee returns directly to our caller.
+        self.b_label(ctx, arch, target)
     }
 
     /// Emit the AAPCS64 epilogue (restore frame) and return. Shared by `Return`,
@@ -235,11 +287,19 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 self.sysv_emit_marshalled_call(ctx, arch, label, arity, results)
             }
             Instruction::ReturnCall(idx) if state.call_abi == CallAbi::AllStack => {
-                let (label, arity, results, _is_import) =
+                let (label, arity, results, is_import) =
                     Self::sysv_call_target(state, func_imports, *idx);
-                self.sysv_emit_marshalled_call(ctx, arch, label, arity, results)?;
-                // Tail: return our (= callee's) results to our caller (AAPCS64 epilogue).
-                self.sysv_emit_epilogue(ctx, arch, state)
+                if is_import || arity as usize > state.param_count {
+                    // Fake tail: a real call then the AAPCS64 epilogue. Required for
+                    // C-ABI imports and a safe fallback when the callee wants more
+                    // args than our incoming-arg frame holds.
+                    self.sysv_emit_marshalled_call(ctx, arch, label, arity, results)?;
+                    self.sysv_emit_epilogue(ctx, arch, state)
+                } else {
+                    // True tail call to an internal function: O(1) machine stack for
+                    // long `return_call` chains.
+                    self.sysv_emit_tail_call(ctx, arch, label, arity, state.shard.is_some())
+                }
             }
 
             // ---- Return: always emit AAPCS64 epilogue regardless of block depth ----
@@ -269,6 +329,7 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         match op {
             MachOperator::StartFn { id, data } => {
                 state.local_count = data.num_params;
+                state.param_count = data.num_params;
                 state.num_returns = data.num_returns;
                 state.control_depth = data.control_depth;
                 state.tracing = data.tracing;

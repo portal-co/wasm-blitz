@@ -89,6 +89,9 @@ pub enum MemBase {
 #[derive(Default)]
 pub struct State<'a> {
     pub local_count: usize,
+    /// Incoming parameter count (set by the SysV `StartFn`; never grown by
+    /// `Local`). Used to bound true-tail-call argument overwrites.
+    pub param_count: usize,
     pub num_returns: usize,
     pub control_depth: usize,
     pub label_index: usize,
