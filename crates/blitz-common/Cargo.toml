@@ -6,6 +6,7 @@ license.workspace = true
 description.workspace = true
 
 [dependencies]
+log = { version = "0.4", optional = true }
 typeid.workspace = true
 wasmparser.workspace = true
 wasm-encoder.workspace = true
@@ -14,5 +15,6 @@ wax-core.workspace = true
 portal-pc-asm-common = {workspace = true,features = ["alloc"],optional = true}
 
 [features]
+log-trace = ["dep:log"]
 asm=["dep:portal-pc-asm-common"]
 default=["asm"]
