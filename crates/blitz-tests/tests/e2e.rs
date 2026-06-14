@@ -2511,10 +2511,12 @@ fn attach_trace_hook<D: 'static>(
     code_len: usize,
 ) {
     if std::env::var("BLITZ_TRACE_UNICORN").is_err() { return; }
+    let portal_logger = log::LlmtrimLogger::from_env();
+    let arch_str = format!("{arch:?}");
     uc.add_code_hook(code_base, code_base + code_len as u64, move |uc, addr, size| {
         let mut buf = vec![0u8; size as usize];
         let _ = uc.mem_read(addr, &mut buf);
-        eprintln!("  [TRACE:{arch:?}] PC={addr:#010x}  ({size}B) {buf:02x?}");
+        log::portal_trace(&portal_logger, &arch_str, addr, size as usize, &buf);
     }).expect("add_code_hook failed");
 }
 
