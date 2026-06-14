@@ -112,6 +112,34 @@ pub struct State<'a> {
     /// How linear-memory load/store addresses are translated. Defaults to
     /// [`MemBase::Raw`] (legacy raw-pointer behavior).
     pub mem_base: MemBase,
+    /// Inter-function calling convention for the AAPCS64 (SysV) path. Defaults
+    /// to [`CallAbi::RegSysv`] (legacy; calls delegate to the naive path). Set
+    /// to [`CallAbi::AllStack`] by the recompiler to marshal *all* arguments per
+    /// AAPCS64 (X0–X7 then stack) so the full guest register file round-trips.
+    pub call_abi: CallAbi,
+    /// Number of imported functions: WASM indices `0..n_imports` are calls to
+    /// external `module__name` symbols. Only used in [`CallAbi::AllStack`].
+    pub n_imports: u32,
+    /// Param count per WASM function index (imports first, then internal
+    /// functions). Only used in [`CallAbi::AllStack`] to marshal call arguments.
+    pub call_params: Vec<u32>,
+    /// Result count per WASM function index. Only used in [`CallAbi::AllStack`].
+    pub call_results: Vec<u32>,
+}
+
+/// Inter-function calling convention selected by the recompiler for the AAPCS64
+/// (SysV) backend. Mirrors `blitz-x86-64`'s `sysv::CallAbi`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CallAbi {
+    /// Legacy: `Call`/`ReturnCall` delegate to the naive path (register args,
+    /// no stack spill). Used by direct-invocation tests.
+    #[default]
+    RegSysv,
+    /// Recompiler mode: marshal *all* arguments per AAPCS64 (the first 8 in
+    /// X0–X7, the rest on the outgoing stack), matching the SysV prologue which
+    /// reads `param i` (i≥8) at `[FP + 16 + i_stack*8]`. Import calls use the
+    /// same AAPCS64 convention (they are ordinary C functions).
+    AllStack,
 }
 
 /// Represents a control-flow frame.

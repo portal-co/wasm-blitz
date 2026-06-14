@@ -33,7 +33,7 @@ use portal_solutions_blitz_common::{
     wasm_encoder::{FuncType, reencode::Reencode},
 };
 
-use crate::naive::{State, WriterExt, SCR};
+use crate::naive::{CallAbi, State, WriterExt, SCR};
 use crate::AArch64Label;
 use crate::codegen::TraceBase;
 use crate::{FP, LR, SP};
@@ -92,6 +92,109 @@ use portal_solutions_blitz_common::wasm_encoder::{Instruction, reencode};
 /// Delegates all instruction-level code to the naive `WriterExt::handle_insn`;
 /// only the function boundary (StartFn / Return) is different.
 pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Context> {
+    /// Resolve a call/return_call target index to its label + (arity, results, is_import).
+    /// Mirrors the x86-64 `sysv_call_target`; internal targets use the SysV entry
+    /// label scheme (`Indexed { local_id + 0x80000000 }`, see `StartFn`).
+    fn sysv_call_target(
+        state: &State<'_>,
+        func_imports: &[(&str, &str)],
+        idx: u32,
+    ) -> (AArch64Label, u32, u32, bool) {
+        let widx = idx as usize;
+        let is_import = idx < state.n_imports;
+        let arity = state.call_params.get(widx).copied().unwrap_or(0);
+        let results = state.call_results.get(widx).copied().unwrap_or(0);
+        let label = if is_import {
+            let (m, n) = func_imports[widx];
+            AArch64Label::External { name: alloc::format!("{m}__{n}") }
+        } else {
+            AArch64Label::Indexed { idx: (idx - state.n_imports) as usize + 0x80000000 }
+        };
+        (label, arity, results, is_import)
+    }
+
+    /// Marshal `arity` operand-stack arguments per AAPCS64 and call `target`.
+    ///
+    /// Operand stack (SP-based) on entry: `param_{arity-1}` at `[sp]`, …, `param 0`
+    /// at `[sp + (arity-1)*8]`. The first 8 params go in X0–X7; params 8+ are
+    /// written to the 16-byte-aligned outgoing stack at `[sp_call + (i-8)*8]`,
+    /// matching the SysV prologue's incoming-arg reads. Because the callee derives
+    /// its frame from the same aligned `sp`, this is correct for both internal
+    /// (blitz) and import (C ABI host) targets. `x15` holds the operand base across
+    /// the call (saved in a stack slot); `x9`/`x10` are scratch. `results` (0..2)
+    /// values are pushed back onto the operand stack from X0/X1.
+    fn sysv_emit_marshalled_call(
+        &mut self,
+        ctx: &mut Context,
+        arch: AArch64Arch,
+        target: AArch64Label,
+        arity: u32,
+        results: u32,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        let base = Reg(15);
+        let s9 = Reg(9);
+        let s10 = Reg(10);
+        let lit = |v: u64| MemArgKind::NoMem(ArgKind::Lit(v));
+
+        // base = operand stack pointer.
+        self.mov(ctx, arch, &reg(base), &reg(SP))?;
+        // First min(arity, 8) args -> X0..X7.
+        for i in 0..arity.min(8) {
+            let disp = ((arity - 1 - i) * 8) as i32;
+            self.ldr(ctx, arch, &reg(ARG_REGS[i as usize]), &mem_base_disp(base, disp))?;
+        }
+        // Reserve a 16-byte-aligned outgoing region: stack overflow args (i>=8)
+        // plus one slot to preserve `base` across the call.
+        let stack_args = arity.saturating_sub(8);
+        let needed = (stack_args as u64) * 8 + 8;
+        self.sub(ctx, arch, &reg(s9), &reg(base), &lit(needed))?;
+        self.and(ctx, arch, &reg(s9), &reg(s9), &lit((-16i64) as u64))?;
+        self.mov(ctx, arch, &reg(SP), &reg(s9))?;
+        // Spill args 8.. to [sp + (i-8)*8].
+        for i in 8..arity {
+            let src = ((arity - 1 - i) * 8) as i32;
+            self.ldr(ctx, arch, &reg(s10), &mem_base_disp(base, src))?;
+            let dst = ((i - 8) * 8) as i32;
+            self.str(ctx, arch, &reg(s10), &mem_base_disp(SP, dst))?;
+        }
+        // Save the operand base above the stack args, then call.
+        let base_slot = (stack_args * 8) as i32;
+        self.str(ctx, arch, &reg(base), &mem_base_disp(SP, base_slot))?;
+        self.adr_label(ctx, arch, &reg(s9), target)?;
+        self.bl(ctx, arch, &reg(s9))?;
+        // Restore base, pop all args (operand sp = base + arity*8).
+        self.ldr(ctx, arch, &reg(base), &mem_base_disp(SP, base_slot))?;
+        self.add(ctx, arch, &reg(SP), &reg(base), &lit((arity as u64) * 8))?;
+        // Push results from X0/X1.
+        if results > 1 { self.wasm_push(ctx, arch, Reg(1))?; }
+        if results > 0 { self.wasm_push(ctx, arch, Reg(0))?; }
+        Ok(())
+    }
+
+    /// Emit the AAPCS64 epilogue (restore frame) and return. Shared by `Return`,
+    /// function-level `End`, and the tail of `ReturnCall`.
+    fn sysv_emit_epilogue(
+        &mut self,
+        ctx: &mut Context,
+        arch: AArch64Arch,
+        state: &State<'_>,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        if state.num_returns > 0 { self.wasm_pop(ctx, arch, Reg(0))?; }
+        if state.num_returns > 1 { self.wasm_pop(ctx, arch, Reg(1))?; }
+        self.mov(ctx, arch, &reg(SP), &reg(FP))?;
+        self.ldp(ctx, arch, &reg(FP), &reg(LR), &mem_post(SP, 16))?;
+        if state.shard.is_some() {
+            self.ldp(ctx, arch, &reg(SCR), &reg(Reg(9)), &mem_post(SP, 16))?;
+        }
+        self.ret(ctx, arch)
+    }
+
     /// Handle an instruction, using the AAPCS64 Return epilogue instead of the naive one.
     fn sysv_handle_insn(
         &mut self,
@@ -125,28 +228,25 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 self.store_local(ctx, arch, Reg(9), *idx as usize)
             }
 
-            // ---- Return: always emit AAPCS64 epilogue regardless of block depth ----
-            Instruction::Return => {
-                if state.num_returns > 0 { self.wasm_pop(ctx, arch, Reg(0))?; }
-                if state.num_returns > 1 { self.wasm_pop(ctx, arch, Reg(1))?; }
-                self.mov(ctx, arch, &reg(SP), &reg(FP))?;
-                self.ldp(ctx, arch, &reg(FP), &reg(LR), &mem_post(SP, 16))?;
-                // Restore SCR if sharding active (Reg(9) = x9 gets discarded — OK).
-                if state.shard.is_some() {
-                    self.ldp(ctx, arch, &reg(SCR), &reg(Reg(9)), &mem_post(SP, 16))?;
-                }
-                self.ret(ctx, arch)
+            // ---- Calls: marshal operand-stack args per AAPCS64 (AllStack mode) ----
+            Instruction::Call(idx) if state.call_abi == CallAbi::AllStack => {
+                let (label, arity, results, _is_import) =
+                    Self::sysv_call_target(state, func_imports, *idx);
+                self.sysv_emit_marshalled_call(ctx, arch, label, arity, results)
             }
+            Instruction::ReturnCall(idx) if state.call_abi == CallAbi::AllStack => {
+                let (label, arity, results, _is_import) =
+                    Self::sysv_call_target(state, func_imports, *idx);
+                self.sysv_emit_marshalled_call(ctx, arch, label, arity, results)?;
+                // Tail: return our (= callee's) results to our caller (AAPCS64 epilogue).
+                self.sysv_emit_epilogue(ctx, arch, state)
+            }
+
+            // ---- Return: always emit AAPCS64 epilogue regardless of block depth ----
+            Instruction::Return => self.sysv_emit_epilogue(ctx, arch, state),
             // ---- Function-level End (empty if_stack) ----
             Instruction::End if state.if_stack.is_empty() => {
-                if state.num_returns > 0 { self.wasm_pop(ctx, arch, Reg(0))?; }
-                if state.num_returns > 1 { self.wasm_pop(ctx, arch, Reg(1))?; }
-                self.mov(ctx, arch, &reg(SP), &reg(FP))?;
-                self.ldp(ctx, arch, &reg(FP), &reg(LR), &mem_post(SP, 16))?;
-                if state.shard.is_some() {
-                    self.ldp(ctx, arch, &reg(SCR), &reg(Reg(9)), &mem_post(SP, 16))?;
-                }
-                self.ret(ctx, arch)
+                self.sysv_emit_epilogue(ctx, arch, state)
             }
             other => self.handle_insn(ctx, arch, state, func_imports, &[], &[], other, target),
         }
@@ -259,3 +359,50 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
 }
 
 impl<T: Writer<AArch64Label, Context> + WriterExt<Context> + ?Sized, Context> SysVWriterExt<Context> for T {}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod sysv_manyarg_tests {
+    use super::*;
+    use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+
+    /// Drive `sysv_emit_marshalled_call` and return (code bytes, target relocs).
+    fn marshal(arity: u32, results: u32, target: AArch64Label) -> (Vec<u8>, Vec<AArch64Label>) {
+        let mut w = AArch64Writer::<AArch64Label>::new();
+        let mut ctx = ();
+        SysVWriterExt::sysv_emit_marshalled_call(
+            &mut w, &mut ctx, AArch64Arch::default(), target, arity, results,
+        )
+        .unwrap();
+        let (bytes, _labels, relocs) = w.into_parts_with_relocs();
+        (bytes, relocs.into_iter().map(|r| r.label).collect())
+    }
+
+    #[test]
+    fn marshalled_call_targets_label_and_grows_with_arity() {
+        let (small, rel) = marshal(4, 1, AArch64Label::Indexed { idx: 0x8000_0000 });
+        let (big, _) = marshal(20, 1, AArch64Label::Indexed { idx: 0x8000_0000 });
+        // Exactly one relocation — the call branch — pointing at the requested target.
+        assert_eq!(rel.len(), 1);
+        assert!(matches!(&rel[0], AArch64Label::Indexed { idx } if *idx == 0x8000_0000));
+        // >8 args spill to the stack, so more code is emitted than for 4 args.
+        assert!(big.len() > small.len());
+    }
+
+    #[test]
+    fn no_stack_spill_within_eight_args() {
+        // 8 args fit entirely in X0..X7; 12 args spill 4 → strictly more code.
+        let (eight, _) = marshal(8, 0, AArch64Label::External { name: "libc__f".into() });
+        let (twelve, _) = marshal(12, 0, AArch64Label::External { name: "libc__f".into() });
+        assert!(twelve.len() > eight.len());
+    }
+
+    #[test]
+    fn import_target_emits_external_reloc() {
+        let (_b, rel) = marshal(3, 1, AArch64Label::External { name: "env__write".into() });
+        assert!(rel
+            .iter()
+            .any(|l| matches!(l, AArch64Label::External { name } if name.as_str() == "env__write")));
+    }
+}

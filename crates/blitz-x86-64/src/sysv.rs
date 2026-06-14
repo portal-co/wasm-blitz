@@ -244,18 +244,27 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
         let lit = |v: u64| MemArgKind::NoMem(ArgKind::Lit(v));
         self.mov(ctx, arch, &r15, &RSP)?; // R15 = operand base
         if is_import {
+            // System V: first 6 integer args in registers; args 7+ on the stack
+            // at [RSP + (i-6)*8]. Reserve a 16-aligned region big enough for the
+            // stack args plus one slot to preserve the operand base across the call.
+            let stack_args = arity.saturating_sub(6);
+            let bytes = ((stack_args as u64) * 8 + 8 + 15) & !15;
             for i in 0..arity.min(6) {
                 let disp = (arity - 1 - i) * 8;
                 self.mov(ctx, arch, &ARG_REGS[i as usize], &mem64(r15, disp))?;
             }
             self.mov(ctx, arch, &RSP, &r15)?;
-            self.mov64(ctx, arch, &RAX, 16)?;
+            self.mov64(ctx, arch, &RAX, bytes)?;
             self.sub(ctx, arch, &RSP, &RAX)?;
             self.and(ctx, arch, &RSP, &lit((-16i64) as u64))?;
-            self.mov(ctx, arch, &mem64(RSP, 0), &r15)?; // save base
+            for i in 6..arity {
+                self.mov(ctx, arch, &RAX, &mem64(r15, (arity - 1 - i) * 8))?;
+                self.mov(ctx, arch, &mem64(RSP, (i - 6) * 8), &RAX)?;
+            }
+            self.mov(ctx, arch, &mem64(RSP, stack_args * 8), &r15)?; // save base above args
             self.lea_label(ctx, arch, &RAX, target)?;
             self.call(ctx, arch, &RAX)?;
-            self.mov(ctx, arch, &r15, &mem64(RSP, 0))?; // restore base
+            self.mov(ctx, arch, &r15, &mem64(RSP, stack_args * 8))?; // restore base
             self.lea(ctx, arch, &RSP, &mem64(r15, arity * 8))?; // pop args
         } else {
             self.mov(ctx, arch, &RSP, &r15)?;
@@ -692,3 +701,45 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
 }
 
 impl<T: Writer<X64Label, Context> + NaiveExt<Context> + ?Sized, Context> SysVWriterExt<Context> for T {}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod sysv_manyarg_tests {
+    use super::*;
+    use portal_solutions_asm_x86_64::out::iced::IcedWriter;
+
+    /// Drive `sysv_emit_marshalled_call` and return (code bytes, target relocs).
+    fn marshal(arity: u32, results: u32, is_import: bool, target: X64Label) -> (Vec<u8>, Vec<X64Label>) {
+        let mut w: IcedWriter<X64Label> = IcedWriter::new(0);
+        let mut ctx = ();
+        SysVWriterExt::sysv_emit_marshalled_call(
+            &mut w, &mut ctx, X64Arch::default(), target, arity, results, is_import,
+        )
+        .unwrap();
+        let (bytes, _labels, relocs) = w.into_parts_with_relocs();
+        (bytes, relocs.into_iter().map(|r| r.label).collect())
+    }
+
+    #[test]
+    fn internal_call_marshals_all_args_and_grows() {
+        let (small, rel) = marshal(4, 1, false, X64Label::Func { r#fn: 0 });
+        let (big, _) = marshal(20, 1, false, X64Label::Func { r#fn: 0 });
+        // Exactly one relocation (the call target), pointing at Func{0}.
+        assert_eq!(rel.len(), 1);
+        assert!(matches!(&rel[0], X64Label::Func { r#fn } if *r#fn == 0));
+        // AllStack marshals every arg to the stack, so 20 args emit more than 4.
+        assert!(big.len() > small.len());
+    }
+
+    #[test]
+    fn import_spills_args_beyond_six() {
+        // 6-arg import: all in registers. 9-arg import: 3 spilled to the stack.
+        let (six, _) = marshal(6, 1, true, X64Label::External { name: "env__f".into() });
+        let (nine, rel) = marshal(9, 1, true, X64Label::External { name: "env__f".into() });
+        assert!(nine.len() > six.len(), "args 7+ must add stack-store instructions");
+        assert!(rel
+            .iter()
+            .any(|l| matches!(l, X64Label::External { name } if name.as_str() == "env__f")));
+    }
+}
