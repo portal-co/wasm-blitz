@@ -14,6 +14,8 @@
 //! # Bug coverage
 //! Each test is annotated with the bug(s) it exercises.
 
+mod log;
+
 use std::borrow::Cow;
 use std::fmt::{Display, Write as FmtWrite};
 use std::sync::atomic::{AtomicU64, Ordering};
