@@ -220,21 +220,28 @@ fn mem_post(base: Reg, disp: i32) -> MemArgKind {
 // ---------------------------------------------------------------------------
 
 /// Extension trait providing WASM code generation for AArch64 writers.
+/// Bytes per WASM operand-stack slot. The operand stack lives on the hardware
+/// SP, and AArch64 (notably macOS, which enforces SP alignment on every
+/// SP-relative access) requires SP to be 16-byte aligned. Each operand value is
+/// 8 bytes, but we consume a full 16-byte slot per push/pop so SP stays aligned.
+/// All operand-stack offset math (marshalling, tail calls) uses this stride.
+pub const WASM_SLOT: i32 = 16;
+
 pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
-    /// Push `r` onto the WASM stack (pre-decrement SP).
+    /// Push `r` onto the WASM stack (pre-decrement SP by a 16-byte slot).
     fn wasm_push(&mut self, ctx: &mut Context, arch: AArch64Arch, r: Reg)
         -> Result<(), Self::Error>
     {
-        // str r, [sp, #-8]!
-        self.str(ctx, arch, &reg(r), &mem_pre(SP, -8))
+        // str r, [sp, #-16]!
+        self.str(ctx, arch, &reg(r), &mem_pre(SP, -WASM_SLOT))
     }
 
     /// Pop top of WASM stack into `r`.
     fn wasm_pop(&mut self, ctx: &mut Context, arch: AArch64Arch, r: Reg)
         -> Result<(), Self::Error>
     {
-        // ldr r, [sp], #8
-        self.ldr(ctx, arch, &reg(r), &mem_post(SP, 8))
+        // ldr r, [sp], #16
+        self.ldr(ctx, arch, &reg(r), &mem_post(SP, WASM_SLOT))
     }
 
     /// Load local variable N into `dest`.
@@ -794,6 +801,20 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 self.ret(ctx, arch)
             }
 
+            Instruction::Unreachable => {
+                // Trap: BRK #0.
+                self.brk(ctx, arch, 0)
+            }
+            Instruction::I32WrapI64 => {
+                // Truncate to 32 bits: zero the upper word (mask with 0xFFFF_FFFF).
+                // The binary `and` only encodes the register form, so materialize
+                // the mask in a scratch register first.
+                self.wasm_pop(ctx, arch, T0)?;
+                self.mov_imm(ctx, arch, &reg(Reg(10)), 0xFFFF_FFFF)?;
+                self.and(ctx, arch, &reg(T0), &reg(T0), &reg(Reg(10)))?;
+                self.wasm_push(ctx, arch, T0)
+            }
+
             other => panic!("unimplemented WASM instruction in AArch64 naive handle_insn: {other:?}"),
         }
     }
@@ -848,7 +869,9 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
 
                 let locals_slots = state.local_count as i64 + state.control_depth as i64 * 2 + 2;
                 if locals_slots > 0 {
-                    let size = MemArgKind::NoMem(ArgKind::Lit((locals_slots * 8) as u64));
+                    // Round the frame to 16 bytes so SP stays 16-byte aligned.
+                    let bytes = (locals_slots as u64 * 8 + 15) & !15;
+                    let size = MemArgKind::NoMem(ArgKind::Lit(bytes));
                     self.sub(ctx, arch, &reg(SP), &reg(SP), &size).map_err(Err::from)?;
                 }
                 Ok(())

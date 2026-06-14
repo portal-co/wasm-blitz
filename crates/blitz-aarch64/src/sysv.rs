@@ -33,7 +33,7 @@ use portal_solutions_blitz_common::{
     wasm_encoder::{FuncType, reencode::Reencode},
 };
 
-use crate::naive::{CallAbi, State, WriterExt, SCR};
+use crate::naive::{CallAbi, State, WriterExt, SCR, WASM_SLOT};
 use crate::AArch64Label;
 use crate::codegen::TraceBase;
 use crate::{FP, LR, SP};
@@ -139,11 +139,12 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         let s10 = Reg(10);
         let lit = |v: u64| MemArgKind::NoMem(ArgKind::Lit(v));
 
-        // base = operand stack pointer.
+        // base = operand stack pointer. Operand values are WASM_SLOT (16) bytes
+        // apart; outgoing AAPCS64 stack args are the standard 8 bytes apart.
         self.mov(ctx, arch, &reg(base), &reg(SP))?;
         // First min(arity, 8) args -> X0..X7.
         for i in 0..arity.min(8) {
-            let disp = ((arity - 1 - i) * 8) as i32;
+            let disp = (arity - 1 - i) as i32 * WASM_SLOT;
             self.ldr(ctx, arch, &reg(ARG_REGS[i as usize]), &mem_base_disp(base, disp))?;
         }
         // Reserve a 16-byte-aligned outgoing region: stack overflow args (i>=8)
@@ -157,9 +158,10 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         self.mov_imm(ctx, arch, &reg(s10), (-16i64) as u64)?;
         self.and(ctx, arch, &reg(s9), &reg(s9), &reg(s10))?;
         self.mov(ctx, arch, &reg(SP), &reg(s9))?;
-        // Spill args 8.. to [sp + (i-8)*8].
+        // Spill args 8.. : read from the operand stack (16-byte slots), write to
+        // the outgoing AAPCS64 stack at [sp + (i-8)*8].
         for i in 8..arity {
-            let src = ((arity - 1 - i) * 8) as i32;
+            let src = (arity - 1 - i) as i32 * WASM_SLOT;
             self.ldr(ctx, arch, &reg(s10), &mem_base_disp(base, src))?;
             let dst = ((i - 8) * 8) as i32;
             self.str(ctx, arch, &reg(s10), &mem_base_disp(SP, dst))?;
@@ -169,9 +171,9 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         self.str(ctx, arch, &reg(base), &mem_base_disp(SP, base_slot))?;
         self.adr_label(ctx, arch, &reg(s9), target)?;
         self.bl(ctx, arch, &reg(s9))?;
-        // Restore base, pop all args (operand sp = base + arity*8).
+        // Restore base, pop all args (operand sp = base + arity*WASM_SLOT).
         self.ldr(ctx, arch, &reg(base), &mem_base_disp(SP, base_slot))?;
-        self.add(ctx, arch, &reg(SP), &reg(base), &lit((arity as u64) * 8))?;
+        self.add(ctx, arch, &reg(SP), &reg(base), &lit(arity as u64 * WASM_SLOT as u64))?;
         // Push results from X0/X1.
         if results > 1 { self.wasm_push(ctx, arch, Reg(1))?; }
         if results > 0 { self.wasm_push(ctx, arch, Reg(0))?; }
@@ -200,18 +202,19 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
     {
         let base = Reg(15);
         let s9 = Reg(9);
-        // base = operand stack pointer.
+        // base = operand stack pointer (operand values are 16-byte slots).
         self.mov(ctx, arch, &reg(base), &reg(SP))?;
         // First min(arity,8) args -> X0..X7.
         for i in 0..arity.min(8) {
-            let disp = ((arity - 1 - i) * 8) as i32;
+            let disp = (arity - 1 - i) as i32 * WASM_SLOT;
             self.ldr(ctx, arch, &reg(ARG_REGS[i as usize]), &mem_base_disp(base, disp))?;
         }
-        // Overwrite our incoming stack-arg slots with args 8.. (they sit at the
-        // same place the callee will read its incoming stack args after we restore SP).
+        // Overwrite our incoming stack-arg slots with args 8.. : read from the
+        // operand stack (16-byte slots), write to the incoming AAPCS64 slots
+        // (8-byte) where the callee will read them after we restore SP.
         let scr_extra: i32 = if shard { 16 } else { 0 };
         for i in 8..arity {
-            let src = ((arity - 1 - i) * 8) as i32;
+            let src = (arity - 1 - i) as i32 * WASM_SLOT;
             self.ldr(ctx, arch, &reg(s9), &mem_base_disp(base, src))?;
             let dst = 16 + scr_extra + ((i as i32 - 8) * 8);
             self.str(ctx, arch, &reg(s9), &mem_base_disp(FP, dst))?;
@@ -362,7 +365,9 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 // One extra slot (frame bottom) holds the spilled trace base for
                 // mid-function sites.
                 let locals_slots = data.num_params as i64 + state.control_depth as i64 * 2 + 3;
-                let size = MemArgKind::NoMem(ArgKind::Lit((locals_slots * 8) as u64));
+                // Round the frame to 16 bytes so SP stays 16-byte aligned.
+                let frame_bytes = (locals_slots as u64 * 8 + 15) & !15;
+                let size = MemArgKind::NoMem(ArgKind::Lit(frame_bytes));
                 self.sub(ctx, arch, &reg(SP), &reg(SP), &size).map_err(Err::from)?;
 
                 // Spill the virtual-param base (x12) to the bottom frame slot and
