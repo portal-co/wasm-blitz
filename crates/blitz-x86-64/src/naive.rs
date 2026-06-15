@@ -398,6 +398,91 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         Ok(())
     }
 
+    /// Compute the effective address `[popped_addr + offset]` into RAX, applying
+    /// the memory base. Leaves the address in RAX (Reg(0)); clobbers Reg(1).
+    fn mem_effective_addr(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        state: &State<'_>,
+        offset: u64,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        self.mov64(ctx, arch, &Reg(1), offset)?;
+        self.lea(ctx, arch, &Reg(0), &MemArgKind::Mem {
+            base: Reg(0), offset: Some((Reg(1), 1)), disp: 0,
+            size: MemorySize::_64, reg_class: RegisterClass::Gpr, segment: Default::default(),
+        })?;
+        self.apply_mem_base(ctx, arch, state, Reg(0), Reg(1))
+    }
+
+    /// Width-generic load. `access` is the load width; `signed` sign-extends a
+    /// sub-word load; `to64` selects i64 vs i32 result (i32 stays zero-extended
+    /// in the high 32 bits — the backend relies on that for full-register compares).
+    fn mem_load(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        state: &State<'_>,
+        offset: u64,
+        access: MemorySize,
+        signed: bool,
+        to64: bool,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        self.pop(ctx, arch, &Reg(0))?; // address
+        self.mem_effective_addr(ctx, arch, state, offset)?;
+        let mem = MemArgKind::Mem {
+            base: Reg(0), offset: None, disp: 0,
+            size: access, reg_class: RegisterClass::Gpr, segment: Default::default(),
+        };
+        match (access, signed) {
+            (MemorySize::_64, _) => self.mov(ctx, arch, &Reg(0), &mem)?,
+            (MemorySize::_32, false) => {
+                // mov eax, dword [addr] — zero-extends to rax.
+                let eax = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 });
+                self.mov(ctx, arch, &eax, &mem)?;
+            }
+            (_, false) => self.movzx(ctx, arch, &Reg(0), &mem)?, // byte/word zero-extend
+            (_, true) => {
+                self.movsx(ctx, arch, &Reg(0), &mem)?; // sign-extend access-width to 64
+                if !to64 {
+                    // i32 result: keep low 32 (sign-extended within 32), zero upper 32.
+                    let eax = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 });
+                    self.mov(ctx, arch, &eax, &eax)?;
+                }
+            }
+        }
+        self.push(ctx, arch, &Reg(0))
+    }
+
+    /// Width-generic store (writes the low `access` bits of the value).
+    fn mem_store(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        state: &State<'_>,
+        offset: u64,
+        access: MemorySize,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        self.pop(ctx, arch, &Reg(2))?; // value → RDX
+        self.pop(ctx, arch, &Reg(0))?; // addr → RAX
+        self.mem_effective_addr(ctx, arch, state, offset)?;
+        let mem = MemArgKind::Mem {
+            base: Reg(0), offset: None, disp: 0,
+            size: access, reg_class: RegisterClass::Gpr, segment: Default::default(),
+        };
+        let val = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(2), size: access });
+        self.mov(ctx, arch, &mem, &val)
+    }
+
     fn _handle_op(
         &mut self,
         ctx: &mut Context,
@@ -800,6 +885,51 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     segment: Default::default(),
                 }, &edx)?;
             }
+
+            // ---- sub-word loads (zero/sign-extended) ----
+            Instruction::I32Load8U(m)  => self.mem_load(ctx, arch, state, m.offset, MemorySize::_8,  false, false)?,
+            Instruction::I32Load8S(m)  => self.mem_load(ctx, arch, state, m.offset, MemorySize::_8,  true,  false)?,
+            Instruction::I32Load16U(m) => self.mem_load(ctx, arch, state, m.offset, MemorySize::_16, false, false)?,
+            Instruction::I32Load16S(m) => self.mem_load(ctx, arch, state, m.offset, MemorySize::_16, true,  false)?,
+            Instruction::I64Load8U(m)  => self.mem_load(ctx, arch, state, m.offset, MemorySize::_8,  false, true)?,
+            Instruction::I64Load8S(m)  => self.mem_load(ctx, arch, state, m.offset, MemorySize::_8,  true,  true)?,
+            Instruction::I64Load16U(m) => self.mem_load(ctx, arch, state, m.offset, MemorySize::_16, false, true)?,
+            Instruction::I64Load16S(m) => self.mem_load(ctx, arch, state, m.offset, MemorySize::_16, true,  true)?,
+            Instruction::I64Load32U(m) => self.mem_load(ctx, arch, state, m.offset, MemorySize::_32, false, true)?,
+            Instruction::I64Load32S(m) => self.mem_load(ctx, arch, state, m.offset, MemorySize::_32, true,  true)?,
+
+            // ---- sub-word stores ----
+            Instruction::I32Store8(m)  => self.mem_store(ctx, arch, state, m.offset, MemorySize::_8)?,
+            Instruction::I32Store16(m) => self.mem_store(ctx, arch, state, m.offset, MemorySize::_16)?,
+            Instruction::I64Store8(m)  => self.mem_store(ctx, arch, state, m.offset, MemorySize::_8)?,
+            Instruction::I64Store16(m) => self.mem_store(ctx, arch, state, m.offset, MemorySize::_16)?,
+
+            // ---- arithmetic shift right (sar) ----
+            Instruction::I32ShrS | Instruction::I64ShrS => {
+                let cl = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(1), size: MemorySize::_8 });
+                self.pop(ctx, arch, &Reg(1))?; // shift count → RCX
+                self.pop(ctx, arch, &Reg(0))?; // value → RAX
+                if let Instruction::I32ShrS = op {
+                    // 32-bit sar replicates bit 31 and zero-extends the result.
+                    let eax = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 });
+                    self.sar(ctx, arch, &eax, &cl)?;
+                } else {
+                    self.sar(ctx, arch, &Reg(0), &cl)?;
+                }
+                self.push(ctx, arch, &Reg(0))?;
+            }
+
+            // ---- select: c ? a : b (pop c, b, a) ----
+            Instruction::Select | Instruction::TypedSelect { .. } => {
+                self.pop(ctx, arch, &Reg(1))?; // condition → RCX
+                self.pop(ctx, arch, &Reg(2))?; // b (false value) → RDX
+                self.pop(ctx, arch, &Reg(0))?; // a (true value) → RAX
+                self.cmp0(ctx, arch, &Reg(1))?;
+                // if condition == 0, take b.
+                self.cmovcc(ctx, arch, ConditionCode::E, &Reg(0), &Reg(2))?;
+                self.push(ctx, arch, &Reg(0))?;
+            }
+
             Instruction::LocalGet(local_index) => {
                 self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
                 self.lea(

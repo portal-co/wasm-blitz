@@ -2927,6 +2927,64 @@ fn test_unicorn_aarch64_deep_tailchain() {
     assert_eq!(run_deep_tailchain(NativeArch::AArch64, n, 0), n * (n + 1) / 2);
 }
 
+// ── Load/store width family (sub-word, signed/unsigned) ───────────────────────
+//
+// Stores a 64-bit pattern and a 16-bit value into linear memory, reads them back
+// through every load width/sign, and returns the sum — exercising the full
+// load/store-width family under the `Raw` mem_base (address == host pointer, so
+// the test uses an address inside Unicorn's mapped stack region).
+
+const LSW_ADDR: i32 = 0x21_0000; // inside the Unicorn STACK mapping (0x200000..0x240000)
+const LSW_VAL: u64 = 0x8090_A0B0_C0D0_E0F0;
+
+fn loadstore_widths_wasm() -> Vec<u8> {
+    use wasm_encoder::MemArg;
+    let m = |align| MemArg { offset: 0, align, memory_index: 0 };
+    let i = [
+        // mem[A..A+8] = LSW_VAL
+        Instruction::I32Const(LSW_ADDR), Instruction::I64Const(LSW_VAL as i64), Instruction::I64Store(m(3)),
+        // mem16[A+8] = 0x1234 (narrow store)
+        Instruction::I32Const(LSW_ADDR + 8), Instruction::I64Const(0x1234), Instruction::I64Store16(m(1)),
+        // sum = load8_u + load8_s + load16_u + load16_s + load32_u + load32_s + load16_u(A+8)
+        Instruction::I32Const(LSW_ADDR), Instruction::I64Load8U(m(0)),
+        Instruction::I32Const(LSW_ADDR), Instruction::I64Load8S(m(0)), Instruction::I64Add,
+        Instruction::I32Const(LSW_ADDR), Instruction::I64Load16U(m(1)), Instruction::I64Add,
+        Instruction::I32Const(LSW_ADDR), Instruction::I64Load16S(m(1)), Instruction::I64Add,
+        Instruction::I32Const(LSW_ADDR), Instruction::I64Load32U(m(2)), Instruction::I64Add,
+        Instruction::I32Const(LSW_ADDR), Instruction::I64Load32S(m(2)), Instruction::I64Add,
+        Instruction::I32Const(LSW_ADDR + 8), Instruction::I64Load16U(m(1)), Instruction::I64Add,
+    ];
+    make_module_with_memory(&[], &[ValType::I64], &i)
+}
+
+fn loadstore_widths_expected() -> u64 {
+    let v = LSW_VAL;
+    let a = (v as u8) as u64;
+    let b = (v as u8 as i8 as i64) as u64;
+    let c = (v as u16) as u64;
+    let d = (v as u16 as i16 as i64) as u64;
+    let e = (v as u32) as u64;
+    let f = (v as u32 as i32 as i64) as u64;
+    a.wrapping_add(b).wrapping_add(c).wrapping_add(d)
+        .wrapping_add(e).wrapping_add(f).wrapping_add(0x1234)
+}
+
+fn assert_loadstore_widths(arch: NativeArch) {
+    let wasm = loadstore_widths_wasm();
+    let (code, entry) = compile_allstack_binary(&wasm, arch);
+    assert_eq!(run_allstack_entry(arch, &code, entry, &[], 0), loadstore_widths_expected());
+}
+
+#[test]
+fn test_unicorn_x86_64_loadstore_widths() {
+    assert_loadstore_widths(NativeArch::X86_64);
+}
+
+#[test]
+fn test_unicorn_aarch64_loadstore_widths() {
+    assert_loadstore_widths(NativeArch::AArch64);
+}
+
 // ---------------------------------------------------------------------------
 // Stubs and helpers for native execution tests
 // ---------------------------------------------------------------------------

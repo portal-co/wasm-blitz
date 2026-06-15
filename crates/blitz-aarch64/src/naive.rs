@@ -184,6 +184,18 @@ fn reg(r: Reg) -> MemArgKind {
 fn reg32(r: Reg) -> MemArgKind {
     MemArgKind::NoMem(ArgKind::Reg { reg: r, size: MemorySize::_32 })
 }
+fn reg_sz(r: Reg, size: MemorySize) -> MemArgKind {
+    MemArgKind::NoMem(ArgKind::Reg { reg: r, size })
+}
+/// Access width in bits for a sub-word memory size (`_8`/`_16`/`_32`).
+fn sz_bits(size: MemorySize) -> u64 {
+    match size {
+        MemorySize::_8 => 8,
+        MemorySize::_16 => 16,
+        MemorySize::_32 => 32,
+        _ => 64,
+    }
+}
 fn mem_base_disp(base: Reg, disp: i32) -> MemArgKind {
     MemArgKind::Mem {
         base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
@@ -351,12 +363,82 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         }
         // addr := (uint32_t)addr — zero-extend the low 32 bits.
         self.uxt(ctx, arch, &reg(addr), &reg32(addr))?;
-        // scratch := __wasm_mem (load the base pointer value).
-        self.adr_label(ctx, arch, &reg(scratch), AArch64Label::External { name: "__wasm_mem".into() })?;
+        // scratch := __wasm_mem (load the base pointer value). External symbol →
+        // ADRP+ADD (Mach-O can't relocate a plain ADR).
+        crate::load_label_addr(self, ctx, arch, &reg(scratch), AArch64Label::External { name: "__wasm_mem".into() })?;
         self.ldr(ctx, arch, &reg(scratch), &mem_base_disp(scratch, 0))?;
         // addr := addr + scratch.
         self.add(ctx, arch, &reg(addr), &reg(addr), &reg(scratch))?;
         Ok(())
+    }
+
+    /// Width-generic memory load. `access` is the load width (`_8/_16/_32/_64`);
+    /// `signed` sign-extends a sub-word load; `to64` selects an i64 vs i32 result
+    /// (i32 results stay zero-extended in the high 32 bits, per the operand model).
+    fn mem_load(
+        &mut self,
+        ctx: &mut Context,
+        arch: AArch64Arch,
+        state: &State<'_>,
+        offset: i32,
+        access: MemorySize,
+        signed: bool,
+        to64: bool,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        self.wasm_pop(ctx, arch, T0)?; // address
+        self.apply_mem_base(ctx, arch, state, T0, T2)?;
+        let mem = MemArgKind::Mem {
+            base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
+            offset: None,
+            disp: offset,
+            size: access,
+            reg_class: RegisterClass::Gpr,
+            mode: AddressingMode::Offset,
+        };
+        // LDRB/LDRH/LDR(W)/LDR(X): all zero-extend into the destination register.
+        self.ldr(ctx, arch, &reg_sz(T1, access), &mem)?;
+        if signed && !matches!(access, MemorySize::_64) {
+            let w = sz_bits(access);
+            if to64 {
+                let sh = MemArgKind::NoMem(ArgKind::Lit(64 - w));
+                self.lsl(ctx, arch, &reg(T1), &reg(T1), &sh)?;
+                self.asr(ctx, arch, &reg(T1), &reg(T1), &sh)?;
+            } else {
+                let sh = MemArgKind::NoMem(ArgKind::Lit(32 - w));
+                self.lsl(ctx, arch, &reg32(T1), &reg32(T1), &sh)?;
+                self.asr(ctx, arch, &reg32(T1), &reg32(T1), &sh)?;
+            }
+        }
+        self.wasm_push(ctx, arch, T1)
+    }
+
+    /// Width-generic memory store (writes the low `access` bits of the value).
+    fn mem_store(
+        &mut self,
+        ctx: &mut Context,
+        arch: AArch64Arch,
+        state: &State<'_>,
+        offset: i32,
+        access: MemorySize,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        self.wasm_pop(ctx, arch, T1)?; // value
+        self.wasm_pop(ctx, arch, T0)?; // address
+        self.apply_mem_base(ctx, arch, state, T0, T2)?;
+        let mem = MemArgKind::Mem {
+            base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
+            offset: None,
+            disp: offset,
+            size: access,
+            reg_class: RegisterClass::Gpr,
+            mode: AddressingMode::Offset,
+        };
+        self.str(ctx, arch, &reg_sz(T1, access), &mem)
     }
 
     /// Handle a single WASM instruction (the inner match).
@@ -596,6 +678,24 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 self.str(ctx, arch, &reg32(T1), &mem)
             }
 
+            // ---- sub-word loads (zero/sign-extended) ----
+            Instruction::I32Load8U(m)  => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_8,  false, false),
+            Instruction::I32Load8S(m)  => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_8,  true,  false),
+            Instruction::I32Load16U(m) => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_16, false, false),
+            Instruction::I32Load16S(m) => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_16, true,  false),
+            Instruction::I64Load8U(m)  => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_8,  false, true),
+            Instruction::I64Load8S(m)  => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_8,  true,  true),
+            Instruction::I64Load16U(m) => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_16, false, true),
+            Instruction::I64Load16S(m) => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_16, true,  true),
+            Instruction::I64Load32U(m) => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_32, false, true),
+            Instruction::I64Load32S(m) => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_32, true,  true),
+
+            // ---- sub-word stores ----
+            Instruction::I32Store8(m)  => self.mem_store(ctx, arch, state, m.offset as i32, MemorySize::_8),
+            Instruction::I32Store16(m) => self.mem_store(ctx, arch, state, m.offset as i32, MemorySize::_16),
+            Instruction::I64Store8(m)  => self.mem_store(ctx, arch, state, m.offset as i32, MemorySize::_8),
+            Instruction::I64Store16(m) => self.mem_store(ctx, arch, state, m.offset as i32, MemorySize::_16),
+
             // ---- memory.size / memory.grow ----
             Instruction::MemorySize(_) => {
                 // Load address of __wasm_mem_pages, load 32-bit page count.
@@ -822,6 +922,32 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 self.wasm_pop(ctx, arch, T0)?;
                 self.mov_imm(ctx, arch, &reg(Reg(10)), 0xFFFF_FFFF)?;
                 self.and(ctx, arch, &reg(T0), &reg(T0), &reg(Reg(10)))?;
+                self.wasm_push(ctx, arch, T0)
+            }
+
+            // Reinterprets are no-ops: FP values already ride as raw bits.
+            Instruction::F32ReinterpretI32
+            | Instruction::I32ReinterpretF32
+            | Instruction::F64ReinterpretI64
+            | Instruction::I64ReinterpretF64 => Ok(()),
+
+            // FP constants ride as raw bits on the GP operand stack.
+            Instruction::F64Const(v) => {
+                self.mov_imm(ctx, arch, &reg(T0), v.bits())?;
+                self.wasm_push(ctx, arch, T0)
+            }
+            Instruction::F32Const(v) => {
+                self.mov_imm(ctx, arch, &reg(T0), v.bits() as u64)?;
+                self.wasm_push(ctx, arch, T0)
+            }
+
+            // select: c ? a : b (pop c, b, a).
+            Instruction::Select | Instruction::TypedSelect { .. } => {
+                self.wasm_pop(ctx, arch, T2)?; // condition
+                self.wasm_pop(ctx, arch, T1)?; // b (false value)
+                self.wasm_pop(ctx, arch, T0)?; // a (true value)
+                self.cmp(ctx, arch, &reg(T2), &MemArgKind::NoMem(ArgKind::Lit(0)))?;
+                self.csel(ctx, arch, ConditionCode::NE, &reg(T0), &reg(T0), &reg(T1))?;
                 self.wasm_push(ctx, arch, T0)
             }
 
