@@ -181,6 +181,12 @@ pub const SCR: Reg = Reg(27);
 const T0: Reg = Reg(9);
 const T1: Reg = Reg(10);
 const T2: Reg = Reg(11);
+/// FP scratch registers (V0–V2 / D0–D2 / S0–S2). FP values ride as raw bits on
+/// the GP operand stack; these hold them only transiently inside a single FP op,
+/// so they never collide with the AllStack register file (which lives in memory).
+const FD0: Reg = Reg(0);
+const FD1: Reg = Reg(1);
+const FD2: Reg = Reg(2);
 
 fn reg(r: Reg) -> MemArgKind {
     MemArgKind::NoMem(ArgKind::Reg { reg: r, size: MemorySize::_64 })
@@ -299,6 +305,109 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         self.mov_imm(ctx, arch, &reg(T1), 1)?;
         self.csel(ctx, arch, cc, &reg(T2), &reg(T1), &reg(T0))?;
         self.wasm_push(ctx, arch, T2)
+    }
+
+    // ---- floating-point helpers (bit-threading via GP<->FP moves) ----
+    /// Pop two F64 operands (as bits), move into D0/D1, run `f(dst=D2, a=D0, b=D1)`,
+    /// then push the D2 result bits.
+    fn fp_binop_d<F>(&mut self, ctx: &mut Context, arch: AArch64Arch, f: F)
+        -> Result<(), Self::Error>
+    where
+        F: FnOnce(&mut Self, &mut Context, AArch64Arch, Reg, Reg, Reg) -> Result<(), Self::Error>,
+    {
+        self.wasm_pop(ctx, arch, T1)?;
+        self.wasm_pop(ctx, arch, T0)?;
+        self.fmov_gp_to_d(ctx, arch, &reg(FD0), &reg(T0))?;
+        self.fmov_gp_to_d(ctx, arch, &reg(FD1), &reg(T1))?;
+        f(self, ctx, arch, FD2, FD0, FD1)?;
+        self.fmov_d_to_gp(ctx, arch, &reg(T2), &reg(FD2))?;
+        self.wasm_push(ctx, arch, T2)
+    }
+
+    /// F32 counterpart of [`Self::fp_binop_d`] (S registers).
+    fn fp_binop_s<F>(&mut self, ctx: &mut Context, arch: AArch64Arch, f: F)
+        -> Result<(), Self::Error>
+    where
+        F: FnOnce(&mut Self, &mut Context, AArch64Arch, Reg, Reg, Reg) -> Result<(), Self::Error>,
+    {
+        self.wasm_pop(ctx, arch, T1)?;
+        self.wasm_pop(ctx, arch, T0)?;
+        self.fmov_gp_to_s(ctx, arch, &reg(FD0), &reg(T0))?;
+        self.fmov_gp_to_s(ctx, arch, &reg(FD1), &reg(T1))?;
+        f(self, ctx, arch, FD2, FD0, FD1)?;
+        self.fmov_s_to_gp(ctx, arch, &reg(T2), &reg(FD2))?;
+        self.wasm_push(ctx, arch, T2)
+    }
+
+    /// Pop one F64 operand, run `f(dst=D1, src=D0)`, push the result.
+    fn fp_unop_d<F>(&mut self, ctx: &mut Context, arch: AArch64Arch, f: F)
+        -> Result<(), Self::Error>
+    where
+        F: FnOnce(&mut Self, &mut Context, AArch64Arch, Reg, Reg) -> Result<(), Self::Error>,
+    {
+        self.wasm_pop(ctx, arch, T0)?;
+        self.fmov_gp_to_d(ctx, arch, &reg(FD0), &reg(T0))?;
+        f(self, ctx, arch, FD1, FD0)?;
+        self.fmov_d_to_gp(ctx, arch, &reg(T1), &reg(FD1))?;
+        self.wasm_push(ctx, arch, T1)
+    }
+
+    /// F32 counterpart of [`Self::fp_unop_d`].
+    fn fp_unop_s<F>(&mut self, ctx: &mut Context, arch: AArch64Arch, f: F)
+        -> Result<(), Self::Error>
+    where
+        F: FnOnce(&mut Self, &mut Context, AArch64Arch, Reg, Reg) -> Result<(), Self::Error>,
+    {
+        self.wasm_pop(ctx, arch, T0)?;
+        self.fmov_gp_to_s(ctx, arch, &reg(FD0), &reg(T0))?;
+        f(self, ctx, arch, FD1, FD0)?;
+        self.fmov_s_to_gp(ctx, arch, &reg(T1), &reg(FD1))?;
+        self.wasm_push(ctx, arch, T1)
+    }
+
+    /// Pop two F64 operands, `fcmp` them, push the i32 boolean for `cc`.
+    /// WASM compares are false on NaN (except `ne`); the caller selects `cc`
+    /// accordingly (eq=EQ, ne=NE, lt=MI, gt=GT, le=LS, ge=GE).
+    fn fp_cmp_d(&mut self, ctx: &mut Context, arch: AArch64Arch, cc: ConditionCode)
+        -> Result<(), Self::Error>
+    {
+        self.wasm_pop(ctx, arch, T1)?;
+        self.wasm_pop(ctx, arch, T0)?;
+        self.fmov_gp_to_d(ctx, arch, &reg(FD0), &reg(T0))?;
+        self.fmov_gp_to_d(ctx, arch, &reg(FD1), &reg(T1))?;
+        self.fcmp(ctx, arch, &reg(FD0), &reg(FD1))?;
+        self.mov_imm(ctx, arch, &reg(T0), 0)?;
+        self.mov_imm(ctx, arch, &reg(T1), 1)?;
+        self.csel(ctx, arch, cc, &reg(T2), &reg(T1), &reg(T0))?;
+        self.wasm_push(ctx, arch, T2)
+    }
+
+    /// F32 counterpart of [`Self::fp_cmp_d`].
+    fn fp_cmp_s(&mut self, ctx: &mut Context, arch: AArch64Arch, cc: ConditionCode)
+        -> Result<(), Self::Error>
+    {
+        self.wasm_pop(ctx, arch, T1)?;
+        self.wasm_pop(ctx, arch, T0)?;
+        self.fmov_gp_to_s(ctx, arch, &reg(FD0), &reg(T0))?;
+        self.fmov_gp_to_s(ctx, arch, &reg(FD1), &reg(T1))?;
+        self.fcmp_s(ctx, arch, &reg(FD0), &reg(FD1))?;
+        self.mov_imm(ctx, arch, &reg(T0), 0)?;
+        self.mov_imm(ctx, arch, &reg(T1), 1)?;
+        self.csel(ctx, arch, cc, &reg(T2), &reg(T1), &reg(T0))?;
+        self.wasm_push(ctx, arch, T2)
+    }
+
+    /// Pop one value into T0, run `f` (which produces the result in T1 using
+    /// FD0/FD1 as FP scratch), and push T1. Used for all int<->fp and f32<->f64
+    /// conversions.
+    fn fp_convert<F>(&mut self, ctx: &mut Context, arch: AArch64Arch, f: F)
+        -> Result<(), Self::Error>
+    where
+        F: FnOnce(&mut Self, &mut Context, AArch64Arch) -> Result<(), Self::Error>,
+    {
+        self.wasm_pop(ctx, arch, T0)?;
+        f(self, ctx, arch)?;
+        self.wasm_push(ctx, arch, T1)
     }
 
     // ---- branch helper ----
@@ -621,7 +730,9 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             Instruction::I64GeU | Instruction::I32GeU => self.cmp_push_bool(ctx, arch, ConditionCode::HS),
 
             // ---- memory loads (linear memory) ----
-            Instruction::I64Load(m) => {
+            // F64 load/store reuse the i64 paths (FP values ride as raw bits);
+            // F32 load/store reuse the i32 (low-32, zero-extended) paths.
+            Instruction::I64Load(m) | Instruction::F64Load(m) => {
                 self.wasm_pop(ctx, arch, T0)?; // address
                 self.apply_mem_base(ctx, arch, state, T0, T2)?;
                 let mem = MemArgKind::Mem {
@@ -635,7 +746,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 self.ldr(ctx, arch, &reg(T1), &mem)?;
                 self.wasm_push(ctx, arch, T1)
             }
-            Instruction::I32Load(m) => {
+            Instruction::I32Load(m) | Instruction::F32Load(m) => {
                 self.wasm_pop(ctx, arch, T0)?;
                 self.apply_mem_base(ctx, arch, state, T0, T2)?;
                 let mem = MemArgKind::Mem {
@@ -652,7 +763,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             }
 
             // ---- memory stores ----
-            Instruction::I64Store(m) => {
+            Instruction::I64Store(m) | Instruction::F64Store(m) => {
                 self.wasm_pop(ctx, arch, T1)?; // value
                 self.wasm_pop(ctx, arch, T0)?; // address
                 self.apply_mem_base(ctx, arch, state, T0, T2)?;
@@ -666,8 +777,8 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 };
                 self.str(ctx, arch, &reg(T1), &mem)
             }
-            // i32.store and i64.store32 both write the low 32 bits to memory.
-            Instruction::I32Store(m) | Instruction::I64Store32(m) => {
+            // i32.store, i64.store32 and f32.store all write the low 32 bits.
+            Instruction::I32Store(m) | Instruction::I64Store32(m) | Instruction::F32Store(m) => {
                 self.wasm_pop(ctx, arch, T1)?; // value
                 self.wasm_pop(ctx, arch, T0)?; // address
                 self.apply_mem_base(ctx, arch, state, T0, T2)?;
@@ -934,6 +1045,66 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             | Instruction::I32ReinterpretF32
             | Instruction::F64ReinterpretI64
             | Instruction::I64ReinterpretF64 => Ok(()),
+
+            // ---- F64 arithmetic ----
+            Instruction::F64Add => self.fp_binop_d(ctx, arch, |w, c, a, d, x, y| w.fadd(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::F64Sub => self.fp_binop_d(ctx, arch, |w, c, a, d, x, y| w.fsub(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::F64Mul => self.fp_binop_d(ctx, arch, |w, c, a, d, x, y| w.fmul(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::F64Div => self.fp_binop_d(ctx, arch, |w, c, a, d, x, y| w.fdiv(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::F64Min => self.fp_binop_d(ctx, arch, |w, c, a, d, x, y| w.fmin(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::F64Max => self.fp_binop_d(ctx, arch, |w, c, a, d, x, y| w.fmax(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::F64Sqrt => self.fp_unop_d(ctx, arch, |w, c, a, d, x| w.fsqrt(c, a, &reg(d), &reg(x))),
+            Instruction::F64Abs => self.fp_unop_d(ctx, arch, |w, c, a, d, x| w.fabs(c, a, &reg(d), &reg(x))),
+            Instruction::F64Neg => self.fp_unop_d(ctx, arch, |w, c, a, d, x| w.fneg(c, a, &reg(d), &reg(x))),
+
+            // ---- F32 arithmetic ----
+            Instruction::F32Add => self.fp_binop_s(ctx, arch, |w, c, a, d, x, y| w.fadd_s(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::F32Sub => self.fp_binop_s(ctx, arch, |w, c, a, d, x, y| w.fsub_s(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::F32Mul => self.fp_binop_s(ctx, arch, |w, c, a, d, x, y| w.fmul_s(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::F32Div => self.fp_binop_s(ctx, arch, |w, c, a, d, x, y| w.fdiv_s(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::F32Min => self.fp_binop_s(ctx, arch, |w, c, a, d, x, y| w.fmin_s(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::F32Max => self.fp_binop_s(ctx, arch, |w, c, a, d, x, y| w.fmax_s(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::F32Sqrt => self.fp_unop_s(ctx, arch, |w, c, a, d, x| w.fsqrt_s(c, a, &reg(d), &reg(x))),
+            Instruction::F32Abs => self.fp_unop_s(ctx, arch, |w, c, a, d, x| w.fabs_s(c, a, &reg(d), &reg(x))),
+            Instruction::F32Neg => self.fp_unop_s(ctx, arch, |w, c, a, d, x| w.fneg_s(c, a, &reg(d), &reg(x))),
+
+            // ---- FP compares (false on NaN except `ne`) ----
+            Instruction::F64Eq => self.fp_cmp_d(ctx, arch, ConditionCode::EQ),
+            Instruction::F64Ne => self.fp_cmp_d(ctx, arch, ConditionCode::NE),
+            Instruction::F64Lt => self.fp_cmp_d(ctx, arch, ConditionCode::MI),
+            Instruction::F64Gt => self.fp_cmp_d(ctx, arch, ConditionCode::GT),
+            Instruction::F64Le => self.fp_cmp_d(ctx, arch, ConditionCode::LS),
+            Instruction::F64Ge => self.fp_cmp_d(ctx, arch, ConditionCode::GE),
+            Instruction::F32Eq => self.fp_cmp_s(ctx, arch, ConditionCode::EQ),
+            Instruction::F32Ne => self.fp_cmp_s(ctx, arch, ConditionCode::NE),
+            Instruction::F32Lt => self.fp_cmp_s(ctx, arch, ConditionCode::MI),
+            Instruction::F32Gt => self.fp_cmp_s(ctx, arch, ConditionCode::GT),
+            Instruction::F32Le => self.fp_cmp_s(ctx, arch, ConditionCode::LS),
+            Instruction::F32Ge => self.fp_cmp_s(ctx, arch, ConditionCode::GE),
+
+            // ---- conversions: int -> fp (source bits already in T0/GP) ----
+            Instruction::F64ConvertI32S => self.fp_convert(ctx, arch, |w, c, a| { w.scvtf_d_w(c, a, &reg(FD0), &reg(T0))?; w.fmov_d_to_gp(c, a, &reg(T1), &reg(FD0)) }),
+            Instruction::F64ConvertI32U => self.fp_convert(ctx, arch, |w, c, a| { w.ucvtf_d_w(c, a, &reg(FD0), &reg(T0))?; w.fmov_d_to_gp(c, a, &reg(T1), &reg(FD0)) }),
+            Instruction::F64ConvertI64S => self.fp_convert(ctx, arch, |w, c, a| { w.scvtf_d_x(c, a, &reg(FD0), &reg(T0))?; w.fmov_d_to_gp(c, a, &reg(T1), &reg(FD0)) }),
+            Instruction::F64ConvertI64U => self.fp_convert(ctx, arch, |w, c, a| { w.ucvtf_d_x(c, a, &reg(FD0), &reg(T0))?; w.fmov_d_to_gp(c, a, &reg(T1), &reg(FD0)) }),
+            Instruction::F32ConvertI32S => self.fp_convert(ctx, arch, |w, c, a| { w.scvtf_s_w(c, a, &reg(FD0), &reg(T0))?; w.fmov_s_to_gp(c, a, &reg(T1), &reg(FD0)) }),
+            Instruction::F32ConvertI32U => self.fp_convert(ctx, arch, |w, c, a| { w.ucvtf_s_w(c, a, &reg(FD0), &reg(T0))?; w.fmov_s_to_gp(c, a, &reg(T1), &reg(FD0)) }),
+            Instruction::F32ConvertI64S => self.fp_convert(ctx, arch, |w, c, a| { w.scvtf_s_x(c, a, &reg(FD0), &reg(T0))?; w.fmov_s_to_gp(c, a, &reg(T1), &reg(FD0)) }),
+            Instruction::F32ConvertI64U => self.fp_convert(ctx, arch, |w, c, a| { w.ucvtf_s_x(c, a, &reg(FD0), &reg(T0))?; w.fmov_s_to_gp(c, a, &reg(T1), &reg(FD0)) }),
+
+            // ---- conversions: fp -> int (truncating) ----
+            Instruction::I32TruncF64S => self.fp_convert(ctx, arch, |w, c, a| { w.fmov_gp_to_d(c, a, &reg(FD0), &reg(T0))?; w.fcvtzs_w_d(c, a, &reg(T1), &reg(FD0)) }),
+            Instruction::I32TruncF64U => self.fp_convert(ctx, arch, |w, c, a| { w.fmov_gp_to_d(c, a, &reg(FD0), &reg(T0))?; w.fcvtzu_w_d(c, a, &reg(T1), &reg(FD0)) }),
+            Instruction::I64TruncF64S => self.fp_convert(ctx, arch, |w, c, a| { w.fmov_gp_to_d(c, a, &reg(FD0), &reg(T0))?; w.fcvtzs_x_d(c, a, &reg(T1), &reg(FD0)) }),
+            Instruction::I64TruncF64U => self.fp_convert(ctx, arch, |w, c, a| { w.fmov_gp_to_d(c, a, &reg(FD0), &reg(T0))?; w.fcvtzu_x_d(c, a, &reg(T1), &reg(FD0)) }),
+            Instruction::I32TruncF32S => self.fp_convert(ctx, arch, |w, c, a| { w.fmov_gp_to_s(c, a, &reg(FD0), &reg(T0))?; w.fcvtzs_w_s(c, a, &reg(T1), &reg(FD0)) }),
+            Instruction::I32TruncF32U => self.fp_convert(ctx, arch, |w, c, a| { w.fmov_gp_to_s(c, a, &reg(FD0), &reg(T0))?; w.fcvtzu_w_s(c, a, &reg(T1), &reg(FD0)) }),
+            Instruction::I64TruncF32S => self.fp_convert(ctx, arch, |w, c, a| { w.fmov_gp_to_s(c, a, &reg(FD0), &reg(T0))?; w.fcvtzs_x_s(c, a, &reg(T1), &reg(FD0)) }),
+            Instruction::I64TruncF32U => self.fp_convert(ctx, arch, |w, c, a| { w.fmov_gp_to_s(c, a, &reg(FD0), &reg(T0))?; w.fcvtzu_x_s(c, a, &reg(T1), &reg(FD0)) }),
+
+            // ---- conversions: f32 <-> f64 ----
+            Instruction::F32DemoteF64 => self.fp_convert(ctx, arch, |w, c, a| { w.fmov_gp_to_d(c, a, &reg(FD0), &reg(T0))?; w.fcvt_s_d(c, a, &reg(FD1), &reg(FD0))?; w.fmov_s_to_gp(c, a, &reg(T1), &reg(FD1)) }),
+            Instruction::F64PromoteF32 => self.fp_convert(ctx, arch, |w, c, a| { w.fmov_gp_to_s(c, a, &reg(FD0), &reg(T0))?; w.fcvt_d_s(c, a, &reg(FD1), &reg(FD0))?; w.fmov_d_to_gp(c, a, &reg(T1), &reg(FD1)) }),
 
             // FP constants ride as raw bits on the GP operand stack.
             Instruction::F64Const(v) => {
