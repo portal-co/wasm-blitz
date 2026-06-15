@@ -580,7 +580,8 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 };
                 self.str(ctx, arch, &reg(T1), &mem)
             }
-            Instruction::I32Store(m) => {
+            // i32.store and i64.store32 both write the low 32 bits to memory.
+            Instruction::I32Store(m) | Instruction::I64Store32(m) => {
                 self.wasm_pop(ctx, arch, T1)?; // value
                 self.wasm_pop(ctx, arch, T0)?; // address
                 self.apply_mem_base(ctx, arch, state, T0, T2)?;
@@ -805,7 +806,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 // Trap: BRK #0.
                 self.brk(ctx, arch, 0)
             }
-            Instruction::I64ExtendI32S => {
+            Instruction::I64ExtendI32S | Instruction::I64Extend32S => {
                 // Sign-extend the low 32 bits: lsl #32 then asr #32.
                 self.wasm_pop(ctx, arch, T0)?;
                 let sh = MemArgKind::NoMem(ArgKind::Lit(32));
@@ -813,8 +814,9 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 self.asr(ctx, arch, &reg(T0), &reg(T0), &sh)?;
                 self.wasm_push(ctx, arch, T0)
             }
-            Instruction::I32WrapI64 => {
-                // Truncate to 32 bits: zero the upper word (mask with 0xFFFF_FFFF).
+            Instruction::I32WrapI64 | Instruction::I64ExtendI32U => {
+                // Both keep the low 32 bits and clear the upper word
+                // (i32.wrap_i64 truncates; i64.extend_i32_u zero-extends).
                 // The binary `and` only encodes the register form, so materialize
                 // the mask in a scratch register first.
                 self.wasm_pop(ctx, arch, T0)?;

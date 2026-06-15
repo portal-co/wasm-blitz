@@ -607,7 +607,8 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.push(ctx, arch, &Reg(0))?;
             }
             // Sign-extend the low 32 bits to 64 (MOVSXD).
-            Instruction::I64ExtendI32S => {
+            // Both sign-extend the low 32 bits to 64.
+            Instruction::I64ExtendI32S | Instruction::I64Extend32S => {
                 self.pop(ctx, arch, &Reg(0))?;
                 let dst = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_64 });
                 let src = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 });
@@ -769,7 +770,8 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 )?;
                 self.push(ctx, arch, &Reg(0))?;
             }
-            Instruction::I32Store(memarg) => {
+            // i32.store and i64.store32 both write the low 32 bits to memory.
+            Instruction::I32Store(memarg) | Instruction::I64Store32(memarg) => {
                 self.pop(ctx, arch, &Reg(2))?;  // value → RDX
                 self.pop(ctx, arch, &Reg(0))?;  // addr → RAX
                 self.mov64(ctx, arch, &Reg(1), memarg.offset)?;
