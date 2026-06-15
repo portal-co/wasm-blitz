@@ -128,6 +128,10 @@ pub struct State<'a> {
     pub call_params: Vec<u32>,
     /// Result count per WASM function index. Only used in [`CallAbi::AllStack`].
     pub call_results: Vec<u32>,
+    /// Param count per WASM *type* index — the arity used by `call_indirect`.
+    pub sig_params: Vec<u32>,
+    /// Result count per WASM type index. Companion to [`Self::sig_params`].
+    pub sig_results: Vec<u32>,
 }
 
 /// Inter-function calling convention selected by the recompiler for the AAPCS64

@@ -123,11 +123,30 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
     /// (blitz) and import (C ABI host) targets. `x15` holds the operand base across
     /// the call (saved in a stack slot); `x9`/`x10` are scratch. `results` (0..2)
     /// values are pushed back onto the operand stack from X0/X1.
+    ///
+    /// Pop the `call_indirect` table index and load the function pointer from
+    /// `__wasm_table[index]` into x14 (a register the marshalling preserves).
+    fn sysv_load_indirect_target(&mut self, ctx: &mut Context, arch: AArch64Arch) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        let idx = Reg(14);
+        let tbl = Reg(13);
+        self.wasm_pop(ctx, arch, idx)?; // table index → x14
+        crate::load_label_addr(self, ctx, arch, &reg(tbl), AArch64Label::External { name: "__wasm_table".into() })?;
+        // x14 := *(x13 + x14*8)
+        let lit = |v: u64| MemArgKind::NoMem(ArgKind::Lit(v));
+        self.lsl(ctx, arch, &reg(idx), &reg(idx), &lit(3))?;
+        self.add(ctx, arch, &reg(tbl), &reg(tbl), &reg(idx))?;
+        self.ldr(ctx, arch, &reg(idx), &mem_base_disp(tbl, 0))
+    }
+
     fn sysv_emit_marshalled_call(
         &mut self,
         ctx: &mut Context,
         arch: AArch64Arch,
-        target: AArch64Label,
+        target: Option<AArch64Label>,
+        target_reg: Option<Reg>,
         arity: u32,
         results: u32,
     ) -> Result<(), Self::Error>
@@ -170,9 +189,14 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         let base_slot = (stack_args * 8) as i32;
         self.str(ctx, arch, &reg(base), &mem_base_disp(SP, base_slot))?;
         // Internal targets resolve in-buffer (ADR); external/import targets need
-        // an ADRP+ADD pair (Mach-O can't relocate a plain ADR).
-        crate::load_label_addr(self, ctx, arch, &reg(s9), target)?;
-        self.bl(ctx, arch, &reg(s9))?;
+        // an ADRP+ADD pair (Mach-O can't relocate a plain ADR). A register target
+        // (call_indirect) is branched to directly.
+        if let Some(r) = target_reg {
+            self.bl(ctx, arch, &reg(r))?;
+        } else {
+            crate::load_label_addr(self, ctx, arch, &reg(s9), target.unwrap())?;
+            self.bl(ctx, arch, &reg(s9))?;
+        }
         // Restore base, pop all args (operand sp = base + arity*WASM_SLOT).
         self.ldr(ctx, arch, &reg(base), &mem_base_disp(SP, base_slot))?;
         self.add(ctx, arch, &reg(SP), &reg(base), &lit(arity as u64 * WASM_SLOT as u64))?;
@@ -195,7 +219,8 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         &mut self,
         ctx: &mut Context,
         arch: AArch64Arch,
-        target: AArch64Label,
+        target: Option<AArch64Label>,
+        target_reg: Option<Reg>,
         arity: u32,
         shard: bool,
     ) -> Result<(), Self::Error>
@@ -228,7 +253,11 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
             self.ldp(ctx, arch, &reg(SCR), &reg(Reg(9)), &mem_post(SP, 16))?;
         }
         // Tail-branch (no link); the callee returns directly to our caller.
-        self.b_label(ctx, arch, target)
+        if let Some(r) = target_reg {
+            self.br(ctx, arch, &reg(r))
+        } else {
+            self.b_label(ctx, arch, target.unwrap())
+        }
     }
 
     /// Emit the AAPCS64 epilogue (restore frame) and return. Shared by `Return`,
@@ -289,7 +318,7 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
             Instruction::Call(idx) if state.call_abi == CallAbi::AllStack => {
                 let (label, arity, results, _is_import) =
                     Self::sysv_call_target(state, func_imports, *idx);
-                self.sysv_emit_marshalled_call(ctx, arch, label, arity, results)
+                self.sysv_emit_marshalled_call(ctx, arch, Some(label), None, arity, results)
             }
             Instruction::ReturnCall(idx) if state.call_abi == CallAbi::AllStack => {
                 let (label, arity, results, is_import) =
@@ -298,12 +327,33 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                     // Fake tail: a real call then the AAPCS64 epilogue. Required for
                     // C-ABI imports and a safe fallback when the callee wants more
                     // args than our incoming-arg frame holds.
-                    self.sysv_emit_marshalled_call(ctx, arch, label, arity, results)?;
+                    self.sysv_emit_marshalled_call(ctx, arch, Some(label), None, arity, results)?;
                     self.sysv_emit_epilogue(ctx, arch, state)
                 } else {
                     // True tail call to an internal function: O(1) machine stack for
                     // long `return_call` chains.
-                    self.sysv_emit_tail_call(ctx, arch, label, arity, state.shard.is_some())
+                    self.sysv_emit_tail_call(ctx, arch, Some(label), None, arity, state.shard.is_some())
+                }
+            }
+
+            // ---- Indirect calls: target = __wasm_table[index] ----
+            Instruction::CallIndirect { type_index, .. } if state.call_abi == CallAbi::AllStack => {
+                let ty = *type_index as usize;
+                let arity = state.sig_params.get(ty).copied().unwrap_or(0);
+                let results = state.sig_results.get(ty).copied().unwrap_or(0);
+                self.sysv_load_indirect_target(ctx, arch)?; // index → x14 (fn ptr)
+                self.sysv_emit_marshalled_call(ctx, arch, None, Some(Reg(14)), arity, results)
+            }
+            Instruction::ReturnCallIndirect { type_index, .. } if state.call_abi == CallAbi::AllStack => {
+                let ty = *type_index as usize;
+                let arity = state.sig_params.get(ty).copied().unwrap_or(0);
+                let results = state.sig_results.get(ty).copied().unwrap_or(0);
+                self.sysv_load_indirect_target(ctx, arch)?; // index → x14 (fn ptr)
+                if arity as usize > state.param_count {
+                    self.sysv_emit_marshalled_call(ctx, arch, None, Some(Reg(14)), arity, results)?;
+                    self.sysv_emit_epilogue(ctx, arch, state)
+                } else {
+                    self.sysv_emit_tail_call(ctx, arch, None, Some(Reg(14)), arity, state.shard.is_some())
                 }
             }
 

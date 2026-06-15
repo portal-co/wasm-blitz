@@ -144,6 +144,12 @@ pub struct SysVState<'a> {
     pub call_params: Vec<u32>,
     /// Result count per WASM function index. Only used in [`CallAbi::AllStack`].
     pub call_results: Vec<u32>,
+    /// Param count per WASM *type* index — the signature arity used by
+    /// `call_indirect`/`return_call_indirect` (the callee is unknown at compile
+    /// time, so the type determines the marshalling arity).
+    pub sig_params: Vec<u32>,
+    /// Result count per WASM type index. Companion to [`Self::sig_params`].
+    pub sig_results: Vec<u32>,
 }
 
 /// Inter-function calling convention selected by the recompiler.
@@ -321,6 +327,81 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
         self.jmp_label(ctx, arch, target)
     }
 
+    /// AllStack marshalled call to a **register** target (for `call_indirect`):
+    /// all `arity` args go on the stack and the callee is `call target`. `target`
+    /// must be a register the marshalling does not clobber (e.g. R10/R11).
+    fn sysv_emit_marshalled_call_reg(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        target: Reg,
+        arity: u32,
+        results: u32,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        let r15 = Reg(15);
+        let lit = |v: u64| MemArgKind::NoMem(ArgKind::Lit(v));
+        self.mov(ctx, arch, &r15, &RSP)?; // operand base
+        self.mov64(ctx, arch, &RAX, (arity as u64 + 1) * 8)?;
+        self.sub(ctx, arch, &RSP, &RAX)?;
+        self.and(ctx, arch, &RSP, &lit((-16i64) as u64))?;
+        for i in 0..arity {
+            self.mov(ctx, arch, &RAX, &mem64(r15, (arity - 1 - i) * 8))?;
+            self.mov(ctx, arch, &mem64(RSP, i * 8), &RAX)?;
+        }
+        self.mov(ctx, arch, &mem64(RSP, arity * 8), &r15)?; // save base above args
+        self.call(ctx, arch, &target)?;
+        self.mov(ctx, arch, &r15, &mem64(RSP, arity * 8))?; // restore base
+        self.lea(ctx, arch, &RSP, &mem64(r15, arity * 8))?; // pop args
+        if results > 0 {
+            self.push(ctx, arch, &RAX)?;
+        }
+        Ok(())
+    }
+
+    /// True tail call to a **register** target (`return_call_indirect`); mirrors
+    /// `sysv_emit_tail_call` but jumps to a register. Requires `arity <= param_count`.
+    fn sysv_emit_tail_call_reg(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        target: Reg,
+        arity: u32,
+        shard: bool,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        let r15 = Reg(15);
+        let scr_extra: u32 = if shard { 8 } else { 0 };
+        self.mov(ctx, arch, &r15, &RSP)?;
+        for i in 0..arity {
+            self.mov(ctx, arch, &RAX, &mem64(r15, (arity - 1 - i) * 8))?;
+            self.mov(ctx, arch, &mem64(RBP, 16 + scr_extra + i * 8), &RAX)?;
+        }
+        self.mov(ctx, arch, &RSP, &RBP)?;
+        if shard { self.pop(ctx, arch, &SCR)?; }
+        self.pop(ctx, arch, &RBP)?;
+        self.jmp(ctx, arch, &target)
+    }
+
+    /// Pop the `call_indirect` table index and load the function pointer from
+    /// `__wasm_table[index]` into R10 (a register the marshalling preserves).
+    fn sysv_load_indirect_target(&mut self, ctx: &mut Context, arch: X64Arch) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        self.pop(ctx, arch, &Reg(10))?; // table index → R10
+        self.lea_label(ctx, arch, &Reg(11), X64Label::External { name: "__wasm_table".into() })?;
+        // R10 := [R11 + R10*8]
+        self.mov(ctx, arch, &Reg(10), &MemArgKind::Mem {
+            base: Reg(11), offset: Some((Reg(10), 8)), disp: 0,
+            size: MemorySize::_64, reg_class: RegisterClass::Gpr, segment: Default::default(),
+        })
+    }
+
     /// Resolve a call/return_call target index to its label + (arity, results, is_import).
     fn sysv_call_target(
         state: &SysVState<'_>,
@@ -411,6 +492,32 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                     // True tail call to an internal function: O(1) machine stack for
                     // long `return_call` chains (speet emits one cell per guest insn).
                     self.sysv_emit_tail_call(ctx, arch, label, arity, state.shard.is_some())
+                }
+            }
+
+            // ---- Indirect calls: target = __wasm_table[index] ----
+            Instruction::CallIndirect { type_index, .. } if state.call_abi == CallAbi::AllStack => {
+                let ty = *type_index as usize;
+                let arity = state.sig_params.get(ty).copied().unwrap_or(0);
+                let results = state.sig_results.get(ty).copied().unwrap_or(0);
+                self.sysv_load_indirect_target(ctx, arch)?; // index → R10 (fn ptr)
+                self.sysv_emit_marshalled_call_reg(ctx, arch, Reg(10), arity, results)
+            }
+            Instruction::ReturnCallIndirect { type_index, .. } if state.call_abi == CallAbi::AllStack => {
+                let ty = *type_index as usize;
+                let arity = state.sig_params.get(ty).copied().unwrap_or(0);
+                let results = state.sig_results.get(ty).copied().unwrap_or(0);
+                self.sysv_load_indirect_target(ctx, arch)?; // index → R10 (fn ptr)
+                if arity as usize > state.param_count {
+                    self.sysv_emit_marshalled_call_reg(ctx, arch, Reg(10), arity, results)?;
+                    if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
+                    if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
+                    self.mov(ctx, arch, &RSP, &RBP)?;
+                    if state.shard.is_some() { self.pop(ctx, arch, &SCR)?; }
+                    self.pop(ctx, arch, &RBP)?;
+                    self.ret(ctx, arch)
+                } else {
+                    self.sysv_emit_tail_call_reg(ctx, arch, Reg(10), arity, state.shard.is_some())
                 }
             }
 
