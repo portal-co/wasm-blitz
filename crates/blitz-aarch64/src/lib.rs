@@ -32,6 +32,33 @@ pub const FP: Reg = Reg(29);
 /// The link register (x30).
 pub const LR: Reg = Reg(30);
 
+/// Load the address of `label` into `dest`.
+///
+/// Internal labels (`Func`/`Indexed`) resolve within the same code buffer, so a
+/// single PC-relative `ADR` (±1MB) suffices. External/ambient symbols become
+/// relocations, and AArch64 Mach-O cannot relocate a plain `ADR` — they require
+/// an `ADRP`+`ADD` pair (`PAGE21` + `PAGEOFF12`, ±4GB). Use this everywhere an
+/// external symbol address is materialized so the emitted instruction matches
+/// the relocation the object writer produces.
+pub fn load_label_addr<W, Context>(
+    w: &mut W,
+    ctx: &mut Context,
+    arch: AArch64Arch,
+    dest: &(dyn portal_solutions_asm_aarch64::out::arg::MemArg + '_),
+    label: AArch64Label,
+) -> Result<(), W::Error>
+where
+    W: portal_solutions_asm_aarch64::out::Writer<AArch64Label, Context>,
+{
+    match &label {
+        AArch64Label::External { .. } | AArch64Label::Ambient { .. } => {
+            w.adrp_label(ctx, arch, dest, label.clone())?;
+            w.add_lo12_label(ctx, arch, dest, dest, label)
+        }
+        _ => w.adr_label(ctx, arch, dest, label),
+    }
+}
+
 /// Label types for AArch64 code generation.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum AArch64Label {

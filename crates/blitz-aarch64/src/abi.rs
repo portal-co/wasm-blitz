@@ -197,7 +197,7 @@ where
         match func_imports.get(fn_idx as usize) {
             Some((module, name)) => {
                 let sym = alloc::format!("{module}__{name}");
-                w.adr_label(ctx, arch, &reg(T0), AArch64Label::External { name: sym })?;
+                crate::load_label_addr(w, ctx, arch, &reg(T0), AArch64Label::External { name: sym })?;
                 w.bl(ctx, arch, &reg(T0))
             }
             None => {

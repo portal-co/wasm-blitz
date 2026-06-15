@@ -169,7 +169,9 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         // Save the operand base above the stack args, then call.
         let base_slot = (stack_args * 8) as i32;
         self.str(ctx, arch, &reg(base), &mem_base_disp(SP, base_slot))?;
-        self.adr_label(ctx, arch, &reg(s9), target)?;
+        // Internal targets resolve in-buffer (ADR); external/import targets need
+        // an ADRP+ADD pair (Mach-O can't relocate a plain ADR).
+        crate::load_label_addr(self, ctx, arch, &reg(s9), target)?;
         self.bl(ctx, arch, &reg(s9))?;
         // Restore base, pop all args (operand sp = base + arity*WASM_SLOT).
         self.ldr(ctx, arch, &reg(base), &mem_base_disp(SP, base_slot))?;

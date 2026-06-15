@@ -805,6 +805,14 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 // Trap: BRK #0.
                 self.brk(ctx, arch, 0)
             }
+            Instruction::I64ExtendI32S => {
+                // Sign-extend the low 32 bits: lsl #32 then asr #32.
+                self.wasm_pop(ctx, arch, T0)?;
+                let sh = MemArgKind::NoMem(ArgKind::Lit(32));
+                self.lsl(ctx, arch, &reg(T0), &reg(T0), &sh)?;
+                self.asr(ctx, arch, &reg(T0), &reg(T0), &sh)?;
+                self.wasm_push(ctx, arch, T0)
+            }
             Instruction::I32WrapI64 => {
                 // Truncate to 32 bits: zero the upper word (mask with 0xFFFF_FFFF).
                 // The binary `and` only encodes the register form, so materialize
