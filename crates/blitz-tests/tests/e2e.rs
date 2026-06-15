@@ -2985,6 +2985,68 @@ fn test_unicorn_aarch64_loadstore_widths() {
     assert_loadstore_widths(NativeArch::AArch64);
 }
 
+// ---- scalar floating point (bit-threaded through the GP operand stack) ----
+
+/// `() -> i64`: sqrt(i64_to_f64(7)/2.0 + 0.5) + promote(3.0f*3.0f), truncated.
+/// = sqrt(4.0) + 9.0 = 2.0 + 9.0 = 11. Exercises i64->f64, fdiv, fadd, fsqrt,
+/// f32 fmul, f64 promote, and f64->i64 truncation.
+fn fp_arith_wasm() -> Vec<u8> {
+    let c64 = |x: f64| Instruction::F64Const(wasm_encoder::Ieee64::from(x));
+    let c32 = |x: f32| Instruction::F32Const(wasm_encoder::Ieee32::from(x));
+    let i = [
+        Instruction::I64Const(7), Instruction::F64ConvertI64S,
+        c64(2.0), Instruction::F64Div,
+        c64(0.5), Instruction::F64Add,
+        Instruction::F64Sqrt,
+        c32(3.0), c32(3.0), Instruction::F32Mul, Instruction::F64PromoteF32,
+        Instruction::F64Add,
+        Instruction::I64TruncF64S,
+    ];
+    make_module_with_memory(&[], &[ValType::I64], &i)
+}
+
+/// `() -> i64`: (2<3) + (3>=3) + (5<1) = 1 + 1 + 0 = 2, covering the FP
+/// relational compares including the `ge` equality boundary.
+fn fp_cmp_wasm() -> Vec<u8> {
+    let c64 = |x: f64| Instruction::F64Const(wasm_encoder::Ieee64::from(x));
+    let i = [
+        c64(2.0), c64(3.0), Instruction::F64Lt,
+        c64(3.0), c64(3.0), Instruction::F64Ge, Instruction::I32Add,
+        c64(5.0), c64(1.0), Instruction::F64Lt, Instruction::I32Add,
+        Instruction::I64ExtendI32S,
+    ];
+    make_module_with_memory(&[], &[ValType::I64], &i)
+}
+
+fn assert_fp_arith(arch: NativeArch) {
+    let wasm = fp_arith_wasm();
+    let (code, entry) = compile_allstack_binary(&wasm, arch);
+    assert_eq!(run_allstack_entry(arch, &code, entry, &[], 0), 11);
+}
+
+fn assert_fp_cmp(arch: NativeArch) {
+    let wasm = fp_cmp_wasm();
+    let (code, entry) = compile_allstack_binary(&wasm, arch);
+    assert_eq!(run_allstack_entry(arch, &code, entry, &[], 0), 2);
+}
+
+#[test]
+fn test_unicorn_x86_64_fp_arith() {
+    assert_fp_arith(NativeArch::X86_64);
+}
+#[test]
+fn test_unicorn_aarch64_fp_arith() {
+    assert_fp_arith(NativeArch::AArch64);
+}
+#[test]
+fn test_unicorn_x86_64_fp_cmp() {
+    assert_fp_cmp(NativeArch::X86_64);
+}
+#[test]
+fn test_unicorn_aarch64_fp_cmp() {
+    assert_fp_cmp(NativeArch::AArch64);
+}
+
 // ---------------------------------------------------------------------------
 // Stubs and helpers for native execution tests
 // ---------------------------------------------------------------------------
