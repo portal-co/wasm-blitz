@@ -54,7 +54,7 @@ where
         state.local_count = data.num_params;
         state.num_returns = data.num_returns;
         state.control_depth = data.control_depth;
-        state.tracing = data.tracing;
+        state.probes = data.probes;
         w.align_to(ctx, arch, 32)?;
         w.pop(ctx, arch, &Reg(1))?;
         w.lea(
@@ -90,12 +90,13 @@ where
         arch: X64Arch,
         state: &mut State<'_>,
     ) -> Result<(), W::Error> {
-        state.next_site_id = 1;
-        if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
+        state.next_probe_id = 1;
+        if let Some(cfg) = state.probes.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW::new(w, ctx, arch);
-            portal_solutions_blitz_codegen::emit_jit_preamble(
-                &mut bw, cfg.table_base_off, 0,
-                2, &mut state.label_index,
+            portal_solutions_blitz_codegen::emit_probe_site(
+                &mut bw, cfg.table_base_off, 0, 2,
+                portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                &mut state.label_index,
             )?;
         }
         w.push(ctx, arch, &Reg(1))?;
@@ -581,7 +582,7 @@ where
                 state.local_count = data.num_params;
                 state.num_returns = data.num_returns;
                 state.control_depth = data.control_depth;
-                state.tracing = data.tracing;
+                state.probes = data.probes;
                 self.align_to(ctx, arch, 32).map_err(Err::from)?;
                 self.pop(ctx, arch, &Reg(1)).map_err(Err::from)?;
                 self.lea(ctx, arch, &Reg(0), &MemArgKind::Mem {

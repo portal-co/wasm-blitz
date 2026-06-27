@@ -19,7 +19,7 @@ use portal_solutions_asm_riscv64::RiscV64Arch;
 use portal_solutions_asm_riscv64::out::Writer;
 
 use portal_solutions_blitz_common::asm::Reg;
-use portal_solutions_blitz_common::ops::{MachOperator, TracingConfig};
+use portal_solutions_blitz_common::ops::{MachOperator, ProbeTableConfig};
 use portal_solutions_blitz_common::shard::{CallTarget, SecondCtxConfig};
 use portal_solutions_blitz_common::wasm_encoder;
 use portal_solutions_blitz_common::wasm_encoder::reencode::{self as reencode, Reencode};
@@ -84,17 +84,17 @@ pub struct State<'a> {
     /// Carried from `StartFn` to `StartBody` for RISC-V NaiveAbi — not actually
     /// needed here since the label is placed before frame setup, but kept for
     /// consistency with the x86-64 backend.  Preamble is emitted in `StartFn`.
-    pub tracing: Option<TracingConfig>,
-    /// Next trace-site id to assign (function entry = site 0; each loop/block
-    /// consumes the next).  See `emit_jit_preamble` / Item 1.
-    pub next_site_id: u32,
+    pub probes: Option<ProbeTableConfig>,
+    /// Next probe id to assign (function entry = probe 0; each loop/block
+    /// consumes the next).  See `emit_probe_site`.
+    pub next_probe_id: u32,
     /// Total frame size in bytes, set by SysV `StartFn` to locate the RA/FP
     /// save slots at the bottom of the frame (`[FP - sysv_frame_sz]` = RA).
     pub sysv_frame_sz: i32,
-    /// How mid-function trace sites reach the runtime trace-table base.  The
+    /// How mid-function probe sites reach the runtime probe-table base.  The
     /// NaiveAbi keeps the default (CTX-relative); the SysV ABI sets this to a
     /// frame slot after spilling its virtual-param base register.
-    pub trace_base: crate::codegen::TraceBase,
+    pub probe_base: crate::codegen::ProbeBase,
     /// Present when sharding is active. SCR (S10/x26) is saved in the SysV
     /// frame. Naive functions use SCR read-only (the runtime sets it).
     pub shard: Option<NaiveShardState<'a>>,
@@ -140,29 +140,32 @@ pub enum Endable {
 }
 
 pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
-    /// Emit a tracing/specialization preamble for a loop/block control-flow
-    /// site, consuming the next `site_id`.  No-op when tracing is disabled.
+    /// Emit a control-flow probe site (`TailTakeover` binding) for a
+    /// loop/block header, consuming the next `probe_id`.  No-op when probes
+    /// are disabled.
     ///
     /// Flushes regalloc first so the operand stack is materialised at the site
     /// (matching the generic-entry layout the specialization tail-jump expects).
     /// Uses t0 (Reg 5) as scratch, t1 (Reg 6) as the `inc_mem64` scratch.
-    fn emit_trace_site(&mut self, ctx: &mut Context, arch: RiscV64Arch, state: &mut State<'_>)
+    fn emit_control_flow_probe(&mut self, ctx: &mut Context, arch: RiscV64Arch, state: &mut State<'_>)
         -> Result<(), Self::Error>
     where
         Self: Sized,
     {
-        if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
+        if let Some(cfg) = state.probes.as_ref().copied().filter(|c| c.enabled) {
             if let Some(ralloc) = state.regalloc.as_mut() {
                 let it = ralloc.flush();
                 emit_cmds(self, ctx, arch, it)?;
                 ralloc.tos = None;
             }
-            let site_id = state.next_site_id;
-            state.next_site_id += 1;
-            let trace_base = state.trace_base;
-            let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: 6, trace_base };
-            portal_solutions_blitz_codegen::emit_jit_preamble(
-                &mut bw, cfg.table_base_off, site_id, 5, &mut state.label_index,
+            let probe_id = state.next_probe_id;
+            state.next_probe_id += 1;
+            let probe_base = state.probe_base;
+            let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: 6, probe_base };
+            portal_solutions_blitz_codegen::emit_probe_site(
+                &mut bw, cfg.table_base_off, probe_id, 5,
+                portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                &mut state.label_index,
             )?;
         }
         Ok(())
@@ -1353,7 +1356,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 state.if_stack.push(Endable::Block { idx: i });
                 // Do NOT emit the label here: Br(N) to a Block is a forward branch to
                 // the block's End, so the label must only be placed at End time.
-                self.emit_trace_site(ctx, arch, state)?;
+                self.emit_control_flow_probe(ctx, arch, state)?;
             }
             Instruction::If(_blockty) => {
                 // Flush regalloc so the condition value is on the memory stack.
@@ -1415,7 +1418,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 state.label_index += 1;
                 state.if_stack.push(Endable::Loop { idx: i });
                 self.set_label(ctx, arch, RiscvLabel::Indexed { idx: i })?;
-                self.emit_trace_site(ctx, arch, state)?;
+                self.emit_control_flow_probe(ctx, arch, state)?;
             }
             Instruction::End => {
                 // Function-level End (empty if_stack) is a no-op: the function
@@ -1676,18 +1679,19 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 state.local_count = data.num_params;
                 state.num_returns = data.num_returns;
                 state.control_depth = data.control_depth;
-                state.tracing = data.tracing;
-                state.next_site_id = 1;
+                state.probes = data.probes;
+                state.next_probe_id = 1;
 
                 self.set_label(ctx, arch, RiscvLabel::Func { r#fn: *id }).map_err(Err::from)?;
 
-                // Trace preamble: after label, before frame setup.
+                // Function-entry probe: after label, before frame setup.
                 // Scratch: t0 (Reg(5)) + t1 (Reg(6)) — caller-saved, not NaiveAbi arg regs.
-                if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
+                if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW::new(self, ctx, arch, 6);
-                    portal_solutions_blitz_codegen::emit_jit_preamble(
-                        &mut bw, cfg.table_base_off, 0,
-                        5, &mut state.label_index,
+                    portal_solutions_blitz_codegen::emit_probe_site(
+                        &mut bw, cfg.table_base_off, 0, 5,
+                        portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                        &mut state.label_index,
                     ).map_err(Err::from)?;
                 }
 

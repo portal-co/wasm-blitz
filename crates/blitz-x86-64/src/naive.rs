@@ -7,7 +7,7 @@ use alloc::collections::btree_map::BTreeMap;
 use portal_solutions_asm_x86_64::RegisterClass;
 use portal_solutions_asm_x86_64::out::arg::{ArgKind, MemArg, MemArgKind};
 use portal_solutions_blitz_common::asm::Reg;
-use portal_solutions_blitz_common::ops::TracingConfig;
+use portal_solutions_blitz_common::ops::ProbeTableConfig;
 use portal_solutions_blitz_common::shard::{CallTarget, SecondCtxConfig};
 use portal_solutions_blitz_common::wasm_encoder::{self, Catch, FuncType, Instruction, reencode::{self as reencode, Reencode}};
 
@@ -98,13 +98,13 @@ pub struct State<'a> {
     pub if_stack: Vec<Endable>,
     pub body: u32,
     pub body_labels: BTreeMap<u32, usize>,
-    /// Carried from `StartFn` to `StartBody` so tracing can be emitted after
+    /// Carried from `StartFn` to `StartBody` so probes can be emitted after
     /// the function-entry label is placed (ensuring every call — linear or
-    /// via label-jump — passes through the counter and specialisation check).
-    pub tracing: Option<TracingConfig>,
-    /// Next trace-site id to assign (function entry consumes site 0; each
-    /// loop/block consumes the next).  See `emit_jit_preamble` / Item 1.
-    pub next_site_id: u32,
+    /// via label-jump — passes through the counter and handler-dispatch check).
+    pub probes: Option<ProbeTableConfig>,
+    /// Next probe id to assign (function entry consumes probe 0; each
+    /// loop/block consumes the next).  See `emit_probe_site`.
+    pub next_probe_id: u32,
     /// Present when sharding is active. Used to classify `Call` instructions
     /// as intra-shard (direct label) or cross-shard (SCR-relative indirect).
     pub shard: Option<NaiveShardState<'a>>,
@@ -170,14 +170,15 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         Ok(())
     }
 
-    /// Emit a tracing/specialization preamble for a loop/block control-flow
-    /// site, consuming the next `site_id`.  No-op when tracing is disabled.
+    /// Emit a control-flow probe site (`TailTakeover` binding) for a
+    /// loop/block header, consuming the next `probe_id`.  No-op when probes
+    /// are disabled.
     ///
     /// Placed after the site's entry label and CTX-frame push, so the
     /// specialization tail-jump (if installed) inherits the operand-stack /
     /// CTX-frame layout of the generic site entry (see the blitz-specialize
     /// stack-state contract).  Uses `Reg(2)` (RDX) as scratch.
-    fn emit_trace_site(
+    fn emit_control_flow_probe(
         &mut self,
         ctx: &mut Context,
         arch: X64Arch,
@@ -186,18 +187,20 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
     where
         Self: Sized,
     {
-        if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
-            let site_id = state.next_site_id;
-            state.next_site_id += 1;
+        if let Some(cfg) = state.probes.as_ref().copied().filter(|c| c.enabled) {
+            let probe_id = state.next_probe_id;
+            state.next_probe_id += 1;
             let mut bw = crate::codegen::BlitzW::new(self, ctx, arch);
-            portal_solutions_blitz_codegen::emit_jit_preamble(
-                &mut bw, cfg.table_base_off, site_id, 2, &mut state.label_index,
+            portal_solutions_blitz_codegen::emit_probe_site(
+                &mut bw, cfg.table_base_off, probe_id, 2,
+                portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                &mut state.label_index,
             )?;
         }
         Ok(())
     }
 
-    /// Emit the optional tracing preamble at a function boundary.
+    /// Emit the optional control-flow probe at a function boundary.
     ///
     /// # Placement
     /// - **NaiveAbi**: call from `emit_start_body` / the `StartBody` handler,
@@ -268,14 +271,14 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         num_params: params,
                         num_returns,
                         control_depth,
-                        tracing,
+                        probes,
                         ..
                     },
             } => {
                 state.local_count = *params;
                 state.num_returns = *num_returns;
                 state.control_depth = *control_depth;
-                state.tracing = *tracing;
+                state.probes = *probes;
                 self.pop(ctx, arch, &Reg(1)).map_err(Err::from)?;
                 self.lea(
                     ctx,
@@ -300,12 +303,13 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 }
             }
             MachOperator::StartBody => {
-                state.next_site_id = 1;
-                if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
+                state.next_probe_id = 1;
+                if let Some(cfg) = state.probes.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW::new(self, ctx, arch);
-                    portal_solutions_blitz_codegen::emit_jit_preamble(
-                        &mut bw, cfg.table_base_off, 0,
-                        2, &mut state.label_index,
+                    portal_solutions_blitz_codegen::emit_probe_site(
+                        &mut bw, cfg.table_base_off, 0, 2,
+                        portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                        &mut state.label_index,
                     ).map_err(Err::from)?;
                 }
                 self.push(ctx, arch, &Reg(1)).map_err(Err::from)?;
@@ -1233,7 +1237,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 // }
                 self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
                 self.set_label(ctx, arch, X64Label::Indexed { idx: i })?;
-                self.emit_trace_site(ctx, arch, state)?;
+                self.emit_control_flow_probe(ctx, arch, state)?;
             }
             Instruction::If(blockty) => {
                 let i = state.label_index;
@@ -1266,7 +1270,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.push(ctx, arch, &Reg(0))?;
                 // }
                 self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
-                self.emit_trace_site(ctx, arch, state)?;
+                self.emit_control_flow_probe(ctx, arch, state)?;
             }
             Instruction::End => {
                 // Function-level End (if_stack empty) is a no-op: the function

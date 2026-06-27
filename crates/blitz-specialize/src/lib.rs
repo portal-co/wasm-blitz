@@ -26,16 +26,18 @@
 //!
 //! # Stack-state contract
 //!
-//! A specialized variant is installed in a [`TraceSite`]'s `specialization`
-//! slot (function entry, or a loop/block entry — see the blitz-codegen JIT
-//! preamble).  When the preamble tail-jumps there, the operand-stack and
+//! A specialized variant is installed in a [`ProbeSlot`]'s `handler` slot,
+//! behind a `TailTakeover`-bound probe at the entry/loop/block sites built by
+//! [`ProbeBinding::TailTakeover`](portal_solutions_blitz_codegen::ProbeBinding::TailTakeover)
+//! (function entry, or a loop/block entry — see the blitz-codegen probe-site
+//! emission).  When the probe dispatches there, the operand-stack and
 //! CTX-frame layout is exactly that of the **generic site entry**.  A
 //! specialized variant must therefore preserve that layout, and its deopt
 //! target is the generic site entry: deopt is a plain branch back to generic
 //! code with the live state untouched.  Because [`specialize`] only *substitutes
 //! values* (it never changes stack shape), this holds by construction.
 //!
-//! [`TraceSite`]: portal_solutions_blitz_common::ops::TraceSite
+//! [`ProbeSlot`]: portal_solutions_blitz_common::ops::ProbeSlot
 
 #![no_std]
 extern crate alloc;
@@ -159,10 +161,11 @@ pub struct BranchAnalysis {
     /// index/indices.  A `Br`/`BrIf` has exactly one entry; a `BrTable` has one
     /// per table entry followed by the default.
     pub branch_targets: BTreeMap<usize, Vec<usize>>,
-    /// For each `Block`/`Loop` header index, the trace `site_id` assigned to it
-    /// (function entry is site 0, so these start at 1, in source order — exactly
-    /// matching `trace_site_count` and the backend site numbering).
-    pub site_ids: BTreeMap<usize, u32>,
+    /// For each `Block`/`Loop` header index, the control-flow `probe_id`
+    /// assigned to it (function entry is probe 0, so these start at 1, in
+    /// source order — exactly matching `probe_site_count` and the backend
+    /// probe numbering).
+    pub probe_ids: BTreeMap<usize, u32>,
     /// Basic-block leader indices (sorted): the start of each straight-line
     /// region.  Index 0, any control header/`End`/`Else`, and the op *after* any
     /// branch/return are leaders.
@@ -175,17 +178,17 @@ impl BranchAnalysis {
         let ctl: Vec<Ctl> = slice.ops.iter().map(ctl_of).collect();
         let n = ctl.len();
 
-        // Pass 1: match each header to its End, and assign site ids.
+        // Pass 1: match each header to its End, and assign probe ids.
         let mut header_to_end = BTreeMap::new();
-        let mut site_ids = BTreeMap::new();
-        let mut next_site: u32 = 1; // site 0 is function entry
+        let mut probe_ids = BTreeMap::new();
+        let mut next_probe: u32 = 1; // probe 0 is function entry
         let mut stack: Vec<usize> = Vec::new();
         for (i, c) in ctl.iter().enumerate() {
             match c {
                 Ctl::Block | Ctl::Loop | Ctl::If | Ctl::TryTable => {
                     if matches!(c, Ctl::Block | Ctl::Loop) {
-                        site_ids.insert(i, next_site);
-                        next_site += 1;
+                        probe_ids.insert(i, next_probe);
+                        next_probe += 1;
                     }
                     stack.push(i);
                 }
@@ -274,7 +277,7 @@ impl BranchAnalysis {
         }
         let bb_leaders = (0..n).filter(|&i| leader[i]).collect();
 
-        BranchAnalysis { depth_at, header_to_end, branch_targets, site_ids, bb_leaders }
+        BranchAnalysis { depth_at, header_to_end, branch_targets, probe_ids, bb_leaders }
     }
 
     /// Resolved target(s) of the branch at `idx`, if it is a branch.
@@ -282,9 +285,9 @@ impl BranchAnalysis {
         self.branch_targets.get(&idx).map(|v| v.as_slice())
     }
 
-    /// Trace `site_id` of the `Block`/`Loop` header at `idx`, if any.
-    pub fn site_id_of(&self, idx: usize) -> Option<u32> {
-        self.site_ids.get(&idx).copied()
+    /// Control-flow `probe_id` of the `Block`/`Loop` header at `idx`, if any.
+    pub fn probe_id_of(&self, idx: usize) -> Option<u32> {
+        self.probe_ids.get(&idx).copied()
     }
 
     /// Whether `idx` begins a basic block.

@@ -29,17 +29,17 @@ use portal_pc_asm_common::types::mem::MemorySize;
 use portal_solutions_asm_riscv64::{RegisterClass, out::arg::{ArgKind, MemArgKind}};
 
 use crate::RiscvLabel;
-use crate::codegen::TraceBase;
+use crate::codegen::ProbeBase;
 use crate::naive::{State, WriterExt as NaiveExt, flush_regalloc, push, pop, pop_regalloc_to, SCR};
 
-/// Blitz register number of the RISC-V psABI **trace-base virtual parameter**
+/// Blitz register number of the RISC-V psABI **probe-base virtual parameter**
 /// (`t2` / x7).
 ///
 /// `t2` is caller-saved and never a positional argument register (a0–a7), nor
-/// the trace-preamble scratch (t0/t1), so the runtime can pass the per-function
-/// trace-table base in it.  Read directly at the function-entry site; spilled to
+/// the probe-preamble scratch (t0/t1), so the runtime can pass the per-function
+/// probe-table base in it.  Read directly at the function-entry site; spilled to
 /// an fp-relative frame slot for mid-function (loop/block) sites.
-pub const TRACE_BASE_REG: u8 = 7;
+pub const PROBE_BASE_REG: u8 = 7;
 
 // Argument registers in RISC-V psABI order: a0–a7
 const ARG_REGS: [Reg; 8] = [
@@ -175,24 +175,25 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                 state.local_count = data.num_params;
                 state.num_returns = data.num_returns;
                 state.control_depth = data.control_depth;
-                state.tracing = data.tracing;
-                state.next_site_id = 1; // site 0 is the function entry below
+                state.probes = data.probes;
+                state.next_probe_id = 1; // probe 0 is the function entry below
 
                 self.set_label(ctx, arch, RiscvLabel::Indexed {
                     idx: *id as usize | (1 << 28),
                 }).map_err(Err::from)?;
 
-                // Function-entry site (site 0): trace-table base arrives in the
+                // Function-entry probe (probe 0): probe-table base arrives in the
                 // virtual-param register t2; read it directly before frame setup
                 // so a0–a7 are intact for the tail-jump.  Scratch t0/t1.
-                if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
+                if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW {
                         writer: self, ctx, arch, scratch2: 6,
-                        trace_base: TraceBase::Reg(TRACE_BASE_REG),
+                        probe_base: ProbeBase::Reg(PROBE_BASE_REG),
                     };
-                    portal_solutions_blitz_codegen::emit_jit_preamble(
-                        &mut bw, cfg.table_base_off, 0,
-                        5, &mut state.label_index,
+                    portal_solutions_blitz_codegen::emit_probe_site(
+                        &mut bw, cfg.table_base_off, 0, 5,
+                        portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                        &mut state.label_index,
                     ).map_err(Err::from)?;
                 }
 
@@ -200,7 +201,7 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                 //   [FP-(1*8)]  = local 0   ← same offsets as naive, regalloc-compatible
                 //   ...
                 //   [SP+24] = saved SCR (s10)    ← extra slot when sharding active
-                //   [SP+16] = spilled trace base  ← extra slot for mid-function sites
+                //   [SP+16] = spilled probe base  ← extra slot for mid-function sites
                 //   [SP+8]  = saved old-FP   ← bottom two slots for callee-saves
                 //   [SP+0]  = saved RA
                 let shard_extra = if state.shard.is_some() { 1 } else { 0 };
@@ -217,10 +218,10 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
 
                 // Spill the virtual-param base (t2) to the [SP+16] slot and point
                 // mid-function sites at it (fp-relative).
-                if data.tracing.as_ref().map(|c| c.enabled).unwrap_or(false) {
+                if data.probes.as_ref().map(|c| c.enabled).unwrap_or(false) {
                     let disp = -frame_sz + 16;
-                    state.trace_base = TraceBase::FrameSlot(disp);
-                    self.sd(ctx, arch, &Reg(TRACE_BASE_REG), &mem64(FP, disp)).map_err(Err::from)?;
+                    state.probe_base = ProbeBase::FrameSlot(disp);
+                    self.sd(ctx, arch, &Reg(PROBE_BASE_REG), &mem64(FP, disp)).map_err(Err::from)?;
                 }
 
                 for i in 0..data.num_params.min(8) {

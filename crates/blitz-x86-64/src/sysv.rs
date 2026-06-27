@@ -34,22 +34,22 @@ use portal_solutions_asm_x86_64::{
 use portal_solutions_blitz_common::{
     asm::Reg,
     asm::common::mem::MemorySize,
-    ops::{FnData, MachOperator, TracingConfig},
+    ops::{FnData, MachOperator, ProbeTableConfig},
     wasm_encoder::{self, FuncType, Instruction, reencode::{self as reencode, Reencode}},
 };
 
 use crate::{X64Label, RSP};
-use crate::codegen::TraceBase;
+use crate::codegen::ProbeBase;
 use crate::naive::WriterExt as NaiveExt;
 
-/// Blitz register number of the SysV **trace-base virtual parameter** (`r11`).
+/// Blitz register number of the SysV **probe-base virtual parameter** (`r11`).
 ///
 /// `r11` is caller-saved and never a SysV positional argument register, so the
-/// runtime can pass the per-function trace-table base pointer in it without
+/// runtime can pass the per-function probe-table base pointer in it without
 /// disturbing the function's real arguments.  The function-entry preamble reads
 /// it directly (before frame setup); `StartFn` then spills it to a frame slot so
 /// mid-function (loop/block) sites can reload it after `r11` is clobbered.
-pub const TRACE_BASE_REG: u8 = 11;
+pub const PROBE_BASE_REG: u8 = 11;
 
 // ---- register shortcuts ----
 const RAX: Reg = Reg(0);
@@ -115,16 +115,16 @@ pub struct SysVState<'a> {
     pub ctrl_stack: Vec<SysVCtrl>,
     pub body: u32,
     pub body_labels: BTreeMap<u32, usize>,
-    /// Tracing/specialization config for this function (`None`/disabled → no
-    /// preamble emitted).
-    pub tracing: Option<TracingConfig>,
-    /// Next trace-site id to assign (function entry = site 0; each loop/block
+    /// Probe-table config for this function (`None`/disabled → no probe code
+    /// emitted).
+    pub probes: Option<ProbeTableConfig>,
+    /// Next probe id to assign (function entry = probe 0; each loop/block
     /// consumes the next, in source order).
-    pub next_site_id: u32,
-    /// RBP-relative displacement of the spilled trace-base pointer slot, set by
-    /// `StartFn` when tracing is enabled.  Mid-function sites load the base from
-    /// `[RBP + trace_base_disp]`.
-    pub trace_base_disp: i32,
+    pub next_probe_id: u32,
+    /// RBP-relative displacement of the spilled probe-base pointer slot, set by
+    /// `StartFn` when probes are enabled.  Mid-function sites load the base from
+    /// `[RBP + probe_base_disp]`.
+    pub probe_base_disp: i32,
     /// Present when sharding is active. SCR (r14) is pushed in the prologue and
     /// popped in all return paths. Cross-shard calls load the target from SCR.
     pub shard: Option<crate::naive::NaiveShardState<'a>>,
@@ -198,27 +198,30 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
         self.mov(ctx, arch, &dest, &mem64(RSP, 0))
     }
 
-    /// Emit a tracing/specialization preamble for a mid-function (loop/block)
-    /// site, consuming the next `site_id`.  No-op when tracing is disabled.
+    /// Emit a control-flow probe (`TailTakeover` binding) for a mid-function
+    /// (loop/block) site, consuming the next `probe_id`.  No-op when probes
+    /// are disabled.
     ///
-    /// The trace-table base is reloaded from the spilled frame slot
-    /// (`[RBP + trace_base_disp]`) since the virtual-param register `r11` has
+    /// The probe-table base is reloaded from the spilled frame slot
+    /// (`[RBP + probe_base_disp]`) since the virtual-param register `r11` has
     /// been clobbered by the body.  Uses `RAX` as scratch (free at a block
     /// boundary — operands live on the WASM stack).
-    fn sysv_emit_trace_site(&mut self, ctx: &mut Context, arch: X64Arch, state: &mut SysVState<'_>)
+    fn sysv_emit_control_flow_probe(&mut self, ctx: &mut Context, arch: X64Arch, state: &mut SysVState<'_>)
         -> Result<(), Self::Error>
     where
         Self: Sized,
     {
-        if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
-            let site_id = state.next_site_id;
-            state.next_site_id += 1;
+        if let Some(cfg) = state.probes.as_ref().copied().filter(|c| c.enabled) {
+            let probe_id = state.next_probe_id;
+            state.next_probe_id += 1;
             let mut bw = crate::codegen::BlitzW {
                 writer: self, ctx, arch,
-                trace_base: TraceBase::FrameSlot(state.trace_base_disp),
+                probe_base: ProbeBase::FrameSlot(state.probe_base_disp),
             };
-            portal_solutions_blitz_codegen::emit_jit_preamble(
-                &mut bw, cfg.table_base_off, site_id, 0, &mut state.label_index,
+            portal_solutions_blitz_codegen::emit_probe_site(
+                &mut bw, cfg.table_base_off, probe_id, 0,
+                portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                &mut state.label_index,
             )?;
         }
         Ok(())
@@ -549,14 +552,14 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 state.if_stack.push(crate::naive::Endable::Br);
                 state.ctrl_stack.push(SysVCtrl::Loop(i));
                 // Trace site after the loop-back label so it runs each iteration.
-                self.sysv_emit_trace_site(ctx, arch, state)
+                self.sysv_emit_control_flow_probe(ctx, arch, state)
             }
             Instruction::Block(_) => {
                 let i = state.label_index;
                 state.label_index += 1;
                 state.if_stack.push(crate::naive::Endable::Br);
                 state.ctrl_stack.push(SysVCtrl::Block(i));
-                self.sysv_emit_trace_site(ctx, arch, state)
+                self.sysv_emit_control_flow_probe(ctx, arch, state)
             }
             Instruction::If(_) => {
                 let i = state.label_index;
@@ -592,8 +595,8 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                         if_stack: core::mem::take(&mut state.if_stack),
                         body: state.body,
                         body_labels: core::mem::take(&mut state.body_labels),
-                        tracing: None,
-                        next_site_id: 0,
+                        probes: None,
+                        next_probe_id: 0,
                         shard: state.shard,
                         mem_base: state.mem_base,
                     };
@@ -707,8 +710,8 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                     if_stack: core::mem::take(&mut state.if_stack),
                     body: state.body,
                     body_labels: core::mem::take(&mut state.body_labels),
-                    tracing: None,
-                    next_site_id: 0,
+                    probes: None,
+                    next_probe_id: 0,
                     // Propagate shard state so cross-shard Call dispatch works.
                     shard: state.shard,
                     mem_base: state.mem_base,
@@ -745,8 +748,8 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 state.param_count = data.num_params;
                 state.ret_count = data.num_returns;
                 state.local_count = data.num_params;
-                state.tracing = data.tracing;
-                state.next_site_id = 1; // site 0 is the function entry below
+                state.probes = data.probes;
+                state.next_probe_id = 1; // probe 0 is the function entry below
 
                 self.set_label(ctx, arch, X64Label::Indexed {
                     idx: *id as usize | (1 << 28),
@@ -756,18 +759,19 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 // path emits as `Func{idx}`) resolve to this C-ABI entry.
                 self.set_label(ctx, arch, X64Label::Func { r#fn: *id }).map_err(Err::from)?;
 
-                // Function-entry site (site 0): the trace-table base arrives in
+                // Function-entry probe (probe 0): the probe-table base arrives in
                 // the virtual-param register r11; read it directly so the
                 // specialization tail-jump fires before any frame is built (SysV
                 // arg registers RDI/RSI/… still intact).  Scratch = RAX.
-                if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
+                if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW {
                         writer: self, ctx, arch,
-                        trace_base: TraceBase::Reg(TRACE_BASE_REG),
+                        probe_base: ProbeBase::Reg(PROBE_BASE_REG),
                     };
-                    portal_solutions_blitz_codegen::emit_jit_preamble(
-                        &mut bw, cfg.table_base_off, 0,
-                        0, &mut state.label_index,
+                    portal_solutions_blitz_codegen::emit_probe_site(
+                        &mut bw, cfg.table_base_off, 0, 0,
+                        portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                        &mut state.label_index,
                     ).map_err(Err::from)?;
                 }
 
@@ -779,7 +783,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 }
                 self.mov(ctx, arch, &RBP, &RSP).map_err(Err::from)?;
 
-                // One extra slot (at the frame bottom) holds the spilled trace
+                // One extra slot (at the frame bottom) holds the spilled probe
                 // base for mid-function sites; +16 headroom is the pre-existing
                 // local budget.
                 let slots = data.num_params + 16 + 1;
@@ -788,10 +792,10 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 self.sub(ctx, arch, &RSP, &RAX).map_err(Err::from)?;
 
                 // Spill the virtual-param base (r11) to the bottom frame slot.
-                if data.tracing.as_ref().map(|c| c.enabled).unwrap_or(false) {
+                if data.probes.as_ref().map(|c| c.enabled).unwrap_or(false) {
                     let disp = 0u32.wrapping_sub(frame_sz as u32);
-                    state.trace_base_disp = -(frame_sz as i32);
-                    self.mov(ctx, arch, &mem64(RBP, disp), &Reg(TRACE_BASE_REG))
+                    state.probe_base_disp = -(frame_sz as i32);
+                    self.mov(ctx, arch, &mem64(RBP, disp), &Reg(PROBE_BASE_REG))
                         .map_err(Err::from)?;
                 }
 

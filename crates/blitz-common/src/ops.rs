@@ -197,7 +197,7 @@ pub fn mach_operators<'a, 'b, Annot: FromWasmInfo, E: From<BinaryReaderError>>(
                         num_params: sig.params().len(),
                         num_returns: sig.results().len(),
                         control_depth: control_depth(a),
-                        tracing: None,
+                        probes: None,
                     },
                 }]
                 .into_iter()
@@ -235,54 +235,58 @@ pub fn mach_operators<'a, 'b, Annot: FromWasmInfo, E: From<BinaryReaderError>>(
         .flatten();
 }
 
-/// One entry in the runtime-owned *trace table*.
+/// One entry in the runtime-owned *probe table*.
 ///
-/// The runtime allocates a contiguous `[TraceSite]` per traced function (sized by
-/// [`TracingConfig::num_sites`]) and is responsible for zeroing it and for any
-/// memory ordering.  The generated code reaches the table through a CTX-relative
-/// base pointer (see [`TracingConfig::table_base_off`]) and indexes it by a
-/// compile-time `site_id` — **no absolute address is baked into the code**, so the
-/// compilation and runtime environments can be fully separated.
+/// The runtime allocates a contiguous `[ProbeSlot]` per instrumented function
+/// (sized by [`ProbeTableConfig::num_probes`]) and is responsible for zeroing it
+/// and for any memory ordering.  The generated code reaches the table through a
+/// CTX-relative base pointer (see [`ProbeTableConfig::table_base_off`]) and
+/// indexes it by a compile-time `probe_id` — **no absolute address is baked into
+/// the code**, so the compilation and runtime environments can be fully
+/// separated.
 ///
 /// Layout is `#[repr(C)]` so the generated code and the runtime agree on field
-/// offsets: `counter` at `+0`, `specialization` at `+8`.
+/// offsets: `counter` at `+0`, `handler` at `+8`.
 #[derive(Debug, Default)]
 #[repr(C)]
-pub struct TraceSite {
-    /// Approximate invocation counter for this site.
+pub struct ProbeSlot {
+    /// Approximate invocation counter for this probe.
     ///
     /// The generated preamble performs a non-atomic load → increment → store on
     /// every entry.  Approximate counting is intentional; the outer JIT does not
     /// need exact values.
     pub counter: u64,
-    /// Specialization code pointer for this site.
+    /// Handler code pointer for this probe.
     ///
     /// At runtime the generated preamble loads this field.  If non-null it is
-    /// treated as a code pointer and control is transferred there via a tail-jump
-    /// with the operand-stack / CTX-frame state intact for this site (function
-    /// entry, or a loop/block entry — see the blitz-specialize stack-state
-    /// contract).
-    pub specialization: *const (),
+    /// dispatched to per the probe's compile-time binding mode: either a
+    /// tail-jump (control never returns to the probe site — used for
+    /// specialization opt-entry, with the operand-stack / CTX-frame state intact
+    /// for this site, see the blitz-specialize stack-state contract) or a real
+    /// call-and-return (control resumes at the probe site once the handler
+    /// returns).
+    pub handler: *const (),
 }
 
-/// Compile-time configuration for emitting tracing/specialization sites in a
-/// function, without baking any runtime addresses.
+/// Compile-time configuration for emitting probe sites in a function, without
+/// baking any runtime addresses.
 ///
-/// The generated code references the runtime [`TraceSite`] table indirectly: it
+/// The generated code references the runtime [`ProbeSlot`] table indirectly: it
 /// loads the table base from a fixed, CTX-relative slot ([`Self::table_base_off`])
-/// and indexes by a per-site id.  This keeps compilation independent of the
+/// and indexes by a per-probe id.  This keeps compilation independent of the
 /// runtime address space.
 #[derive(Debug, Clone, Copy)]
-pub struct TracingConfig {
-    /// Whether tracing code should be emitted at all.  `false` → zero overhead,
-    /// identical codegen to `tracing: None`.
+pub struct ProbeTableConfig {
+    /// Whether probe code should be emitted at all.  `false` → zero overhead,
+    /// identical codegen to `probes: None`.
     pub enabled: bool,
-    /// Number of trace sites in this function (function entry = site 0, then one
-    /// per loop/block).  The runtime uses this to size the [`TraceSite`] table.
-    /// Computed by [`trace_site_count`].
-    pub num_sites: u32,
+    /// Number of probes in this function (function entry = probe 0, then one per
+    /// loop/block, for the auto-identified control-flow probe set).  The runtime
+    /// uses this to size the [`ProbeSlot`] table.  Computed by
+    /// [`probe_site_count`].
+    pub num_probes: u32,
     /// Fixed, CTX-relative offset at which the runtime stores the base pointer of
-    /// this function's [`TraceSite`] table.  Loaded by the preamble; never an
+    /// this function's [`ProbeSlot`] table.  Loaded by the preamble; never an
     /// absolute address.
     pub table_base_off: i32,
 }
@@ -300,9 +304,9 @@ pub struct FnData {
     pub num_returns: usize,
     /// Maximum nesting depth of control flow structures in the function.
     pub control_depth: usize,
-    /// Optional tracing/specialization configuration.  `None` (or `enabled:
-    /// false`) → no tracing code emitted (zero overhead on the fast path).
-    pub tracing: Option<TracingConfig>,
+    /// Optional probe-table configuration.  `None` (or `enabled: false`) → no
+    /// probe code emitted (zero overhead on the fast path).
+    pub probes: Option<ProbeTableConfig>,
 }
 
 impl PartialEq for FnData {
@@ -473,17 +477,17 @@ pub fn control_depth(a: &FunctionBody<'_>) -> usize {
     return max;
 }
 
-/// Counts the number of tracing/specialization sites in a function.
+/// Counts the number of auto-identified control-flow probe sites in a function.
 ///
 /// Site `0` is the function entry; every `Block` and `Loop` entry adds one more.
-/// This is the size of the runtime [`TraceSite`] table the function needs and is
-/// stored in [`TracingConfig::num_sites`].  The per-site `site_id` assigned by the
-/// backends increments in the same source order this function scans.
+/// This is the size of the runtime [`ProbeSlot`] table the function needs and is
+/// stored in [`ProbeTableConfig::num_probes`].  The per-site `probe_id` assigned
+/// by the backends increments in the same source order this function scans.
 ///
-/// Note: `If` and `TryTable` are *not* counted as trace sites (they are not
+/// Note: `If` and `TryTable` are *not* counted as probe sites (they are not
 /// jump-back targets the way loops are, and `If` does not push a CTX frame the
 /// preamble can rely on); keep this in sync with the backends' site emission.
-pub fn trace_site_count(a: &FunctionBody<'_>) -> u32 {
+pub fn probe_site_count(a: &FunctionBody<'_>) -> u32 {
     let mut count: u32 = 1; // function entry = site 0
     for op in a.get_operators_reader().into_iter().flatten().flatten() {
         match op {

@@ -5085,9 +5085,9 @@ fn test_lfi_aarch64_verify() {
 // JIT tracing / specialization (Items 1–3)
 // ---------------------------------------------------------------------------
 
-/// Compile the loop-counter fn with tracing enabled, returning x86-64 naive asm.
+/// Compile the loop-counter fn with probes enabled, returning x86-64 naive asm.
 fn compile_x86_naive_with_tracing(wasm: &[u8], base_off: i32) -> (String, u32) {
-    use portal_solutions_blitz_common::ops::{trace_site_count, MachOperator, TracingConfig};
+    use portal_solutions_blitz_common::ops::{probe_site_count, MachOperator, ProbeTableConfig};
     use portal_solutions_blitz_x86_64::{naive, X64Arch};
 
     let (sigs_wp, _sigs_enc, fsigs) = parse_sigs(wasm);
@@ -5097,7 +5097,7 @@ fn compile_x86_naive_with_tracing(wasm: &[u8], base_off: i32) -> (String, u32) {
             bodies.push(body);
         }
     }
-    let num_sites = trace_site_count(&bodies[0]);
+    let num_probes = probe_site_count(&bodies[0]);
 
     let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
     let ops = dce_pass!(raw_ops);
@@ -5108,14 +5108,14 @@ fn compile_x86_naive_with_tracing(wasm: &[u8], base_off: i32) -> (String, u32) {
     for op in ops {
         let mut op = op.unwrap();
         if let MachOperator::StartFn { data, .. } = &mut op {
-            data.tracing = Some(TracingConfig { enabled: true, num_sites, table_base_off: base_off });
+            data.probes = Some(ProbeTableConfig { enabled: true, num_probes, table_base_off: base_off });
         }
         naive::WriterExt::handle_op::<_, HandleOpError<_>>(
             &mut out, &mut ctx, X64Arch::default(),
             &mut state, &[], &[], &[], &op, &mut reencoder, 0,
         ).unwrap();
     }
-    (out.0, num_sites)
+    (out.0, num_probes)
 }
 
 /// Tracing-disabled compile of the loop-counter fn (the zero-overhead path).
@@ -5125,30 +5125,30 @@ fn compile_x86_naive_no_tracing(wasm: &[u8]) -> String {
 
 #[test]
 fn test_tracing_site_per_loop_and_entry() {
-    // Loop-counter fn has a function entry (site 0) + one loop (site 1); the
-    // `If` is not a trace site. So `trace_site_count` must be 2.
+    // Loop-counter fn has a function entry (probe 0) + one loop (probe 1); the
+    // `If` is not a control-flow probe site. So `probe_site_count` must be 2.
     let wasm = make_loop_counter_wasm();
-    let (asm, num_sites) = compile_x86_naive_with_tracing(&wasm, 0x60);
-    assert_eq!(num_sites, 2, "entry + loop == 2 sites");
+    let (asm, num_probes) = compile_x86_naive_with_tracing(&wasm, 0x60);
+    assert_eq!(num_probes, 2, "entry + loop == 2 probes");
 
-    // One preamble per site: each loads the runtime trace-table base from the
+    // One preamble per probe: each loads the runtime probe-table base from the
     // CTX-relative slot (CTX = r15, base_off = 0x60 = 96).
     let base_loads = asm.matches("qword ptr [r15+96]").count();
-    assert_eq!(base_loads, 2, "one CTX-relative base load per site:\n{asm}");
+    assert_eq!(base_loads, 2, "one CTX-relative base load per probe:\n{asm}");
 
-    // Site 0 (function entry) indexes TraceSite[0]; site 1 (loop) indexes
-    // TraceSite[1] = +16 bytes.  counter at +0, specialization ptr at +8.
-    assert!(asm.contains("add qword ptr [rdx+0],1"), "site 0 counter:\n{asm}");
-    assert!(asm.contains("mov rdx, qword ptr [rdx+8]"), "site 0 spec ptr:\n{asm}");
-    assert!(asm.contains("add qword ptr [rdx+16],1"), "site 1 counter:\n{asm}");
-    assert!(asm.contains("mov rdx, qword ptr [rdx+24]"), "site 1 spec ptr:\n{asm}");
-    // Tail-jump to the specialization through the loaded pointer.
-    assert!(asm.contains("jmp rdx"), "spec tail-jump:\n{asm}");
+    // Probe 0 (function entry) indexes ProbeSlot[0]; probe 1 (loop) indexes
+    // ProbeSlot[1] = +16 bytes.  counter at +0, handler ptr at +8.
+    assert!(asm.contains("add qword ptr [rdx+0],1"), "probe 0 counter:\n{asm}");
+    assert!(asm.contains("mov rdx, qword ptr [rdx+8]"), "probe 0 handler ptr:\n{asm}");
+    assert!(asm.contains("add qword ptr [rdx+16],1"), "probe 1 counter:\n{asm}");
+    assert!(asm.contains("mov rdx, qword ptr [rdx+24]"), "probe 1 handler ptr:\n{asm}");
+    // Tail-jump to the handler through the loaded pointer.
+    assert!(asm.contains("jmp rdx"), "handler tail-jump:\n{asm}");
 }
 
 #[test]
 fn test_tracing_uses_no_baked_address() {
-    // Compile/runtime separation: the preamble must reach its trace state
+    // Compile/runtime separation: the preamble must reach its probe state
     // CTX-relative, never by baking an absolute 64-bit address into the code.
     let wasm = make_loop_counter_wasm();
     let (asm, _) = compile_x86_naive_with_tracing(&wasm, 0x60);
@@ -5157,15 +5157,15 @@ fn test_tracing_uses_no_baked_address() {
 
 #[test]
 fn test_tracing_disabled_is_zero_overhead() {
-    // With tracing off (the default), no preamble is emitted — the generated
-    // code must be what it was before tracing existed.
+    // With probes off (the default), no preamble is emitted — the generated
+    // code must be what it was before probes existed.
     let wasm = make_loop_counter_wasm();
     let asm_off = compile_x86_naive_no_tracing(&wasm);
-    assert!(!asm_off.contains("qword ptr [r15+96]"), "no trace-base load when disabled");
+    assert!(!asm_off.contains("qword ptr [r15+96]"), "no probe-base load when disabled");
 
     // And the enabled build is strictly a superset (longer) of the disabled one.
     let (asm_on, _) = compile_x86_naive_with_tracing(&wasm, 0x60);
-    assert!(asm_on.len() > asm_off.len(), "tracing adds preamble code");
+    assert!(asm_on.len() > asm_off.len(), "probes add preamble code");
 }
 
 // ---------------------------------------------------------------------------
@@ -5180,29 +5180,29 @@ fn compile_x86_sysv_binary_traced(wasm: &[u8]) -> (Vec<u8>, u32) {
 fn run_x86_sysv_traced(
     code: &[u8],
     args: &[u64],
-    num_sites: u32,
+    num_probes: u32,
     spec: Option<(u32, &[u8])>,
 ) -> (u64, Vec<u64>) {
-    run_native_sysv_traced(NativeArch::X86_64, code, args, num_sites, spec)
+    run_native_sysv_traced(NativeArch::X86_64, code, args, num_probes, spec)
 }
 
 #[test]
 fn test_sysv_tracing_counters_increment() {
-    // Loop-counter fn: site 0 = entry, site 1 = loop. With arg=5 the loop body
-    // runs until n hits 0, so the loop site is entered 6 times (initial + 5
-    // back-edges) and the entry site once.  No specialization installed → the
+    // Loop-counter fn: probe 0 = entry, probe 1 = loop. With arg=5 the loop body
+    // runs until n hits 0, so the loop probe is entered 6 times (initial + 5
+    // back-edges) and the entry probe once.  No handler installed → the
     // baseline runs and the result is the counted value.
     let wasm = make_loop_counter_wasm();
-    let (code, num_sites) = compile_x86_sysv_binary_traced(&wasm);
-    assert_eq!(num_sites, 2);
+    let (code, num_probes) = compile_x86_sysv_binary_traced(&wasm);
+    assert_eq!(num_probes, 2);
 
-    let (result, counters) = run_x86_sysv_traced(&code, &[5], num_sites, None);
+    let (result, counters) = run_x86_sysv_traced(&code, &[5], num_probes, None);
     assert_eq!(result as u32, 5, "baseline loop result");
     assert_eq!(counters[0], 1, "function entered once");
-    assert_eq!(counters[1], 6, "loop site entered 6× for n=5");
+    assert_eq!(counters[1], 6, "loop probe entered 6× for n=5");
 
     // A different arg scales the loop counter.
-    let (result, counters) = run_x86_sysv_traced(&code, &[10], num_sites, None);
+    let (result, counters) = run_x86_sysv_traced(&code, &[10], num_probes, None);
     assert_eq!(result as u32, 10);
     assert_eq!(counters[0], 1);
     assert_eq!(counters[1], 11);
@@ -5210,33 +5210,33 @@ fn test_sysv_tracing_counters_increment() {
 
 #[test]
 fn test_sysv_tracing_specialization_tailjump() {
-    // Install a specialization stub at site 0 (function entry): `mov eax, 0xABCD ; ret`.
+    // Install a handler at probe 0 (function entry): `mov eax, 0xABCD ; ret`.
     // The entry preamble must increment the counter, see the non-null pointer,
-    // and tail-jump to the stub — so the result is the stub's sentinel and the
-    // loop site is never reached.
+    // and tail-jump to the handler — so the result is the handler's sentinel and
+    // the loop probe is never reached.
     let wasm = make_loop_counter_wasm();
-    let (code, num_sites) = compile_x86_sysv_binary_traced(&wasm);
+    let (code, num_probes) = compile_x86_sysv_binary_traced(&wasm);
 
     let stub: &[u8] = &[0xB8, 0xCD, 0xAB, 0x00, 0x00, 0xC3]; // mov eax,0xABCD ; ret
-    let (result, counters) = run_x86_sysv_traced(&code, &[5], num_sites, Some((0, stub)));
+    let (result, counters) = run_x86_sysv_traced(&code, &[5], num_probes, Some((0, stub)));
 
     assert_eq!(result as u32, 0xABCD, "entry specialization tail-jump taken");
     assert_eq!(counters[0], 1, "entry counter still incremented before the jump");
-    assert_eq!(counters[1], 0, "loop site never reached (specialized away)");
+    assert_eq!(counters[1], 0, "loop probe never reached (specialized away)");
 }
 
 #[test]
 fn test_sysv_tracing_loop_site_specialization() {
-    // Install a specialization stub at the loop site (site 1).  The baseline
-    // entry runs, the loop is entered once (counter[1] == 1), the preamble sees
-    // the pointer and tail-jumps to the stub instead of running the loop body.
+    // Install a handler at the loop probe (probe 1).  The baseline entry runs,
+    // the loop is entered once (counter[1] == 1), the preamble sees the
+    // pointer and tail-jumps to the handler instead of running the loop body.
     let wasm = make_loop_counter_wasm();
-    let (code, num_sites) = compile_x86_sysv_binary_traced(&wasm);
+    let (code, num_probes) = compile_x86_sysv_binary_traced(&wasm);
 
     // At a mid-function site the operand stack is live, so the stub must tear
     // down the SysV frame before returning: mov eax,99 ; mov rsp,rbp ; pop rbp ; ret
     let stub: &[u8] = &[0xB8, 0x63, 0x00, 0x00, 0x00, 0x48, 0x89, 0xEC, 0x5D, 0xC3];
-    let (result, counters) = run_x86_sysv_traced(&code, &[5], num_sites, Some((1, stub)));
+    let (result, counters) = run_x86_sysv_traced(&code, &[5], num_probes, Some((1, stub)));
 
     assert_eq!(result as u32, 99, "loop-site specialization tail-jump taken");
     assert_eq!(counters[0], 1, "entry counter incremented");
@@ -5247,10 +5247,10 @@ fn test_sysv_tracing_loop_site_specialization() {
 // Generic (all-arch) SysV tracing execution harness
 // ---------------------------------------------------------------------------
 
-/// Compile `wasm` for the given arch's SysV ABI with tracing enabled, into raw
-/// machine code (loaded at 0x100000 under Unicorn).  Returns `(code, num_sites)`.
+/// Compile `wasm` for the given arch's SysV ABI with probes enabled, into raw
+/// machine code (loaded at 0x100000 under Unicorn).  Returns `(code, num_probes)`.
 fn compile_native_sysv_binary_traced(wasm: &[u8], arch: NativeArch) -> (Vec<u8>, u32) {
-    use portal_solutions_blitz_common::ops::{trace_site_count, MachOperator, TracingConfig};
+    use portal_solutions_blitz_common::ops::{probe_site_count, MachOperator, ProbeTableConfig};
 
     let (sigs_wp, _, fsigs) = parse_sigs(wasm);
     let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
@@ -5259,16 +5259,16 @@ fn compile_native_sysv_binary_traced(wasm: &[u8], arch: NativeArch) -> (Vec<u8>,
             bodies.push(body);
         }
     }
-    let num_sites = trace_site_count(&bodies[0]);
+    let num_probes = probe_site_count(&bodies[0]);
     let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
     let ops = dce_pass!(raw_ops);
     let mut reencoder = RoundtripReencoder;
     let mut ctx = ();
 
-    // Inject tracing into the StartFn FnData of every op.
+    // Inject probes into the StartFn FnData of every op.
     let inject = |op: &mut MachOperator<'_, ()>| {
         if let MachOperator::StartFn { data, .. } = op {
-            data.tracing = Some(TracingConfig { enabled: true, num_sites, table_base_off: 0 });
+            data.probes = Some(ProbeTableConfig { enabled: true, num_probes, table_base_off: 0 });
         }
     };
 
@@ -5319,7 +5319,7 @@ fn compile_native_sysv_binary_traced(wasm: &[u8], arch: NativeArch) -> (Vec<u8>,
             out.into_bytes()
         }
     };
-    (code, num_sites)
+    (code, num_probes)
 }
 
 /// A function-entry specialization stub that returns `sentinel` (≤ 0x7FF so it
@@ -5351,16 +5351,16 @@ fn sysv_entry_stub(arch: NativeArch, sentinel: u16) -> Vec<u8> {
     }
 }
 
-/// Run a traced SysV function under Unicorn for any arch.
+/// Run a probed SysV function under Unicorn for any arch.
 ///
-/// Installs a zeroed `[TraceSite]` table, passes its base in the arch's
-/// virtual-parameter register, optionally installs a specialization stub for one
-/// site, runs, and returns `(return_reg, per_site_counters)`.
+/// Installs a zeroed `[ProbeSlot]` table, passes its base in the arch's
+/// virtual-parameter register, optionally installs a handler for one probe,
+/// runs, and returns `(return_reg, per_probe_counters)`.
 fn run_native_sysv_traced(
     arch: NativeArch,
     code: &[u8],
     args: &[u64],
-    num_sites: u32,
+    num_probes: u32,
     spec: Option<(u32, &[u8])>,
 ) -> (u64, Vec<u64>) {
     use unicorn_engine::{unicorn_const::{Arch, Mode, Prot}, Unicorn};
@@ -5368,7 +5368,7 @@ fn run_native_sysv_traced(
     const CODE: u64 = 0x100000;
     const STACK: u64 = 0x200000;
     const STACK_SIZE: u64 = 0x10000;
-    const TRACE_TABLE: u64 = 0x400000;
+    const PROBE_TABLE: u64 = 0x400000;
     const HALT: u64 = CODE + 0xF000;
 
     // Shared setup performed inside each arch arm (Unicorn is not object-safe
@@ -5377,23 +5377,23 @@ fn run_native_sysv_traced(
         ($uc:expr) => {{
             $uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             $uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
-            $uc.mem_map(TRACE_TABLE, 0x1000, Prot::ALL).unwrap();
+            $uc.mem_map(PROBE_TABLE, 0x1000, Prot::ALL).unwrap();
             $uc.mem_write(CODE, code).unwrap();
-            $uc.mem_write(TRACE_TABLE, &vec![0u8; num_sites as usize * 16]).unwrap();
-            if let Some((site, stub)) = spec {
+            $uc.mem_write(PROBE_TABLE, &vec![0u8; num_probes as usize * 16]).unwrap();
+            if let Some((probe_id, stub)) = spec {
                 let stub_addr = CODE + ((code.len() as u64 + 15) & !15);
                 $uc.mem_write(stub_addr, stub).unwrap();
-                let slot = TRACE_TABLE + site as u64 * 16 + 8;
+                let slot = PROBE_TABLE + probe_id as u64 * 16 + 8;
                 $uc.mem_write(slot, &stub_addr.to_le_bytes()).unwrap();
             }
         }};
     }
     macro_rules! read_counters {
         ($uc:expr) => {{
-            let mut counters = Vec::with_capacity(num_sites as usize);
-            for s in 0..num_sites {
+            let mut counters = Vec::with_capacity(num_probes as usize);
+            for s in 0..num_probes {
                 let mut b = [0u8; 8];
-                $uc.mem_read(TRACE_TABLE + s as u64 * 16, &mut b).unwrap();
+                $uc.mem_read(PROBE_TABLE + s as u64 * 16, &mut b).unwrap();
                 counters.push(u64::from_le_bytes(b));
             }
             counters
@@ -5408,7 +5408,7 @@ fn run_native_sysv_traced(
             let rsp = STACK + STACK_SIZE - 8;
             uc.mem_write(rsp, &HALT.to_le_bytes()).unwrap();
             uc.reg_write(RegisterX86::RSP, rsp).unwrap();
-            uc.reg_write(RegisterX86::R11, TRACE_TABLE).unwrap(); // virtual param
+            uc.reg_write(RegisterX86::R11, PROBE_TABLE).unwrap(); // virtual param
             let arg_regs = [RegisterX86::RDI, RegisterX86::RSI, RegisterX86::RDX, RegisterX86::RCX];
             for (i, &v) in args.iter().enumerate().take(4) { uc.reg_write(arg_regs[i], v).unwrap(); }
             uc.emu_start(CODE, HALT, 0, 100_000).unwrap();
@@ -5420,7 +5420,7 @@ fn run_native_sysv_traced(
             common_mem!(uc);
             uc.reg_write(RegisterARM64::SP, STACK + STACK_SIZE - 16).unwrap();
             uc.reg_write(RegisterARM64::LR, HALT).unwrap();
-            uc.reg_write(RegisterARM64::X12, TRACE_TABLE).unwrap(); // virtual param
+            uc.reg_write(RegisterARM64::X12, PROBE_TABLE).unwrap(); // virtual param
             let arg_regs = [RegisterARM64::X0, RegisterARM64::X1, RegisterARM64::X2, RegisterARM64::X3];
             for (i, &v) in args.iter().enumerate().take(4) { uc.reg_write(arg_regs[i], v).unwrap(); }
             uc.emu_start(CODE, HALT, 0, 100_000).unwrap();
@@ -5432,7 +5432,7 @@ fn run_native_sysv_traced(
             common_mem!(uc);
             uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16).unwrap();
             uc.reg_write(RegisterRISCV::RA, HALT).unwrap();
-            uc.reg_write(RegisterRISCV::T2, TRACE_TABLE).unwrap(); // virtual param
+            uc.reg_write(RegisterRISCV::T2, PROBE_TABLE).unwrap(); // virtual param
             let arg_regs = [RegisterRISCV::A0, RegisterRISCV::A1, RegisterRISCV::A2, RegisterRISCV::A3];
             for (i, &v) in args.iter().enumerate().take(4) { uc.reg_write(arg_regs[i], v).unwrap(); }
             uc.emu_start(CODE, HALT, 0, 100_000).unwrap();
@@ -5443,30 +5443,216 @@ fn run_native_sysv_traced(
 
 fn assert_sysv_tracing_counters(arch: NativeArch) {
     let wasm = make_loop_counter_wasm();
-    let (code, num_sites) = compile_native_sysv_binary_traced(&wasm, arch);
-    assert_eq!(num_sites, 2, "{arch:?}: entry + loop");
-    // Mid-function (loop) site uses the spilled frame-slot base; the counter
+    let (code, num_probes) = compile_native_sysv_binary_traced(&wasm, arch);
+    assert_eq!(num_probes, 2, "{arch:?}: entry + loop");
+    // Mid-function (loop) probe uses the spilled frame-slot base; the counter
     // incrementing the right amount proves the frame-slot disp is correct.
-    let (result, counters) = run_native_sysv_traced(arch, &code, &[5], num_sites, None);
+    let (result, counters) = run_native_sysv_traced(arch, &code, &[5], num_probes, None);
     assert_eq!(result as u32, 5, "{arch:?}: baseline loop result");
-    assert_eq!(counters[0], 1, "{arch:?}: entry site once");
-    assert_eq!(counters[1], 6, "{arch:?}: loop site 6× for n=5");
+    assert_eq!(counters[0], 1, "{arch:?}: entry probe once");
+    assert_eq!(counters[1], 6, "{arch:?}: loop probe 6× for n=5");
 }
 
 fn assert_sysv_tracing_entry_spec(arch: NativeArch) {
     let wasm = make_loop_counter_wasm();
-    let (code, num_sites) = compile_native_sysv_binary_traced(&wasm, arch);
+    let (code, num_probes) = compile_native_sysv_binary_traced(&wasm, arch);
     let stub = sysv_entry_stub(arch, 1234);
-    let (result, counters) = run_native_sysv_traced(arch, &code, &[5], num_sites, Some((0, &stub)));
+    let (result, counters) = run_native_sysv_traced(arch, &code, &[5], num_probes, Some((0, &stub)));
     assert_eq!(result as u32, 1234, "{arch:?}: entry specialization tail-jump taken");
     assert_eq!(counters[0], 1, "{arch:?}: entry counter incremented before jump");
-    assert_eq!(counters[1], 0, "{arch:?}: loop site never reached");
+    assert_eq!(counters[1], 0, "{arch:?}: loop probe never reached");
 }
 
 #[test] fn test_sysv_tracing_counters_aarch64() { assert_sysv_tracing_counters(NativeArch::AArch64); }
 #[test] fn test_sysv_tracing_counters_riscv64() { assert_sysv_tracing_counters(NativeArch::Riscv64); }
 #[test] fn test_sysv_tracing_entry_spec_aarch64() { assert_sysv_tracing_entry_spec(NativeArch::AArch64); }
 #[test] fn test_sysv_tracing_entry_spec_riscv64() { assert_sysv_tracing_entry_spec(NativeArch::Riscv64); }
+
+// ---------------------------------------------------------------------------
+// Tests — ProbeBinding::Call (register-only call-and-return)
+//
+// Unlike the `TailTakeover` binding exercised above (which permanently hands
+// off control — the existing specialization opt-entry behavior), `Call`
+// binding must *return* to the probe site once the handler runs. These tests
+// drive `blitz_codegen::emit_probe_site` directly (independent of any WASM
+// function) to exercise the new `call_reg` primitive on real hardware
+// semantics under Unicorn for all three architectures.
+// ---------------------------------------------------------------------------
+
+/// Build a standalone snippet — one `Call`-bound probe site (probe 0, base
+/// reached via the SysV virtual-param register, reusing the same convention
+/// as the function-entry trace site above) followed by a marker instruction —
+/// and run it under Unicorn.
+///
+/// Returns `(handler_ret_reg, marker_reg, hit_counter)`. Both check registers
+/// are poisoned with `0xFFFF_FFFF` before running, so a leftover poison value
+/// unambiguously means "never written".
+fn run_call_probe(arch: NativeArch, install_handler: bool) -> (u64, u64, u64) {
+    use portal_solutions_blitz_codegen::{emit_probe_site, BlitzWriter, ProbeBinding};
+    use unicorn_engine::{unicorn_const::{Arch, Mode, Prot}, Unicorn};
+
+    const CODE: u64 = 0x100000;
+    const STUB_ADDR: u64 = CODE + 0x800;
+    const PROBE_TABLE: u64 = 0x400000;
+    const STACK: u64 = 0x200000;
+    const STACK_SIZE: u64 = 0x10000;
+    const POISON: u64 = 0xFFFF_FFFF;
+    const HANDLER_SENTINEL: u16 = 0x222; // ABI return reg, iff the handler ran
+    const MARKER_SENTINEL: u64 = 0x333; // proves control resumed after the call
+
+    let handler_stub = sysv_entry_stub(arch, HANDLER_SENTINEL);
+
+    match arch {
+        NativeArch::X86_64 => {
+            use portal_solutions_asm_x86_64::out::iced::IcedWriter;
+            use portal_solutions_blitz_x86_64::{
+                X64Arch, X64Label,
+                codegen::{BlitzW, ProbeBase},
+                sysv::PROBE_BASE_REG,
+            };
+            use unicorn_engine::RegisterX86;
+
+            let mut out = IcedWriter::<X64Label>::new(CODE);
+            let mut ctx = ();
+            let mut bw = BlitzW {
+                writer: &mut out, ctx: &mut ctx, arch: X64Arch::default(),
+                probe_base: ProbeBase::Reg(PROBE_BASE_REG),
+            };
+            let mut label_counter = 0usize;
+            emit_probe_site(&mut bw, 0, 0, 2 /* RDX */, ProbeBinding::Call, &mut label_counter).unwrap();
+            bw.load_u64_imm(1 /* RCX */, MARKER_SENTINEL).unwrap();
+            let code = out.into_bytes();
+            let halt = CODE + code.len() as u64;
+
+            let mut uc = Unicorn::new(Arch::X86, Mode::MODE_64).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(PROBE_TABLE, 0x1000, Prot::ALL).unwrap();
+            // `call_reg`/`ret` use the hardware stack on x86-64 (unlike AArch64's
+            // `bl`/AArch64 `ret` or RISC-V's `jalr ra`, which thread the return
+            // address through a link register instead) — needs a real stack.
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.reg_write(RegisterX86::RSP, STACK + STACK_SIZE - 8).unwrap();
+            uc.mem_write(CODE, &code).unwrap();
+            uc.mem_write(PROBE_TABLE, &[0u8; 16]).unwrap();
+            if install_handler {
+                uc.mem_write(STUB_ADDR, &handler_stub).unwrap();
+                uc.mem_write(PROBE_TABLE + 8, &STUB_ADDR.to_le_bytes()).unwrap();
+            }
+            uc.reg_write(RegisterX86::R11, PROBE_TABLE).unwrap();
+            uc.reg_write(RegisterX86::RAX, POISON).unwrap();
+            uc.reg_write(RegisterX86::RCX, POISON).unwrap();
+            uc.emu_start(CODE, halt, 0, 100_000).unwrap();
+            let handler_ret = uc.reg_read(RegisterX86::RAX).unwrap();
+            let marker = uc.reg_read(RegisterX86::RCX).unwrap();
+            let mut counter = [0u8; 8];
+            uc.mem_read(PROBE_TABLE, &mut counter).unwrap();
+            (handler_ret, marker, u64::from_le_bytes(counter))
+        }
+        NativeArch::AArch64 => {
+            use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+            use portal_solutions_blitz_aarch64::{
+                AArch64Arch, AArch64Label,
+                codegen::{BlitzW, ProbeBase},
+                sysv::PROBE_BASE_REG,
+            };
+            use unicorn_engine::RegisterARM64;
+
+            let mut out = AArch64Writer::<AArch64Label>::new();
+            let mut ctx = ();
+            let mut bw = BlitzW {
+                writer: &mut out, ctx: &mut ctx, arch: AArch64Arch::default(), scratch2: 10,
+                probe_base: ProbeBase::Reg(PROBE_BASE_REG),
+            };
+            let mut label_counter = 0usize;
+            emit_probe_site(&mut bw, 0, 0, 9, ProbeBinding::Call, &mut label_counter).unwrap();
+            bw.load_u64_imm(1, MARKER_SENTINEL).unwrap();
+            let code = out.into_bytes();
+            let halt = CODE + code.len() as u64;
+
+            let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(PROBE_TABLE, 0x1000, Prot::ALL).unwrap();
+            uc.mem_write(CODE, &code).unwrap();
+            uc.mem_write(PROBE_TABLE, &[0u8; 16]).unwrap();
+            if install_handler {
+                uc.mem_write(STUB_ADDR, &handler_stub).unwrap();
+                uc.mem_write(PROBE_TABLE + 8, &STUB_ADDR.to_le_bytes()).unwrap();
+            }
+            uc.reg_write(RegisterARM64::X12, PROBE_TABLE).unwrap();
+            uc.reg_write(RegisterARM64::X0, POISON).unwrap();
+            uc.reg_write(RegisterARM64::X1, POISON).unwrap();
+            uc.emu_start(CODE, halt, 0, 100_000).unwrap();
+            let handler_ret = uc.reg_read(RegisterARM64::X0).unwrap();
+            let marker = uc.reg_read(RegisterARM64::X1).unwrap();
+            let mut counter = [0u8; 8];
+            uc.mem_read(PROBE_TABLE, &mut counter).unwrap();
+            (handler_ret, marker, u64::from_le_bytes(counter))
+        }
+        NativeArch::Riscv64 => {
+            use portal_solutions_asm_riscv64::out::rv_asm_backend::RvAsmWriter;
+            use portal_solutions_blitz_riscv64::{
+                RiscV64Arch, RiscvLabel,
+                codegen::{BlitzW, ProbeBase},
+                sysv::PROBE_BASE_REG,
+            };
+            use unicorn_engine::RegisterRISCV;
+
+            let mut out = RvAsmWriter::<RiscvLabel>::new();
+            let mut ctx = ();
+            let mut bw = BlitzW {
+                writer: &mut out, ctx: &mut ctx, arch: RiscV64Arch::default(), scratch2: 6,
+                probe_base: ProbeBase::Reg(PROBE_BASE_REG),
+            };
+            let mut label_counter = 0usize;
+            emit_probe_site(&mut bw, 0, 0, 5, ProbeBinding::Call, &mut label_counter).unwrap();
+            bw.load_u64_imm(11, MARKER_SENTINEL).unwrap();
+            let code = out.into_bytes();
+            let halt = CODE + code.len() as u64;
+
+            let mut uc = Unicorn::new(Arch::RISCV, Mode::RISCV64).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(PROBE_TABLE, 0x1000, Prot::ALL).unwrap();
+            uc.mem_write(CODE, &code).unwrap();
+            uc.mem_write(PROBE_TABLE, &[0u8; 16]).unwrap();
+            if install_handler {
+                uc.mem_write(STUB_ADDR, &handler_stub).unwrap();
+                uc.mem_write(PROBE_TABLE + 8, &STUB_ADDR.to_le_bytes()).unwrap();
+            }
+            uc.reg_write(RegisterRISCV::T2, PROBE_TABLE).unwrap();
+            uc.reg_write(RegisterRISCV::A0, POISON).unwrap();
+            uc.reg_write(RegisterRISCV::A1, POISON).unwrap();
+            uc.emu_start(CODE, halt, 0, 100_000).unwrap();
+            let handler_ret = uc.reg_read(RegisterRISCV::A0).unwrap();
+            let marker = uc.reg_read(RegisterRISCV::A1).unwrap();
+            let mut counter = [0u8; 8];
+            uc.mem_read(PROBE_TABLE, &mut counter).unwrap();
+            (handler_ret, marker, u64::from_le_bytes(counter))
+        }
+    }
+}
+
+fn assert_call_probe(arch: NativeArch) {
+    // Handler disabled (null pointer): the probe site must still increment
+    // the hit counter and fall through to the marker — proving `Call`
+    // binding never blocks execution even when no handler is installed.
+    let (handler_ret, marker, counter) = run_call_probe(arch, false);
+    assert_eq!(handler_ret, 0xFFFF_FFFF, "{arch:?}: handler reg untouched when disabled");
+    assert_eq!(marker, 0x333, "{arch:?}: marker always reached (disabled)");
+    assert_eq!(counter, 1, "{arch:?}: hit counter increments even when disabled");
+
+    // Handler installed: it must run (its write is observed) *and* control
+    // must return to the probe site afterward (the marker write is also
+    // observed) — the defining difference from `TailTakeover`, which would
+    // never reach the marker at all.
+    let (handler_ret, marker, counter) = run_call_probe(arch, true);
+    assert_eq!(handler_ret, 0x222, "{arch:?}: handler ran and its write survived the return");
+    assert_eq!(marker, 0x333, "{arch:?}: control resumed at the probe site after the call");
+    assert_eq!(counter, 1, "{arch:?}: hit counter incremented once");
+}
+
+#[test] fn test_call_probe_x86_64() { assert_call_probe(NativeArch::X86_64); }
+#[test] fn test_call_probe_aarch64() { assert_call_probe(NativeArch::AArch64); }
+#[test] fn test_call_probe_riscv64() { assert_call_probe(NativeArch::Riscv64); }
 
 // ---------------------------------------------------------------------------
 // Tests — backend sharding

@@ -20,7 +20,7 @@ use portal_pc_asm_common::types::mem::MemorySize;
 use portal_solutions_asm_aarch64::out::arg::MemArg;
 use portal_solutions_blitz_common::{
     asm::Reg,
-    ops::{FnData, MachOperator, TracingConfig},
+    ops::{FnData, MachOperator, ProbeTableConfig},
     shard::{CallTarget, SecondCtxConfig},
     wasm_encoder::{self, Catch, FuncType, Instruction, reencode::{self as reencode, Reencode}},
     wasmparser::Operator,
@@ -99,16 +99,17 @@ pub struct State<'a> {
     pub if_stack: Vec<Endable>,
     pub body: u32,
     pub body_labels: BTreeMap<u32, usize>,
-    /// Carried from `StartFn` to `StartBody` so the tracing preamble is emitted
-    /// after the function-entry label, ensuring every call-path is instrumented.
-    pub tracing: Option<TracingConfig>,
-    /// Next trace-site id to assign (function entry = site 0; each loop/block
-    /// consumes the next).  See `emit_jit_preamble` / Item 1.
-    pub next_site_id: u32,
-    /// How mid-function trace sites reach the runtime trace-table base.  The
+    /// Carried from `StartFn` to `StartBody` so the function-entry probe is
+    /// emitted after the function-entry label, ensuring every call-path is
+    /// instrumented.
+    pub probes: Option<ProbeTableConfig>,
+    /// Next probe id to assign (function entry = probe 0; each loop/block
+    /// consumes the next).  See `emit_probe_site`.
+    pub next_probe_id: u32,
+    /// How mid-function probe sites reach the runtime probe-table base.  The
     /// NaiveAbi keeps the default (CTX-relative); the SysV ABI sets this to a
     /// frame slot after spilling its virtual-param base register.
-    pub trace_base: crate::codegen::TraceBase,
+    pub probe_base: crate::codegen::ProbeBase,
     /// Present when sharding is active. SCR (X27) is pushed in the prologue
     /// and popped before return.
     pub shard: Option<NaiveShardState<'a>>,
@@ -435,21 +436,23 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         }
     }
 
-    /// Emit a tracing/specialization preamble for a loop/block control-flow
-    /// site, consuming the next `site_id`.  No-op when tracing is disabled.
-    /// Uses T0 as scratch (T1 as the inner `inc_mem64` scratch).
-    fn emit_trace_site(&mut self, ctx: &mut Context, arch: AArch64Arch, state: &mut State<'_>)
+    /// Emit a control-flow probe site (`TailTakeover` binding) for a
+    /// loop/block header, consuming the next `probe_id`.  No-op when probes
+    /// are disabled.  Uses T0 as scratch (T1 as the inner `inc_mem64` scratch).
+    fn emit_control_flow_probe(&mut self, ctx: &mut Context, arch: AArch64Arch, state: &mut State<'_>)
         -> Result<(), Self::Error>
     where
         Self: Sized,
     {
-        if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
-            let site_id = state.next_site_id;
-            state.next_site_id += 1;
-            let trace_base = state.trace_base;
-            let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: T1.0, trace_base };
-            portal_solutions_blitz_codegen::emit_jit_preamble(
-                &mut bw, cfg.table_base_off, site_id, T0.0, &mut state.label_index,
+        if let Some(cfg) = state.probes.as_ref().copied().filter(|c| c.enabled) {
+            let probe_id = state.next_probe_id;
+            state.next_probe_id += 1;
+            let probe_base = state.probe_base;
+            let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: T1.0, probe_base };
+            portal_solutions_blitz_codegen::emit_probe_site(
+                &mut bw, cfg.table_base_off, probe_id, T0.0,
+                portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                &mut state.label_index,
             )?;
         }
         Ok(())
@@ -838,7 +841,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 let end_lbl = AArch64Label::Indexed { idx: state.label_index };
                 state.label_index += 1;
                 state.if_stack.push(Endable::Block { end_lbl });
-                self.emit_trace_site(ctx, arch, state)?;
+                self.emit_control_flow_probe(ctx, arch, state)?;
                 Ok(())
             }
             Instruction::Loop(_) => {
@@ -846,7 +849,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 state.label_index += 1;
                 self.set_label(ctx, arch, head_lbl.clone())?;
                 state.if_stack.push(Endable::Loop { head_lbl });
-                self.emit_trace_site(ctx, arch, state)?;
+                self.emit_control_flow_probe(ctx, arch, state)?;
                 Ok(())
             }
             Instruction::If(_) => {
@@ -1161,13 +1164,14 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
 
                 self.set_label(ctx, arch, AArch64Label::Func { r#fn: *id }).map_err(Err::from)?;
 
-                state.tracing = data.tracing;
-                state.next_site_id = 1;
-                if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
+                state.probes = data.probes;
+                state.next_probe_id = 1;
+                if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW::new(self, ctx, arch, T1.0);
-                    portal_solutions_blitz_codegen::emit_jit_preamble(
-                        &mut bw, cfg.table_base_off, 0,
-                        T0.0, &mut state.label_index,
+                    portal_solutions_blitz_codegen::emit_probe_site(
+                        &mut bw, cfg.table_base_off, 0, T0.0,
+                        portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                        &mut state.label_index,
                     ).map_err(Err::from)?;
                 }
 

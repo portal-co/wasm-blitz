@@ -8,6 +8,7 @@ publish = false
 portal-solutions-blitz-js      = { path = "../blitz-js" }
 portal-solutions-blitz-c       = { path = "../blitz-c" }
 portal-solutions-blitz-common  = { path = "../blitz-common" }
+portal-solutions-blitz-codegen = { path = "../blitz-codegen" }
 portal-solutions-blitz-x86-64  = { path = "../blitz-x86-64" }
 portal-solutions-blitz-aarch64 = { path = "../blitz-aarch64" }
 portal-solutions-blitz-riscv64 = { path = "../blitz-riscv64" }

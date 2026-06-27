@@ -35,16 +35,16 @@ use portal_solutions_blitz_common::{
 
 use crate::naive::{CallAbi, State, WriterExt, SCR, WASM_SLOT};
 use crate::AArch64Label;
-use crate::codegen::TraceBase;
+use crate::codegen::ProbeBase;
 use crate::{FP, LR, SP};
 
-/// Blitz register number of the AAPCS64 **trace-base virtual parameter** (`x12`).
+/// Blitz register number of the AAPCS64 **probe-base virtual parameter** (`x12`).
 ///
 /// `x12` is caller-saved and never a positional argument register (X0–X7), nor
-/// the trace-preamble scratch (x9/x10), so the runtime can pass the per-function
-/// trace-table base in it.  Read directly at the function-entry site; spilled to
+/// the probe-preamble scratch (x9/x10), so the runtime can pass the per-function
+/// probe-table base in it.  Read directly at the function-entry site; spilled to
 /// an FP-relative frame slot for mid-function (loop/block) sites.
-pub const TRACE_BASE_REG: u8 = 12;
+pub const PROBE_BASE_REG: u8 = 12;
 
 fn reg(r: Reg) -> MemArgKind {
     MemArgKind::NoMem(ArgKind::Reg { reg: r, size: MemorySize::_64 })
@@ -387,23 +387,24 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 state.param_count = data.num_params;
                 state.num_returns = data.num_returns;
                 state.control_depth = data.control_depth;
-                state.tracing = data.tracing;
-                state.next_site_id = 1; // site 0 is the function entry below
+                state.probes = data.probes;
+                state.next_probe_id = 1; // probe 0 is the function entry below
 
                 self.set_label(ctx, arch, AArch64Label::Indexed { idx: *id as usize + 0x80000000 })
                     .map_err(Err::from)?;
 
-                // Function-entry site (site 0): trace-table base arrives in the
+                // Function-entry probe (probe 0): probe-table base arrives in the
                 // virtual-param register x12; read it directly before the frame
                 // is built so the tail-jump delivers X0–X7 intact.  Scratch x9/x10.
-                if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
+                if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW {
                         writer: self, ctx, arch, scratch2: 10,
-                        trace_base: TraceBase::Reg(TRACE_BASE_REG),
+                        probe_base: ProbeBase::Reg(PROBE_BASE_REG),
                     };
-                    portal_solutions_blitz_codegen::emit_jit_preamble(
-                        &mut bw, cfg.table_base_off, 0,
-                        9, &mut state.label_index,
+                    portal_solutions_blitz_codegen::emit_probe_site(
+                        &mut bw, cfg.table_base_off, 0, 9,
+                        portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                        &mut state.label_index,
                     ).map_err(Err::from)?;
                 }
 
@@ -414,7 +415,7 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16)).map_err(Err::from)?;
                 self.mov(ctx, arch, &reg(FP), &reg(SP)).map_err(Err::from)?;
 
-                // One extra slot (frame bottom) holds the spilled trace base for
+                // One extra slot (frame bottom) holds the spilled probe base for
                 // mid-function sites.
                 let locals_slots = data.num_params as i64 + state.control_depth as i64 * 2 + 3;
                 // Round the frame to 16 bytes so SP stays 16-byte aligned.
@@ -424,10 +425,10 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
 
                 // Spill the virtual-param base (x12) to the bottom frame slot and
                 // point mid-function sites at it.
-                if data.tracing.as_ref().map(|c| c.enabled).unwrap_or(false) {
+                if data.probes.as_ref().map(|c| c.enabled).unwrap_or(false) {
                     let disp = -(locals_slots as i32 * 8);
-                    state.trace_base = TraceBase::FrameSlot(disp);
-                    self.str(ctx, arch, &reg(Reg(TRACE_BASE_REG)), &mem_base_disp(FP, disp))
+                    state.probe_base = ProbeBase::FrameSlot(disp);
+                    self.str(ctx, arch, &reg(Reg(PROBE_BASE_REG)), &mem_base_disp(FP, disp))
                         .map_err(Err::from)?;
                 }
 
@@ -490,7 +491,7 @@ mod sysv_manyarg_tests {
         let mut w = AArch64Writer::<AArch64Label>::new();
         let mut ctx = ();
         SysVWriterExt::sysv_emit_marshalled_call(
-            &mut w, &mut ctx, AArch64Arch::default(), target, arity, results,
+            &mut w, &mut ctx, AArch64Arch::default(), Some(target), None, arity, results,
         )
         .unwrap();
         let (bytes, _labels, relocs) = w.into_parts_with_relocs();
