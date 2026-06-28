@@ -5516,16 +5516,106 @@ fn assert_sysv_tracing_entry_spec(arch: NativeArch) {
 // existing control-flow probes still firing correctly in the same function.
 // ---------------------------------------------------------------------------
 
-#[test]
-fn test_indexed_call_probe_fires_inside_loop_x86_64() {
-    use portal_solutions_blitz_common::ops::{
-        probe_site_count, MachOperator, ProbeMode, ProbePlacement, ProbePlan, ProbeSpec, ProbeTableConfig,
+/// A trivial `ret`-only `Call`-bound probe handler: proves call-and-return
+/// without relying on the handler itself doing anything — the probe's own
+/// hit counter (incremented by `emit_probe_site` regardless of what the
+/// handler does) is what proves it fired the right number of times.
+fn ret_only_stub(arch: NativeArch) -> Vec<u8> {
+    match arch {
+        NativeArch::X86_64 => vec![0xC3],
+        NativeArch::AArch64 => 0xD65F_03C0u32.to_le_bytes().to_vec(),
+        NativeArch::Riscv64 => 0x0000_8067u32.to_le_bytes().to_vec(),
+    }
+}
+
+/// Compile `wasm` for the given arch's SysV ABI with the control-flow probes
+/// disabled and `plan` installed as the function's `ProbePlan` instead — for
+/// testing arbitrary-index probes in isolation from the auto-identified
+/// entry/loop/block set. Built without `dce_pass!` so the dispatcher's
+/// ordinal `op_index` lines up exactly with the raw operator indices `plan`
+/// was computed against (DCE can renumber/remove ops).
+fn compile_native_sysv_binary_with_plan(
+    wasm: &[u8], arch: NativeArch, plan: &portal_solutions_blitz_common::ops::ProbePlan, num_probes: u32,
+) -> Vec<u8> {
+    use portal_solutions_blitz_common::ops::{MachOperator, ProbeTableConfig};
+
+    let (sigs_wp, _, fsigs) = parse_sigs(wasm);
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let mut reencoder = RoundtripReencoder;
+    let mut ctx = ();
+
+    let inject = |op: &mut MachOperator<'_, ()>| {
+        if let MachOperator::StartFn { data, .. } = op {
+            data.probes = Some(ProbeTableConfig { enabled: true, num_probes, table_base_off: 0 });
+            data.probe_plan = Some(plan.clone());
+        }
     };
-    use portal_solutions_blitz_x86_64::{sysv, X64Arch, X64Label};
-    use portal_solutions_asm_x86_64::out::iced::IcedWriter;
+
+    match arch {
+        NativeArch::X86_64 => {
+            use portal_solutions_blitz_x86_64::{sysv, X64Arch, X64Label};
+            use portal_solutions_asm_x86_64::out::iced::IcedWriter;
+            let mut out = IcedWriter::<X64Label>::new(0x100000);
+            let mut state = sysv::SysVState::default();
+            for op in raw_ops {
+                let mut op = op.unwrap();
+                inject(&mut op);
+                sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, X64Arch::default(), &mut state, &[], &op, &mut reencoder, 0,
+                ).unwrap();
+            }
+            out.into_bytes()
+        }
+        NativeArch::AArch64 => {
+            use portal_solutions_blitz_aarch64::{naive, sysv, AArch64Arch, AArch64Label};
+            use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+            let mut out = AArch64Writer::<AArch64Label>::new();
+            let mut state = naive::State::default();
+            for op in raw_ops {
+                let mut op = op.unwrap();
+                inject(&mut op);
+                sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, AArch64Arch::default(), &mut state, &[], &op, &mut reencoder, 0,
+                ).unwrap();
+            }
+            out.into_bytes()
+        }
+        NativeArch::Riscv64 => {
+            use portal_solutions_blitz_riscv64::{naive, sysv, RiscV64Arch, RiscvLabel};
+            use portal_solutions_asm_riscv64::out::rv_asm_backend::RvAsmWriter;
+            let mut out = RvAsmWriter::<RiscvLabel>::new();
+            let mut state = naive::State::default();
+            for op in raw_ops {
+                let mut op = op.unwrap();
+                inject(&mut op);
+                sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, RiscV64Arch::default(), &mut state, &[], &op, &mut reencoder, 0,
+                ).unwrap();
+            }
+            out.into_bytes()
+        }
+    }
+}
+
+/// Ordinal indices in `make_loop_counter_wasm`'s raw operator stream: 0=Loop,
+/// 1=LocalGet(0), 2=If, 3=LocalGet(1), 4=I32Const(1), 5=I32Add, 6=LocalSet(1),
+/// .... These are a property of the WASM operator stream, so they're the
+/// same for every architecture.
+const LOOP_COUNTER_I32ADD_INDEX: usize = 5;
+const LOOP_COUNTER_AFTER_I32ADD_INDEX: usize = 6;
+
+fn assert_indexed_call_probe_fires_inside_loop(
+    arch: NativeArch, mode: portal_solutions_blitz_common::ops::ProbeMode, probe_index: usize,
+) {
+    use portal_solutions_blitz_common::ops::{probe_site_count, ProbePlacement, ProbePlan, ProbeSpec};
 
     let wasm = make_loop_counter_wasm();
-    let (sigs_wp, _, fsigs) = parse_sigs(&wasm);
     let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
     for payload in wasmparser::Parser::new(0).parse_all(&wasm).flatten() {
         if let wasmparser::Payload::CodeSectionEntry(body) = payload {
@@ -5535,55 +5625,61 @@ fn test_indexed_call_probe_fires_inside_loop_x86_64() {
     let num_control_flow_probes = probe_site_count(&bodies[0]);
     assert_eq!(num_control_flow_probes, 2, "entry + loop");
 
-    // Ordinal index 5 in the raw operator stream is the loop body's
-    // `I32Add`: 0=Loop, 1=LocalGet(0), 2=If, 3=LocalGet(1), 4=I32Const(1),
-    // 5=I32Add — a plain arithmetic instruction, not a control-flow header.
-    const ADD_INDEX: usize = 5;
     const EXTRA_PROBE_ID: u32 = 2; // right after the 2 auto-identified probes
     let mut plan = ProbePlan::default();
-    plan.by_index.insert(ADD_INDEX, vec![ProbeSpec {
+    plan.by_index.insert(probe_index, vec![ProbeSpec {
         probe_id: EXTRA_PROBE_ID,
         binding: portal_solutions_blitz_codegen::ProbeBinding::Call,
-        mode: ProbeMode::Active,
+        mode,
         placement: ProbePlacement::Before,
     }]);
 
-    // Build without `dce_pass!` so the dispatcher's ordinal `op_index` lines
-    // up exactly with the raw operator indices `ADD_INDEX` was computed
-    // against (DCE can renumber/remove ops; this function has none to remove,
-    // but skipping it keeps the index mapping obviously exact).
-    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
-    let mut out = IcedWriter::<X64Label>::new(0x100000);
-    let mut state = sysv::SysVState::default();
-    let mut ctx = ();
-    let mut reencoder = RoundtripReencoder;
-    for op in raw_ops {
-        let mut op = op.unwrap();
-        if let MachOperator::StartFn { data, .. } = &mut op {
-            data.probes = Some(ProbeTableConfig {
-                enabled: true, num_probes: EXTRA_PROBE_ID + 1, table_base_off: 0,
-            });
-            data.probe_plan = Some(plan.clone());
-        }
-        sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-            &mut out, &mut ctx, X64Arch::default(), &mut state, &[], &op, &mut reencoder, 0,
-        ).unwrap();
-    }
-    let code = out.into_bytes();
-
-    // Trivial `ret`-only handler: proves call-and-return without relying on
-    // the handler itself doing anything — the probe's own hit counter
-    // (incremented by `emit_probe_site` regardless of what the handler does)
-    // is what proves it fired the right number of times.
-    let handler: &[u8] = &[0xC3];
+    let code = compile_native_sysv_binary_with_plan(&wasm, arch, &plan, EXTRA_PROBE_ID + 1);
+    let handler = ret_only_stub(arch);
     let (result, counters) = run_native_sysv_traced(
-        NativeArch::X86_64, &code, &[5], EXTRA_PROBE_ID + 1, Some((EXTRA_PROBE_ID, handler)),
+        arch, &code, &[5], EXTRA_PROBE_ID + 1, Some((EXTRA_PROBE_ID, &handler)),
     );
 
-    assert_eq!(result as u32, 5, "loop result unaffected by the mid-expression probe");
-    assert_eq!(counters[0], 1, "entry probe still fires once, unaffected by the new probe");
-    assert_eq!(counters[1], 6, "loop probe still fires 6× for n=5, unaffected by the new probe");
-    assert_eq!(counters[2], 5, "I32Add probe fires once per loop iteration (n=5), call-and-returns each time");
+    assert_eq!(result as u32, 5, "{arch:?}/{mode:?}: loop result unaffected by the mid-expression probe");
+    assert_eq!(counters[0], 1, "{arch:?}/{mode:?}: entry probe still fires once, unaffected by the new probe");
+    assert_eq!(counters[1], 6, "{arch:?}/{mode:?}: loop probe still fires 6× for n=5, unaffected by the new probe");
+    assert_eq!(counters[2], 5, "{arch:?}/{mode:?}: probe fires once per loop iteration (n=5), call-and-returns each time");
+}
+
+#[test]
+fn test_indexed_call_probe_fires_inside_loop_x86_64() {
+    assert_indexed_call_probe_fires_inside_loop(
+        NativeArch::X86_64, portal_solutions_blitz_common::ops::ProbeMode::Active, LOOP_COUNTER_I32ADD_INDEX,
+    );
+}
+#[test]
+fn test_indexed_call_probe_fires_inside_loop_aarch64() {
+    assert_indexed_call_probe_fires_inside_loop(
+        NativeArch::AArch64, portal_solutions_blitz_common::ops::ProbeMode::Active, LOOP_COUNTER_I32ADD_INDEX,
+    );
+}
+#[test]
+fn test_indexed_call_probe_fires_inside_loop_riscv64_active() {
+    // Active mode forces a regalloc flush, which resets the allocator to
+    // believing nothing is live (matching the canonical layout `TailTakeover`
+    // needs). That reset is only valid where at most one value is pending —
+    // exactly the shape WASM guarantees at a control-flow header, which is
+    // what Active is really for. Probing *after* `I32Add` (one pending value,
+    // the sum) is a valid Active point; probing *before* it (two pending
+    // operands) is not — see `test_indexed_call_probe_fires_inside_loop_riscv64_passive`,
+    // which probes that exact point correctly using Passive mode instead.
+    assert_indexed_call_probe_fires_inside_loop(
+        NativeArch::Riscv64, portal_solutions_blitz_common::ops::ProbeMode::Active, LOOP_COUNTER_AFTER_I32ADD_INDEX,
+    );
+}
+#[test]
+fn test_indexed_call_probe_fires_inside_loop_riscv64_passive() {
+    // Passive mode never resets the allocator, so it has no such restriction:
+    // it correctly handles the two-pending-operand point right before
+    // `I32Add` that Active mode cannot (see the comment above).
+    assert_indexed_call_probe_fires_inside_loop(
+        NativeArch::Riscv64, portal_solutions_blitz_common::ops::ProbeMode::Passive, LOOP_COUNTER_I32ADD_INDEX,
+    );
 }
 
 // ---------------------------------------------------------------------------

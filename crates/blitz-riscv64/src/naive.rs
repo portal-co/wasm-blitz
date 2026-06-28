@@ -98,6 +98,13 @@ pub struct State<'a> {
     /// Present when sharding is active. SCR (S10/x26) is saved in the SysV
     /// frame. Naive functions use SCR read-only (the runtime sets it).
     pub shard: Option<NaiveShardState<'a>>,
+    /// Embedder-requested probes at arbitrary instruction indices, in addition
+    /// to the function-entry/loop/block probes above.  `None` → zero overhead,
+    /// identical codegen to today.
+    pub probe_plan: Option<portal_solutions_blitz_common::ops::ProbePlan>,
+    /// Ordinal index of the next dispatched instruction (0 = the first real
+    /// WASM operator after locals), used to look up `probe_plan` entries.
+    pub op_index: usize,
 }
 
 pub struct Frames(pub [[regalloc::RegAllocFrame<riscv_regalloc::RegKind>; 32]; 2]);
@@ -1800,7 +1807,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
 
 impl<T: Writer<RiscvLabel, Context> + ?Sized, Context> WriterExt<Context> for T {}
 
-fn emit_cmds<
+pub(crate) fn emit_cmds<
     E: core::error::Error,
     Context,
     W: asm_riscv::out::Writer<RiscvLabel, Context, Error = E>,
@@ -1837,7 +1844,7 @@ pub fn flush_regalloc<W: Writer<RiscvLabel, Context>, Context>(
 /// `RegAlloc`'s `frames`/`tos` fields and the `RegAllocFrame`/`Target` types
 /// are public, so this reads the allocator's bookkeeping directly rather
 /// than needing any new query on `portal-solutions-asm-regalloc` itself.
-fn regalloc_occupied(
+pub(crate) fn regalloc_occupied(
     ralloc: &regalloc::RegAlloc<riscv_regalloc::RegKind, 32, Frames>,
 ) -> Vec<regalloc::Target<riscv_regalloc::RegKind>> {
     [riscv_regalloc::RegKind::Int, riscv_regalloc::RegKind::Float]

@@ -665,21 +665,42 @@ exercises exactly this collision under Unicorn: it allocates a live register (wh
 lands on the same register `emit_passive_call_probe` uses as its own scratch), runs a
 `Call`-bound probe, and asserts the live value survives untouched.
 
+**Active mode's real constraint on RISC-V — at most one pending value.** `flush()`
+resets the allocator to "nothing live" (`tos = None`, all frames `Empty`), and the
+*first* subsequent `pop()` correctly falls back to popping off the native stack — but
+because that first fallback pop sets `tos = Some(..)` again, a *second* consecutive
+`pop()` sees a `tos` it mistakes for an already-resident value and returns the same
+register without emitting another native-stack pop. This is harmless at control-flow
+headers, where WASM's validation rules guarantee at most one value is live across the
+boundary (matching what `emit_control_flow_probe` has always assumed), but it means
+Active mode is **not valid** at an arbitrary mid-expression point with two or more
+pending operands (e.g. probing immediately before a binary op, with both operands
+already evaluated). Passive mode has no such restriction — it never touches
+`tos`/`frames`, so it's the correct choice for points like that. This was found, not
+designed: `test_indexed_call_probe_fires_inside_loop_riscv64_active`/`_passive`
+(`crates/blitz-tests/tests/e2e.rs`) probe the same loop body at two points — one with a
+single pending value (valid for Active) and one with two (only valid for Passive) — to
+pin down exactly where the line is. It's a constraint on `pop()`/`flush()`'s interaction
+in `asm-regalloc`, not something this layer works around.
+
 ### Arbitrary insertion points (`ProbePlan`)
 
 Beyond the auto-identified control-flow set, an embedder can place `ProbeSpec`s at any
 instruction's ordinal index via `ProbePlan.by_index: BTreeMap<usize, Vec<ProbeSpec>>`
-(`Before`/`After`), in addition to (or instead of) the `entry` probe.  This is currently
-wired into the x86-64 SysV dispatcher
-(`SysVWriterExt::sysv_emit_indexed_probes`/`SysVState::{probe_plan, op_index}` in
-`crates/blitz-x86-64/src/sysv.rs`): every `MachOperator::Instruction`/`Operator`
-dispatch checks the plan for entries at the current `op_index` before/after running the
-instruction's own codegen, reusing the same mid-function probe-base addressing
-(`ProbeBase::FrameSlot`) the control-flow probes already establish. AArch64 and
-RISC-V 64 (and the LFI variants) don't yet consume `ProbePlan` — the pattern to mirror
-is the same: an `op_index` counter plus a plan lookup at each `Instruction`/`Operator`
-dispatch point, with RISC-V additionally choosing `Active`/`Passive` emission per
-`ProbeSpec::mode`.
+(`Before`/`After`), in addition to (or instead of) the `entry` probe.  This is wired into
+the SysV dispatcher of all three architectures — `sysv_emit_indexed_probes` plus
+`State::{probe_plan, op_index}` (`SysVState` on x86-64; the shared `naive::State` on
+AArch64/RISC-V, since those two already delegate SysV instruction dispatch to the naive
+lowering) in each backend's `crates/blitz-*/src/sysv.rs`: every
+`MachOperator::Instruction`/`Operator` dispatch checks the plan for entries at the
+current `op_index` before/after running the instruction's own codegen, reusing the same
+mid-function probe-base addressing (`ProbeBase::FrameSlot`) the control-flow probes
+already establish. RISC-V's version additionally branches on `ProbeSpec::mode`
+(`Active`/`Passive`) per probe — see the previous section for what that means and its
+one real constraint. AArch64/x86-64 ignore `mode` (no allocator to disturb either way).
+The NaiveAbi/LFI dispatchers don't yet consume `ProbePlan` — the pattern to mirror there
+is identical, just at the naive `handle_op`/`_handle_op` entry point instead of the SysV
+one.
 
 **Important:** indices are positions in the stream actually fed to the dispatcher.
 If a pass like `dce_pass!` removes operators between building a `ProbePlan` and
@@ -687,11 +708,12 @@ compiling, indices must be computed against that *same* post-pass stream, not th
 `get_operators_reader()` output — `ProbePlan::control_flow_sites` and any embedder
 building a plan by hand should keep this in mind.
 
-`crates/blitz-tests/tests/e2e.rs::test_indexed_call_probe_fires_inside_loop_x86_64`
-places a `Call`-bound probe on a plain `I32Add` inside a loop body (not a control-flow
-header) and verifies it fires once per iteration without disturbing the loop's result,
-alongside the existing entry/loop control-flow probes still firing correctly in the
-same function.
+`crates/blitz-tests/tests/e2e.rs::test_indexed_call_probe_fires_inside_loop_{x86_64,
+aarch64,riscv64_active,riscv64_passive}` place a `Call`-bound probe on a plain `I32Add`
+(or the instruction right after it, for the RISC-V Active case — see above) inside a
+loop body — not a control-flow header — on every architecture, and verify it fires once
+per iteration without disturbing the loop's result, alongside the existing entry/loop
+control-flow probes still firing correctly in the same function.
 
 ### Specialisation + deopt (`crates/blitz-specialize`)
 
@@ -719,9 +741,9 @@ block sites `ProbePlan::control_flow_sites` describes:
 | x86-64    | NaiveAbi | Reg(2) (RDX)  | entry in `StartBody`; loop/block via `emit_control_flow_probe` |
 | x86-64    | SysVAbi  | Reg(0) (RAX)  | entry + loop/block via `sysv_emit_control_flow_probe`; arbitrary indices via `sysv_emit_indexed_probes` |
 | AArch64   | NaiveAbi | x9+x10 (T0/T1)| entry in `StartFn`; loop/block via `emit_control_flow_probe` |
-| AArch64   | SysVAbi  | x9+x10 (T0/T1)| entry + loop/block (delegated naive `emit_control_flow_probe`) |
+| AArch64   | SysVAbi  | x9+x10 (T0/T1)| entry + loop/block (delegated naive `emit_control_flow_probe`); arbitrary indices via `sysv_emit_indexed_probes` |
 | RISC-V 64 | NaiveAbi | t0+t1 (Reg 5/6)| entry in `StartFn`; loop/block via `emit_control_flow_probe` (Active); arbitrary `Call` probes via `emit_passive_call_probe` (Active or Passive) |
-| RISC-V 64 | SysVAbi  | t0+t1 (Reg 5/6)| entry + loop/block (delegated naive `emit_control_flow_probe`) |
+| RISC-V 64 | SysVAbi  | t0+t1 (Reg 5/6)| entry + loop/block (delegated naive `emit_control_flow_probe`); arbitrary indices via `sysv_emit_indexed_probes` (Active or Passive per `ProbeSpec::mode` — see *Active vs Passive mode* for Active's one constraint) |
 
 On the **NaiveAbi** path (`naive.rs`, also used by the LFI ABI) the base is the CTX
 frame pointer.  All three **SysVAbi** backends support mid-function sites via the

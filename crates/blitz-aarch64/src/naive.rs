@@ -20,7 +20,7 @@ use portal_pc_asm_common::types::mem::MemorySize;
 use portal_solutions_asm_aarch64::out::arg::MemArg;
 use portal_solutions_blitz_common::{
     asm::Reg,
-    ops::{FnData, MachOperator, ProbeTableConfig},
+    ops::{FnData, MachOperator, ProbePlan, ProbeTableConfig},
     shard::{CallTarget, SecondCtxConfig},
     wasm_encoder::{self, Catch, FuncType, Instruction, reencode::{self as reencode, Reencode}},
     wasmparser::Operator,
@@ -110,6 +110,13 @@ pub struct State<'a> {
     /// NaiveAbi keeps the default (CTX-relative); the SysV ABI sets this to a
     /// frame slot after spilling its virtual-param base register.
     pub probe_base: crate::codegen::ProbeBase,
+    /// Embedder-requested probes at arbitrary instruction indices, in addition
+    /// to the function-entry/loop/block probes above.  `None` → zero overhead,
+    /// identical codegen to today.
+    pub probe_plan: Option<ProbePlan>,
+    /// Ordinal index of the next dispatched instruction (0 = the first real
+    /// WASM operator after locals), used to look up `probe_plan` entries.
+    pub op_index: usize,
     /// Present when sharding is active. SCR (X27) is pushed in the prologue
     /// and popped before return.
     pub shard: Option<NaiveShardState<'a>>,
