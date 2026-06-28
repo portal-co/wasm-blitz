@@ -1831,6 +1831,67 @@ pub fn flush_regalloc<W: Writer<RiscvLabel, Context>, Context>(
     Ok(())
 }
 
+/// Registers the lazy register allocator currently holds a live value in (a
+/// stack element or a local variable), without flushing or mutating it.
+///
+/// `RegAlloc`'s `frames`/`tos` fields and the `RegAllocFrame`/`Target` types
+/// are public, so this reads the allocator's bookkeeping directly rather
+/// than needing any new query on `portal-solutions-asm-regalloc` itself.
+fn regalloc_occupied(
+    ralloc: &regalloc::RegAlloc<riscv_regalloc::RegKind, 32, Frames>,
+) -> Vec<regalloc::Target<riscv_regalloc::RegKind>> {
+    [riscv_regalloc::RegKind::Int, riscv_regalloc::RegKind::Float]
+        .into_iter()
+        .flat_map(|kind| {
+            ralloc.frames[kind].iter().enumerate().filter_map(move |(i, f)| match f {
+                regalloc::RegAllocFrame::Stack { .. } | regalloc::RegAllocFrame::Local(_) => {
+                    Some(regalloc::Target { reg: i as u8, kind })
+                }
+                regalloc::RegAllocFrame::Reserved | regalloc::RegAllocFrame::Empty => None,
+            })
+        })
+        .collect()
+}
+
+/// Emit a `Call`-bound probe site in **Passive** mode.
+///
+/// Unlike [`WriterExt::emit_control_flow_probe`] (Active — flushes the whole
+/// register allocator first, materialising the operand stack to memory, as
+/// `TailTakeover` requires), this saves and restores exactly the physical
+/// registers the allocator currently has occupied around the probe call,
+/// leaving its `frames`/`tos` bookkeeping untouched so codegen continues
+/// exactly where it left off. A no-op extra cost when no allocator is active.
+///
+/// Save/restore reuses the allocator's own `Cmd::Push`/`Cmd::Pop` codegen
+/// (the same instructions `flush_regalloc` emits per register) — restored in
+/// reverse order for correct LIFO stack discipline — so this never touches
+/// `ralloc` itself: the `Vec` of occupied targets is just data, not state.
+pub fn emit_passive_call_probe<W: Writer<RiscvLabel, Context>, Context>(
+    w: &mut W,
+    ctx: &mut Context,
+    arch: RiscV64Arch,
+    state: &mut State<'_>,
+) -> Result<(), W::Error> {
+    let Some(cfg) = state.probes.as_ref().copied().filter(|c| c.enabled) else {
+        return Ok(());
+    };
+    let occupied = state.regalloc.as_ref().map(regalloc_occupied).unwrap_or_default();
+    emit_cmds(w, ctx, arch, occupied.iter().cloned().map(regalloc::Cmd::Push))?;
+
+    let probe_id = state.next_probe_id;
+    state.next_probe_id += 1;
+    let probe_base = state.probe_base;
+    let mut bw = crate::codegen::BlitzW { writer: w, ctx, arch, scratch2: 6, probe_base };
+    portal_solutions_blitz_codegen::emit_probe_site(
+        &mut bw, cfg.table_base_off, probe_id, 5,
+        portal_solutions_blitz_codegen::ProbeBinding::Call,
+        &mut state.label_index,
+    )?;
+
+    emit_cmds(w, ctx, arch, occupied.iter().rev().cloned().map(regalloc::Cmd::Pop))?;
+    Ok(())
+}
+
 /// Pop the top of the WASM operand stack (via regalloc) into `dest_reg`.
 /// If the regalloc is active, uses it; otherwise falls back to memory pop.
 pub fn pop_regalloc_to<W: Writer<RiscvLabel, Context>, Context>(

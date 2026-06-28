@@ -11,6 +11,7 @@ typeid.workspace = true
 wasmparser.workspace = true
 wasm-encoder.workspace = true
 wax-core.workspace = true
+portal-solutions-blitz-codegen.workspace = true
 
 portal-pc-asm-common = {workspace = true,features = ["alloc"],optional = true}
 

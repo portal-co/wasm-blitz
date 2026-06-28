@@ -5,6 +5,8 @@
 //! that can be either WASM operators or encoded instructions.
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 use wasm_encoder::{Instruction, reencode};
 
 use crate::*;
@@ -198,6 +200,7 @@ pub fn mach_operators<'a, 'b, Annot: FromWasmInfo, E: From<BinaryReaderError>>(
                         num_returns: sig.results().len(),
                         control_depth: control_depth(a),
                         probes: None,
+                        probe_plan: None,
                     },
                 }]
                 .into_iter()
@@ -291,6 +294,96 @@ pub struct ProbeTableConfig {
     pub table_base_off: i32,
 }
 
+/// Where, relative to the instruction it's attached to, a probe fires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbePlacement {
+    /// Fires before the instruction's own codegen runs.
+    Before,
+    /// Fires after the instruction's own codegen runs.
+    After,
+}
+
+/// How a probe's live state is preserved across a `Call`-bound dispatch.
+/// `TailTakeover` always needs the canonical materialized layout (Active),
+/// since the tail target inherits the generic site's stack-state contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeMode {
+    /// Force the canonical layout first (e.g. flush a backend's register
+    /// allocator, if it has one). The only valid mode for `TailTakeover`.
+    Active,
+    /// Save/restore only the registers a backend's allocator currently has
+    /// live, without forcing a flush — cheaper, and what makes a `Call`
+    /// probe genuinely non-disturbing when dropped into the middle of an
+    /// expression. Identical to `Active` on backends with no allocator
+    /// (x86-64, AArch64).
+    Passive,
+}
+
+/// One embedder-requested probe: which runtime [`ProbeSlot`] it uses
+/// (`probe_id`), how it's dispatched, how live state is preserved across it,
+/// and where it fires relative to its instrumented instruction.
+#[derive(Debug, Clone, Copy)]
+pub struct ProbeSpec {
+    pub probe_id: u32,
+    pub binding: portal_solutions_blitz_codegen::ProbeBinding,
+    pub mode: ProbeMode,
+    pub placement: ProbePlacement,
+}
+
+/// An embedder's placement of probes within one function.
+///
+/// Probes are addressed by **ordinal instruction index** within the
+/// function body (0 = the first real WASM operator after locals/`StartBody`)
+/// rather than WASM bytecode offset: the streaming [`mach_operators`]
+/// pipeline only threads a byte offset through when the embedder picks an
+/// `Annot` that carries one ([`FromWasmInfo`]), while the ordinal index is
+/// always available to a backend's dispatcher regardless of `Annot`. An
+/// embedder that wants byte-offset addressing can build the index↔offset
+/// mapping itself the same way [`mach_operators`] does
+/// (`get_operators_reader().into_iter_with_offsets()`).
+#[derive(Debug, Clone, Default)]
+pub struct ProbePlan {
+    /// Fires at the function-entry site, before any frame setup — the
+    /// earliest possible point, structurally distinct from "before
+    /// instruction 0" (which runs after the frame is built).
+    pub entry: Vec<ProbeSpec>,
+    /// Probes keyed by the ordinal index of the instruction they attach to.
+    pub by_index: BTreeMap<usize, Vec<ProbeSpec>>,
+}
+
+impl ProbePlan {
+    /// Probes at `idx` with the given placement, if any.
+    pub fn at(&self, idx: usize, placement: ProbePlacement) -> impl Iterator<Item = &ProbeSpec> {
+        self.by_index.get(&idx).into_iter().flatten().filter(move |s| s.placement == placement)
+    }
+
+    /// Reproduces today's auto-identified control-flow probe set as data: a
+    /// `TailTakeover`/`Active` probe at function entry, then one per
+    /// `Block`/`Loop` header in source order — matching [`probe_site_count`]'s
+    /// numbering exactly, and the configuration `blitz-specialize`'s opt/deopt
+    /// machinery installs into. Backends still emit this set via their own
+    /// dedicated entry/loop/block codegen (not by consulting a `ProbePlan`);
+    /// this constructor demonstrates that today's behavior is fully
+    /// expressible as one instance of the general probe model.
+    pub fn control_flow_sites(body: &wasmparser::FunctionBody<'_>) -> ProbePlan {
+        let site = |probe_id: u32| ProbeSpec {
+            probe_id,
+            binding: portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+            mode: ProbeMode::Active,
+            placement: ProbePlacement::Before,
+        };
+        let mut plan = ProbePlan { entry: alloc::vec![site(0)], by_index: BTreeMap::new() };
+        let mut next_probe = 1u32;
+        for (idx, op) in body.get_operators_reader().into_iter().flatten().flatten().enumerate() {
+            if matches!(op, wasmparser::Operator::Block { .. } | wasmparser::Operator::Loop { .. }) {
+                plan.by_index.entry(idx).or_default().push(site(next_probe));
+                next_probe += 1;
+            }
+        }
+        plan
+    }
+}
+
 /// Metadata about a WASM function.
 ///
 /// Contains information needed by code generators about the function's
@@ -307,6 +400,10 @@ pub struct FnData {
     /// Optional probe-table configuration.  `None` (or `enabled: false`) → no
     /// probe code emitted (zero overhead on the fast path).
     pub probes: Option<ProbeTableConfig>,
+    /// Optional embedder-requested probes at arbitrary instruction indices,
+    /// in addition to the auto-identified control-flow probes above.  `None`
+    /// → no additional probe code emitted.
+    pub probe_plan: Option<ProbePlan>,
 }
 
 impl PartialEq for FnData {

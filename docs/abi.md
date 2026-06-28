@@ -525,128 +525,183 @@ todo!("SysVAbi exception handling requires platform unwinder — deferred; see d
 
 ---
 
-## Tracing / Outer-JIT Handoff
+## Probes
 
 ### Overview
 
-Setting `FnData.tracing = Some(TracingConfig { enabled: true, num_sites, table_base_off })`
-causes the code generator to emit a short preamble at every **trace site** in the
-function.  A trace site is:
+**Probes** are the one general mechanism wasm-blitz uses for every out-of-line callout
+into a function: lightweight instrumentation, debugger/profiler hooks, and the
+specialization opt-entry handoff that used to be called "tracing" are all just
+different configurations of the same underlying machinery. A probe:
 
-- **site 0** — the function entry (after the entry label, before frame setup), and
-- **one site per `Block` / `Loop`** entry (after the site's entry label / CTX-frame
-  push), numbered `1, 2, …` in source order.
+- never disturbs the function's existing stack-frame/locals layout,
+- is dispatched per a compile-time [`ProbeBinding`]:
+  - `TailTakeover` — an unconditional indirect jump that permanently hands off control
+    (never returns to the probe site). This is what the old "tracing preamble" did, and
+    is what specialization opt-entry still uses.
+  - `Call` — a real call-and-return through a minimal, register-only ABI (see *Probe
+    ABI contract* below). Execution resumes at the probe site once the handler returns.
+- preserves live state across a `Call` per a compile-time [`ProbeMode`]:
+  - `Active` — force the canonical materialized layout first (flush a backend's
+    register allocator, if it has one). The only valid mode for `TailTakeover`.
+  - `Passive` — save/restore only the registers a backend's allocator currently has
+    live, without forcing a flush. Identical to `Active` on backends with no allocator
+    (x86-64, AArch64); meaningfully cheaper on RISC-V, which does have one.
+- fires at a compile-time [`ProbePlacement`] (`Before`/`After`) relative to the
+  instruction it's attached to.
 
-`If` and `TryTable` are **not** trace sites.  The total count is computed by
-`trace_site_count` (`blitz-common/src/ops.rs`) and must be stored in
-`TracingConfig::num_sites` so the runtime can size the per-function trace table.
+An embedder describes all of this as a [`ProbePlan`] (`blitz-common/src/ops.rs`),
+carried into codegen via `FnData.probe_plan`, addressed by **ordinal instruction
+index** within the function body (0 = the first real WASM operator after
+locals/`StartBody`) rather than WASM bytecode offset — the streaming `mach_operators`
+pipeline only threads a byte offset through when the embedder picks an `Annot` that
+carries one, while the ordinal index is always available to a backend's dispatcher
+regardless of `Annot`. `ProbePlan::control_flow_sites(&body)` reproduces today's
+auto-identified site set (function entry + every `Block`/`Loop` header,
+`TailTakeover`/`Active`) as data, proving that configuration is fully expressible as
+one instance of the general model — see *Specialisation + deopt* below for how that
+configuration is actually still emitted (via dedicated codegen, not yet by consuming a
+`ProbePlan` directly).
 
-Each preamble increments that site's invocation counter and, if the runtime has
-installed a non-null specialisation pointer for the site, performs a **tail-jump** to it
-instead of running the baseline body.  For loops the preamble runs on every iteration
-(the loop back-edge re-enters at the site label), giving hot-loop counts.
-
-### Compile/runtime separation — CTX-relative trace table
+### Compile/runtime separation — CTX-relative probe table
 
 **No runtime address is baked into the generated code.**  Instead the runtime owns a
-contiguous `[TraceSite]` table per traced function and the code reaches it indirectly:
+contiguous `[ProbeSlot]` table per instrumented function and the code reaches it
+indirectly:
 
 ```rust
 #[repr(C)]
-pub struct TraceSite {       // blitz-common/src/ops.rs
-    pub counter: u64,            // +0
-    pub specialization: *const (), // +8
+pub struct ProbeSlot {       // blitz-common/src/ops.rs
+    pub counter: u64,            // +0 — approximate hit counter
+    pub handler: *const (),      // +8 — null = disabled (skip)
 }
 
-pub struct TracingConfig {
+pub struct ProbeTableConfig {
     pub enabled: bool,
-    pub num_sites: u32,          // = trace_site_count(body)
+    pub num_probes: u32,         // sizes the runtime's [ProbeSlot] table
     pub table_base_off: i32,     // CTX-relative slot holding the table base ptr
 }
 ```
 
 The runtime writes the table's base pointer into a fixed, CTX-relative slot at
 `table_base_off` before the first guest entry.  Compilation emits only that structural
-offset and a per-site `site_id`; the entry for a site is `base + site_id * 16`
-(`TRACE_SITE_SIZE`), with the counter at `+0` and the specialisation pointer at `+8`
-(`TRACE_SITE_SPEC_OFF`).  This lets a module be compiled in one process/address space
-and run in another.
+offset and a per-probe `probe_id`; the entry for a probe is `base + probe_id * 16`
+(`PROBE_SLOT_SIZE`), with the counter at `+0` and the handler pointer at `+8`
+(`PROBE_SLOT_HANDLER_OFF`).  This lets a module be compiled in one process/address
+space and run in another. This layout, and the table's runtime contract, are
+unchanged from the original "tracing" design — only the names generalised.
 
-### Emitted instruction sequence (pseudo-code), per site
+### Emitted instruction sequence (pseudo-code), per probe
 
 ```
-   load  scratch, [CTX + table_base_off]        ; runtime trace-table base
-   inc   qword [scratch + site_id*16 + 0]        ; counter++ (non-atomic)
-   load  scratch, [scratch + site_id*16 + 8]     ; specialization ptr
-   if scratch == 0: jump body                    ; null → run baseline
-   jump  scratch                                 ; non-null → tail-jump
+   load  scratch, [CTX + table_base_off]        ; runtime probe-table base
+   inc   qword [scratch + probe_id*16 + 0]       ; counter++ (non-atomic)
+   load  scratch, [scratch + probe_id*16 + 8]    ; handler ptr
+   if scratch == 0: jump body                    ; null → run baseline, zero overhead
+   ; ProbeBinding::TailTakeover:
+   jump  scratch                                 ; non-null → tail-jump, never returns
+   ; ProbeBinding::Call:
+   call  scratch                                  ; non-null → call, falls through after
 body:
    ; ... baseline body continues ...
 ```
 
-This is `emit_jit_preamble(w, base_off, site_id, scratch, label_counter)` in
-`blitz-codegen`, built on the `BlitzWriter` primitives `load_trace_base`,
-`inc_mem64_disp`, and `load_mem64_disp`.
+This is `emit_probe_site(w, base_off, probe_id, scratch, binding, label_counter)` in
+`blitz-codegen`, built on the `BlitzWriter` primitives `load_probe_base`,
+`inc_mem64_disp`, `load_mem64_disp`, `branch_reg` (`TailTakeover`), and `call_reg`
+(`Call`).
 
-### Architecture / ABI specifics
+### Probe ABI contract (`Call` binding)
 
-| Backend   | ABI     | Scratch reg(s) | Site emission |
-|-----------|---------|----------------|---------------|
-| x86-64    | NaiveAbi | Reg(2) (RDX)  | entry in `StartBody`; loop/block via `emit_trace_site` |
-| x86-64    | SysVAbi  | Reg(0) (RAX)  | entry + loop/block via `sysv_emit_trace_site` |
-| AArch64   | NaiveAbi | x9+x10 (T0/T1)| entry in `StartFn`; loop/block via `emit_trace_site` |
-| AArch64   | SysVAbi  | x9+x10 (T0/T1)| entry + loop/block (delegated naive `emit_trace_site`) |
-| RISC-V 64 | NaiveAbi | t0+t1 (Reg 5/6)| entry in `StartFn`; loop/block via `emit_trace_site` |
-| RISC-V 64 | SysVAbi  | t0+t1 (Reg 5/6)| entry + loop/block (delegated naive `emit_trace_site`) |
+A `Call`-bound probe handler is an ordinary function under a minimal, **register-only**
+calling convention: no stack arguments or results. This is what makes splicing a call
+in always safe regardless of what the surrounding code is using the stack for — the
+call/`ret` pair nets to zero effect on the stack pointer, and the callee only ever
+touches memory below its own call-time stack pointer (exactly like calling any ordinary
+leaf function). The handler must never clobber:
 
-On the **NaiveAbi** path (`naive.rs`, also used by the LFI ABI) the base is the CTX
-frame pointer.  All three **SysVAbi** backends support mid-function sites via the
-virtual-parameter convention below.
+- the CTX/frame pointer register,
+- the real stack pointer (safe by construction, as above),
+- any ABI virtual parameter currently live in a register at that point (e.g. the SysV
+  probe-base register before it's spilled — already excluded from every probe site's
+  own scratch-register choice, so the same exclusion applies here for free).
 
-**SysVAbi trace-base — the virtual function parameter**:
-the SysV frame is not set up at the function-entry preamble and the NaiveAbi CTX frame
-pointer does not exist, so the trace-table base is passed as a **virtual function
-parameter** in a reserved register (`TRACE_BASE_REG` in each backend's `sysv.rs`):
+This is a convention, not new code: the existing per-backend scratch-register choices
+for probe sites already respect it (e.g. `crates/blitz-x86-64/src/naive.rs` uses
+`Reg(2)`/RDX, never CTX/RSP/SCR).
 
-| Arch     | Virtual-param reg | Frame-pointer for the spill slot |
-|----------|-------------------|----------------------------------|
-| x86-64   | `r11`             | `rbp` (bottom frame slot)        |
-| AArch64  | `x12`             | `x29`/FP (bottom frame slot)     |
-| RISC-V 64| `t2` (x7)         | `s0`/fp (`[sp+16]` slot)         |
+### Active vs Passive mode
 
-Each is caller-saved and never a positional argument register (nor the trace-preamble
-scratch), so the runtime can set it without disturbing the function's real arguments.
+x86-64 and AArch64 fully materialise the WASM operand stack to memory between every op
+(a pure stack-machine codegen style), so there is no backend register state alive
+across an op boundary other than the pinned registers above — `Active` and `Passive`
+are identical there, and a probe can always use plain registers as scratch with no
+extra save/restore.
 
-- **Site 0 (function entry)** reads the base directly from the virtual-param register,
-  before any frame is built, so the specialization tail-jump still delivers the SysV
-  argument registers intact (`codegen::TraceBase::Reg`).
-- **`StartFn`** then spills it to a dedicated extra frame slot and records the FP-relative
-  displacement.  For the x86-64 ABI this lives in `SysVState::trace_base_disp`; the
-  AArch64/RISC-V SysV backends reuse the **naive lowering** and configure it via the new
-  `naive::State::trace_base` field (`codegen::TraceBase::FrameSlot`).
-- **Mid-function sites (loop/block)** are emitted by the naive `emit_trace_site` (on
-  AArch64/RISC-V, reached by delegation from the SysV control-flow path), which reloads
-  the base from the frame slot since the virtual-param register is clobbered by the body.
-  A mid-function specialization stub is entered with the operand stack live and the frame
-  set up, so to return from the whole function it must tear the frame down itself (on
-  x86-64, `mov rsp,rbp; pop rbp; ret`).
+RISC-V 64 is the exception: it runs a real lazy register allocator
+(`portal_solutions_asm_regalloc`, sibling repo `asm-arch/crates/asm-regalloc`) that
+keeps operand-stack values resident in physical registers across multiple ops, only
+spilling (`RegAlloc::flush()`) at branches and control-flow probe sites. For a `Call`
+probe on RISC-V:
 
-The *table layout* (`TraceSite`, `site_id` indexing) is identical across all ABIs; only
-the base-load mechanism differs (`codegen::TraceBase::{CtxSlot, Reg, FrameSlot}`).
-The runtime contract is exercised end-to-end for **all three arches** in the e2e suite
-under Unicorn (`run_native_sysv_traced`): it installs a zeroed `[TraceSite]` table,
-passes its base in the virtual-param register, and verifies per-site counter increments
-(including the mid-function loop site) and entry-site specialization tail-jumps; the
-x86-64 tests additionally cover a loop-site specialization with frame teardown.
+- **Active** (`emit_control_flow_probe`, used for all control-flow sites) flushes the
+  allocator first — the same `ralloc.flush()` + `ralloc.tos = None` sequence used
+  today, materialising the operand stack to its canonical layout. Required for
+  `TailTakeover` (the tail target assumes that layout).
+- **Passive** (`naive::emit_passive_call_probe`) does **not** flush. It reads which
+  physical registers the allocator currently has occupied directly off its public
+  `frames`/`tos` bookkeeping (no new query was added to `asm-regalloc` itself — `Target`,
+  `RegAllocFrame`, and `Cmd` are all already public), then `push`/`pop`s exactly those
+  registers around the call (reusing the allocator's own `Cmd::Push`/`Cmd::Pop` codegen,
+  popped in reverse for correct LIFO discipline) — *without* touching the allocator's
+  `frames`/`tos` state, so codegen continues exactly where it left off. This is what
+  makes a probe genuinely non-disturbing even when dropped into the middle of an
+  expression: the allocator never even notices the probe ran, including when the probe
+  site's own scratch register happens to collide with a register the allocator
+  currently has a live value in (the save/restore handles that case transparently).
+
+`crates/blitz-tests/tests/e2e.rs::test_passive_call_probe_preserves_regalloc_riscv64`
+exercises exactly this collision under Unicorn: it allocates a live register (which
+lands on the same register `emit_passive_call_probe` uses as its own scratch), runs a
+`Call`-bound probe, and asserts the live value survives untouched.
+
+### Arbitrary insertion points (`ProbePlan`)
+
+Beyond the auto-identified control-flow set, an embedder can place `ProbeSpec`s at any
+instruction's ordinal index via `ProbePlan.by_index: BTreeMap<usize, Vec<ProbeSpec>>`
+(`Before`/`After`), in addition to (or instead of) the `entry` probe.  This is currently
+wired into the x86-64 SysV dispatcher
+(`SysVWriterExt::sysv_emit_indexed_probes`/`SysVState::{probe_plan, op_index}` in
+`crates/blitz-x86-64/src/sysv.rs`): every `MachOperator::Instruction`/`Operator`
+dispatch checks the plan for entries at the current `op_index` before/after running the
+instruction's own codegen, reusing the same mid-function probe-base addressing
+(`ProbeBase::FrameSlot`) the control-flow probes already establish. AArch64 and
+RISC-V 64 (and the LFI variants) don't yet consume `ProbePlan` — the pattern to mirror
+is the same: an `op_index` counter plus a plan lookup at each `Instruction`/`Operator`
+dispatch point, with RISC-V additionally choosing `Active`/`Passive` emission per
+`ProbeSpec::mode`.
+
+**Important:** indices are positions in the stream actually fed to the dispatcher.
+If a pass like `dce_pass!` removes operators between building a `ProbePlan` and
+compiling, indices must be computed against that *same* post-pass stream, not the raw
+`get_operators_reader()` output — `ProbePlan::control_flow_sites` and any embedder
+building a plan by hand should keep this in mind.
+
+`crates/blitz-tests/tests/e2e.rs::test_indexed_call_probe_fires_inside_loop_x86_64`
+places a `Call`-bound probe on a plain `I32Add` inside a loop body (not a control-flow
+header) and verifies it fires once per iteration without disturbing the loop's result,
+alongside the existing entry/loop control-flow probes still firing correctly in the
+same function.
 
 ### Specialisation + deopt (`crates/blitz-specialize`)
 
-The `blitz-specialize` crate builds specialised variants to install into a site's
-`specialization` slot:
+The `blitz-specialize` crate builds specialised variants to install into a
+[`ProbeSlot`]'s `handler` slot, behind a `TailTakeover`-bound probe at the entry/loop/
+block sites `ProbePlan::control_flow_sites` describes:
 
 - `FnSlice` + `BranchAnalysis` give a slice-resident (random-access) view of one
   function with every relative branch depth resolved to an absolute index, and map each
-  `Block`/`Loop` header to its `site_id`.
+  `Block`/`Loop` header to its `probe_id`.
 - `specialize(slice, analysis, SpecSpec)` substitutes embedder-asserted constant locals
   / globals (value specialisation) and folds loads from regions asserted constant
   (memory specialisation), returning the rewritten body plus the `Guard`s it depends on.
@@ -654,16 +709,70 @@ The `blitz-specialize` crate builds specialised variants to install into a site'
   the caller materialises `diff_reg` to be zero iff the assumption holds; the guard
   falls through when it holds and branches to `deopt_label` (the **generic site entry**)
   otherwise.  Deopt fires whenever any guard fails — i.e. whenever the specialised code
-  would be invalid.
+  would be invalid. `emit_deopt_guard` is a bare branch with no callout, so it is not
+  itself a probe and is unaffected by any of the above.
+
+### Architecture / ABI specifics
+
+| Backend   | ABI     | Scratch reg(s) | Site emission |
+|-----------|---------|----------------|---------------|
+| x86-64    | NaiveAbi | Reg(2) (RDX)  | entry in `StartBody`; loop/block via `emit_control_flow_probe` |
+| x86-64    | SysVAbi  | Reg(0) (RAX)  | entry + loop/block via `sysv_emit_control_flow_probe`; arbitrary indices via `sysv_emit_indexed_probes` |
+| AArch64   | NaiveAbi | x9+x10 (T0/T1)| entry in `StartFn`; loop/block via `emit_control_flow_probe` |
+| AArch64   | SysVAbi  | x9+x10 (T0/T1)| entry + loop/block (delegated naive `emit_control_flow_probe`) |
+| RISC-V 64 | NaiveAbi | t0+t1 (Reg 5/6)| entry in `StartFn`; loop/block via `emit_control_flow_probe` (Active); arbitrary `Call` probes via `emit_passive_call_probe` (Active or Passive) |
+| RISC-V 64 | SysVAbi  | t0+t1 (Reg 5/6)| entry + loop/block (delegated naive `emit_control_flow_probe`) |
+
+On the **NaiveAbi** path (`naive.rs`, also used by the LFI ABI) the base is the CTX
+frame pointer.  All three **SysVAbi** backends support mid-function sites via the
+virtual-parameter convention below.
+
+**SysVAbi probe-base — the virtual function parameter**:
+the SysV frame is not set up at the function-entry preamble and the NaiveAbi CTX frame
+pointer does not exist, so the probe-table base is passed as a **virtual function
+parameter** in a reserved register (`PROBE_BASE_REG` in each backend's `sysv.rs`):
+
+| Arch     | Virtual-param reg | Frame-pointer for the spill slot |
+|----------|-------------------|----------------------------------|
+| x86-64   | `r11`             | `rbp` (bottom frame slot)        |
+| AArch64  | `x12`             | `x29`/FP (bottom frame slot)     |
+| RISC-V 64| `t2` (x7)         | `s0`/fp (`[sp+16]` slot)         |
+
+Each is caller-saved and never a positional argument register (nor the probe-preamble
+scratch), so the runtime can set it without disturbing the function's real arguments.
+
+- **Probe 0 (function entry)** reads the base directly from the virtual-param register,
+  before any frame is built, so the specialization tail-jump still delivers the SysV
+  argument registers intact (`codegen::ProbeBase::Reg`).
+- **`StartFn`** then spills it to a dedicated extra frame slot and records the FP-relative
+  displacement.  For the x86-64 ABI this lives in `SysVState::probe_base_disp`; the
+  AArch64/RISC-V SysV backends reuse the **naive lowering** and configure it via the
+  `naive::State::probe_base` field (`codegen::ProbeBase::FrameSlot`).
+- **Mid-function sites (loop/block, and arbitrary indices on x86-64)** reload the base
+  from the frame slot since the virtual-param register is clobbered by the body.  A
+  mid-function `TailTakeover` stub is entered with the operand stack live and the frame
+  set up, so to return from the whole function it must tear the frame down itself (on
+  x86-64, `mov rsp,rbp; pop rbp; ret`); a `Call`-bound probe just needs an ordinary
+  `ret`, per the *Probe ABI contract* above.
+
+The *table layout* (`ProbeSlot`, `probe_id` indexing) is identical across all ABIs; only
+the base-load mechanism differs (`codegen::ProbeBase::{CtxSlot, Reg, FrameSlot}`).
+The runtime contract is exercised end-to-end for **all three arches** in the e2e suite
+under Unicorn (`run_native_sysv_traced`): it installs a zeroed `[ProbeSlot]` table,
+passes its base in the virtual-param register, and verifies per-probe counter increments
+(including the mid-function loop probe) and entry-probe `TailTakeover` tail-jumps; the
+x86-64 tests additionally cover a loop-probe specialization with frame teardown, a
+`Call`-bound probe at function entry (`test_call_probe_*`), and the arbitrary-index/
+Passive-mode tests described above.
 
 ### Stack-state contract
 
-The tail-jump is a bare indirect branch with the operand-stack / CTX-frame state of the
-**generic site entry** intact, so a specialised variant must preserve that layout and
-its deopt target is the generic site entry (a plain branch back, live state untouched).
-Per-site live state:
+The `TailTakeover` tail-jump is a bare indirect branch with the operand-stack /
+CTX-frame state of the **generic probe site** intact, so a specialised variant must
+preserve that layout and its deopt target is the generic site entry (a plain branch
+back, live state untouched).  Per-site live state:
 
-- **Function entry (site 0)** — as before frame setup:
+- **Function entry (probe 0)** — as before frame setup:
   - **NaiveAbi (x86-64)**: Reg(0) = old CTX, Reg(1) = return address, CTX = frame ptr,
     RSP = WASM operand stack.
   - **SysVAbi (x86-64)**: SysV arg registers (RDI/RSI/RDX/RCX/R8/R9) intact, no frame.
@@ -673,6 +782,17 @@ Per-site live state:
   stack is materialised (RISC-V flushes regalloc first); the specialised variant inherits
   exactly that state.  Because `specialize` only substitutes values (never changing stack
   shape), layout compatibility holds by construction.
+
+A `Call`-bound probe has a much weaker contract by design (see *Probe ABI contract*
+above): it only needs the pinned registers preserved, not the full generic-site layout,
+which is exactly what makes it usable at arbitrary mid-expression points where the
+"generic site entry" layout doesn't even apply.
+
+[`ProbeBinding`]: ../crates/blitz-codegen/src/lib.rs
+[`ProbeMode`]: ../crates/blitz-common/src/ops.rs
+[`ProbePlacement`]: ../crates/blitz-common/src/ops.rs
+[`ProbePlan`]: ../crates/blitz-common/src/ops.rs
+[`ProbeSlot`]: ../crates/blitz-common/src/ops.rs
 
 ### exnref deferral
 

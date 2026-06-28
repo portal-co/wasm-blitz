@@ -5168,6 +5168,43 @@ fn test_tracing_disabled_is_zero_overhead() {
     assert!(asm_on.len() > asm_off.len(), "probes add preamble code");
 }
 
+#[test]
+fn test_probe_plan_control_flow_sites_matches_probe_site_count() {
+    use portal_solutions_blitz_common::ops::{probe_site_count, ProbeMode, ProbePlacement, ProbePlan};
+    use portal_solutions_blitz_codegen::ProbeBinding;
+
+    let wasm = make_loop_counter_wasm();
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(&wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let body = &bodies[0];
+    let num_probes = probe_site_count(body);
+    let plan = ProbePlan::control_flow_sites(body);
+
+    // Entry: exactly one TailTakeover/Active probe, id 0.
+    assert_eq!(plan.entry.len(), 1);
+    assert_eq!(plan.entry[0].probe_id, 0);
+    assert_eq!(plan.entry[0].binding, ProbeBinding::TailTakeover);
+    assert_eq!(plan.entry[0].mode, ProbeMode::Active);
+    assert_eq!(plan.entry[0].placement, ProbePlacement::Before);
+
+    // Exactly one more site (the `Loop` header at ordinal index 0); the `If`
+    // at index 2 is *not* a control-flow probe site, matching `probe_site_count`.
+    assert_eq!(plan.by_index.len(), 1, "only the Loop header, not the If");
+    let loop_probes = &plan.by_index[&0];
+    assert_eq!(loop_probes.len(), 1);
+    assert_eq!(loop_probes[0].probe_id, 1);
+    assert_eq!(loop_probes[0].binding, ProbeBinding::TailTakeover);
+
+    // Total probe count (entry + by_index) matches `probe_site_count`'s
+    // sizing of the runtime `[ProbeSlot]` table.
+    let total = plan.entry.len() + plan.by_index.values().map(Vec::len).sum::<usize>();
+    assert_eq!(total as u32, num_probes);
+}
+
 // ---------------------------------------------------------------------------
 // SysV tracing execution: trace-table install + counter / specialization verify
 // ---------------------------------------------------------------------------
@@ -5469,6 +5506,87 @@ fn assert_sysv_tracing_entry_spec(arch: NativeArch) {
 #[test] fn test_sysv_tracing_entry_spec_riscv64() { assert_sysv_tracing_entry_spec(NativeArch::Riscv64); }
 
 // ---------------------------------------------------------------------------
+// Test — arbitrary-point probes via `ProbePlan` (x86-64 SysV)
+//
+// Unlike the auto-identified control-flow probes above (function entry +
+// every `Block`/`Loop` header), this probe is placed *inside* the loop body
+// at a plain arithmetic instruction (`I32Add`) — proving probes can be
+// dropped into the middle of an expression without disturbing the
+// surrounding WASM operand stack or the function's result, alongside the
+// existing control-flow probes still firing correctly in the same function.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_indexed_call_probe_fires_inside_loop_x86_64() {
+    use portal_solutions_blitz_common::ops::{
+        probe_site_count, MachOperator, ProbeMode, ProbePlacement, ProbePlan, ProbeSpec, ProbeTableConfig,
+    };
+    use portal_solutions_blitz_x86_64::{sysv, X64Arch, X64Label};
+    use portal_solutions_asm_x86_64::out::iced::IcedWriter;
+
+    let wasm = make_loop_counter_wasm();
+    let (sigs_wp, _, fsigs) = parse_sigs(&wasm);
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(&wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let num_control_flow_probes = probe_site_count(&bodies[0]);
+    assert_eq!(num_control_flow_probes, 2, "entry + loop");
+
+    // Ordinal index 5 in the raw operator stream is the loop body's
+    // `I32Add`: 0=Loop, 1=LocalGet(0), 2=If, 3=LocalGet(1), 4=I32Const(1),
+    // 5=I32Add — a plain arithmetic instruction, not a control-flow header.
+    const ADD_INDEX: usize = 5;
+    const EXTRA_PROBE_ID: u32 = 2; // right after the 2 auto-identified probes
+    let mut plan = ProbePlan::default();
+    plan.by_index.insert(ADD_INDEX, vec![ProbeSpec {
+        probe_id: EXTRA_PROBE_ID,
+        binding: portal_solutions_blitz_codegen::ProbeBinding::Call,
+        mode: ProbeMode::Active,
+        placement: ProbePlacement::Before,
+    }]);
+
+    // Build without `dce_pass!` so the dispatcher's ordinal `op_index` lines
+    // up exactly with the raw operator indices `ADD_INDEX` was computed
+    // against (DCE can renumber/remove ops; this function has none to remove,
+    // but skipping it keeps the index mapping obviously exact).
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let mut out = IcedWriter::<X64Label>::new(0x100000);
+    let mut state = sysv::SysVState::default();
+    let mut ctx = ();
+    let mut reencoder = RoundtripReencoder;
+    for op in raw_ops {
+        let mut op = op.unwrap();
+        if let MachOperator::StartFn { data, .. } = &mut op {
+            data.probes = Some(ProbeTableConfig {
+                enabled: true, num_probes: EXTRA_PROBE_ID + 1, table_base_off: 0,
+            });
+            data.probe_plan = Some(plan.clone());
+        }
+        sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+            &mut out, &mut ctx, X64Arch::default(), &mut state, &[], &op, &mut reencoder, 0,
+        ).unwrap();
+    }
+    let code = out.into_bytes();
+
+    // Trivial `ret`-only handler: proves call-and-return without relying on
+    // the handler itself doing anything — the probe's own hit counter
+    // (incremented by `emit_probe_site` regardless of what the handler does)
+    // is what proves it fired the right number of times.
+    let handler: &[u8] = &[0xC3];
+    let (result, counters) = run_native_sysv_traced(
+        NativeArch::X86_64, &code, &[5], EXTRA_PROBE_ID + 1, Some((EXTRA_PROBE_ID, handler)),
+    );
+
+    assert_eq!(result as u32, 5, "loop result unaffected by the mid-expression probe");
+    assert_eq!(counters[0], 1, "entry probe still fires once, unaffected by the new probe");
+    assert_eq!(counters[1], 6, "loop probe still fires 6× for n=5, unaffected by the new probe");
+    assert_eq!(counters[2], 5, "I32Add probe fires once per loop iteration (n=5), call-and-returns each time");
+}
+
+// ---------------------------------------------------------------------------
 // Tests — ProbeBinding::Call (register-only call-and-return)
 //
 // Unlike the `TailTakeover` binding exercised above (which permanently hands
@@ -5653,6 +5771,92 @@ fn assert_call_probe(arch: NativeArch) {
 #[test] fn test_call_probe_x86_64() { assert_call_probe(NativeArch::X86_64); }
 #[test] fn test_call_probe_aarch64() { assert_call_probe(NativeArch::AArch64); }
 #[test] fn test_call_probe_riscv64() { assert_call_probe(NativeArch::Riscv64); }
+
+// ---------------------------------------------------------------------------
+// Test — Passive-mode `Call` probe on RISC-V 64
+//
+// RISC-V is the only backend with a real (lazy) register allocator that
+// keeps WASM operand-stack values resident in physical registers across
+// multiple ops; x86-64/AArch64 always materialise to memory between ops, so
+// Active and Passive are identical there (no allocator to disturb). This
+// test proves Passive mode's whole point: a value the allocator currently
+// has live in a register survives a `Call`-bound probe untouched, *without*
+// a `flush()` — even though the probe site happens to reuse that exact
+// register as its own scratch internally.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_passive_call_probe_preserves_regalloc_riscv64() {
+    use portal_solutions_asm_riscv64::out::WriterCore;
+    use portal_solutions_asm_riscv64::out::rv_asm_backend::RvAsmWriter;
+    use portal_solutions_asm_riscv64::regalloc as riscv_regalloc;
+    use portal_solutions_blitz_common::asm::Reg;
+    use portal_solutions_blitz_common::ops::ProbeTableConfig;
+    use portal_solutions_blitz_riscv64::{
+        codegen::ProbeBase, naive, sysv::PROBE_BASE_REG, RiscV64Arch, RiscvLabel,
+    };
+    use unicorn_engine::{unicorn_const::{Arch, Mode, Prot}, RegisterRISCV, Unicorn};
+
+    const CODE: u64 = 0x100000;
+    const STUB_ADDR: u64 = CODE + 0x800;
+    const PROBE_TABLE: u64 = 0x400000;
+    const STACK: u64 = 0x200000;
+    const STACK_SIZE: u64 = 0x10000;
+    const LIVE_SENTINEL: u64 = 0x456;
+    const HANDLER_SENTINEL: u16 = 0x222;
+
+    let arch = RiscV64Arch::default();
+    let mut out = RvAsmWriter::<RiscvLabel>::new();
+    let mut ctx = ();
+    let mut state = naive::State::default();
+    state.probes = Some(ProbeTableConfig { enabled: true, num_probes: 1, table_base_off: 0 });
+    state.probe_base = ProbeBase::Reg(PROBE_BASE_REG);
+
+    // Lazily initialize the allocator exactly like production code does, then
+    // push one int value without flushing — it lands in a live register.
+    let ralloc = state.regalloc.get_or_insert_with(|| {
+        let r = riscv_regalloc::init_regalloc::<32>(arch);
+        portal_solutions_asm_regalloc::RegAlloc { frames: naive::Frames(r.frames), tos: r.tos }
+    });
+    let (live_reg, cmds) = ralloc.push(riscv_regalloc::RegKind::Int).unwrap();
+    assert_eq!(cmds.count(), 0, "first push into an empty allocator needs no eviction");
+    // Registers 0/1/2/3/4 (zero/ra/sp/gp/tp) and 8 (fp) are reserved, so the
+    // first int push lands in t0 (Reg 5) — which `emit_passive_call_probe`
+    // also uses as its own scratch register, the exact collision this test
+    // is meant to exercise.
+    assert_eq!(live_reg, 5, "first allocated int register is t0 — update this test if regalloc's reserved set changes");
+    out.li(&mut ctx, arch, &Reg(live_reg), LIVE_SENTINEL).unwrap();
+
+    naive::emit_passive_call_probe(&mut out, &mut ctx, arch, &mut state).unwrap();
+
+    let code = out.into_bytes();
+    let halt = CODE + code.len() as u64;
+    let handler_stub = sysv_entry_stub(NativeArch::Riscv64, HANDLER_SENTINEL);
+
+    let mut uc = Unicorn::new(Arch::RISCV, Mode::RISCV64).unwrap();
+    uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+    uc.mem_map(PROBE_TABLE, 0x1000, Prot::ALL).unwrap();
+    uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+    uc.mem_write(CODE, &code).unwrap();
+    uc.mem_write(PROBE_TABLE, &[0u8; 16]).unwrap();
+    uc.mem_write(STUB_ADDR, &handler_stub).unwrap();
+    uc.mem_write(PROBE_TABLE + 8, &STUB_ADDR.to_le_bytes()).unwrap();
+    uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 8).unwrap();
+    uc.reg_write(RegisterRISCV::T2, PROBE_TABLE).unwrap();
+    uc.emu_start(CODE, halt, 0, 100_000).unwrap();
+
+    let handler_ret = uc.reg_read(RegisterRISCV::A0).unwrap();
+    assert_eq!(handler_ret, HANDLER_SENTINEL as u64, "handler ran");
+    let live_after = uc.reg_read(RegisterRISCV::T0).unwrap();
+    assert_eq!(
+        live_after, LIVE_SENTINEL,
+        "regalloc-resident value must survive a Passive probe call untouched, \
+         even though the probe site reused t0 as scratch internally"
+    );
+    let mut counter = [0u8; 8];
+    uc.mem_read(PROBE_TABLE, &mut counter).unwrap();
+    assert_eq!(u64::from_le_bytes(counter), 1, "hit counter incremented once");
+}
 
 // ---------------------------------------------------------------------------
 // Tests — backend sharding

@@ -34,7 +34,7 @@ use portal_solutions_asm_x86_64::{
 use portal_solutions_blitz_common::{
     asm::Reg,
     asm::common::mem::MemorySize,
-    ops::{FnData, MachOperator, ProbeTableConfig},
+    ops::{FnData, MachOperator, ProbePlacement, ProbePlan, ProbeTableConfig},
     wasm_encoder::{self, FuncType, Instruction, reencode::{self as reencode, Reencode}},
 };
 
@@ -125,6 +125,13 @@ pub struct SysVState<'a> {
     /// `StartFn` when probes are enabled.  Mid-function sites load the base from
     /// `[RBP + probe_base_disp]`.
     pub probe_base_disp: i32,
+    /// Embedder-requested probes at arbitrary instruction indices, in addition
+    /// to the function-entry/loop/block probes above.  `None` → zero overhead,
+    /// identical codegen to today.
+    pub probe_plan: Option<ProbePlan>,
+    /// Ordinal index of the next dispatched instruction (0 = the first real
+    /// WASM operator after locals), used to look up `probe_plan` entries.
+    pub op_index: usize,
     /// Present when sharding is active. SCR (r14) is pushed in the prologue and
     /// popped in all return paths. Cross-shard calls load the target from SCR.
     pub shard: Option<crate::naive::NaiveShardState<'a>>,
@@ -222,6 +229,45 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 &mut bw, cfg.table_base_off, probe_id, 0,
                 portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
                 &mut state.label_index,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Emit any embedder-requested probes (`state.probe_plan`) attached to
+    /// the instruction at `state.op_index` with the given `placement`.
+    ///
+    /// Reuses the same mid-function probe-base addressing
+    /// (`ProbeBase::FrameSlot`) and scratch register (`RAX`, free at any op
+    /// boundary — operands live on the WASM stack between ops) that
+    /// [`sysv_emit_control_flow_probe`](Self::sysv_emit_control_flow_probe)
+    /// already establishes. `ProbeMode` (Active/Passive) makes no codegen
+    /// difference here: x86-64 has no register allocator to disturb between
+    /// ops, so both are already as non-disturbing as possible.
+    fn sysv_emit_indexed_probes(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        state: &mut SysVState<'_>,
+        placement: ProbePlacement,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        let (Some(plan), Some(cfg)) = (state.probe_plan.as_ref(), state.probes) else {
+            return Ok(());
+        };
+        if !cfg.enabled {
+            return Ok(());
+        }
+        let specs: Vec<_> = plan.at(state.op_index, placement).copied().collect();
+        for spec in specs {
+            let mut bw = crate::codegen::BlitzW {
+                writer: self, ctx, arch,
+                probe_base: ProbeBase::FrameSlot(state.probe_base_disp),
+            };
+            portal_solutions_blitz_codegen::emit_probe_site(
+                &mut bw, cfg.table_base_off, spec.probe_id, 0, spec.binding, &mut state.label_index,
             )?;
         }
         Ok(())
@@ -750,6 +796,8 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 state.local_count = data.num_params;
                 state.probes = data.probes;
                 state.next_probe_id = 1; // probe 0 is the function entry below
+                state.probe_plan = data.probe_plan.clone();
+                state.op_index = 0;
 
                 self.set_label(ctx, arch, X64Label::Indexed {
                     idx: *id as usize | (1 << 28),
@@ -839,13 +887,19 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
             MachOperator::StartBody | MachOperator::EndBody => Ok(()),
 
             MachOperator::Instruction { op: insn, .. } => {
-                self.sysv_handle_insn(ctx, arch, state, func_imports, insn, target)
-                    .map_err(Err::from)
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::Before).map_err(Err::from)?;
+                self.sysv_handle_insn(ctx, arch, state, func_imports, insn, target).map_err(Err::from)?;
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::After).map_err(Err::from)?;
+                state.op_index += 1;
+                Ok(())
             }
             MachOperator::Operator { op: Some(op_wasm), .. } => {
                 let insn = rewriter.instruction(op_wasm.clone())?;
-                self.sysv_handle_insn(ctx, arch, state, func_imports, &insn, target)
-                    .map_err(Err::from)
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::Before).map_err(Err::from)?;
+                self.sysv_handle_insn(ctx, arch, state, func_imports, &insn, target).map_err(Err::from)?;
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::After).map_err(Err::from)?;
+                state.op_index += 1;
+                Ok(())
             }
             MachOperator::Operator { op: None, .. } => Ok(()),
             _ => Ok(()),
