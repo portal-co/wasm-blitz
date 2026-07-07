@@ -149,15 +149,16 @@ where
         state.local_count = data.num_params;
         state.num_returns = data.num_returns;
         state.control_depth = data.control_depth;
-        state.tracing = data.tracing;
-        state.next_site_id = 1;
+        state.probes = data.probes;
+        state.next_probe_id = 1;
         // No explicit alignment needed — AArch64 instructions are fixed 4-byte.
         w.set_label(ctx, arch, AArch64Label::Func { r#fn: id })?;
-        if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
+        if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW::new(w, ctx, arch, T1.0);
-            portal_solutions_blitz_codegen::emit_jit_preamble(
-                &mut bw, cfg.table_base_off, 0,
-                T0.0, &mut state.label_index,
+            portal_solutions_blitz_codegen::emit_probe_site(
+                &mut bw, cfg.table_base_off, 0, T0.0,
+                portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                &mut state.label_index,
             )?;
         }
         // stp x29, x30, [sp, #-16]!  — save FP and LR (LFI allows pre-decrement stp)
@@ -413,14 +414,15 @@ where
                 state.local_count = data.num_params;
                 state.num_returns = data.num_returns;
                 state.control_depth = data.control_depth;
-                state.tracing = data.tracing;
-                state.next_site_id = 1;
+                state.probes = data.probes;
+                state.next_probe_id = 1;
                 self.set_label(ctx, arch, AArch64Label::Func { r#fn: *id }).map_err(Err::from)?;
-                if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
+                if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW::new(self, ctx, arch, T1.0);
-                    portal_solutions_blitz_codegen::emit_jit_preamble(
-                        &mut bw, cfg.table_base_off, 0,
-                        T0.0, &mut state.label_index,
+                    portal_solutions_blitz_codegen::emit_probe_site(
+                        &mut bw, cfg.table_base_off, 0, T0.0,
+                        portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                        &mut state.label_index,
                     ).map_err(Err::from)?;
                 }
                 self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16)).map_err(Err::from)?;

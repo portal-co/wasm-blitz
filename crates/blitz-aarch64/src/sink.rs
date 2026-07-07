@@ -141,7 +141,7 @@ where
     HandleOpError<Infallible>: From<W::Error>,
 {
     fn push_ambient_addr(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
-        ctx.writer.adr_label(&mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
+        crate::load_label_addr(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, T0).map_err(HandleOpError::from)
     }
     fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
@@ -150,7 +150,7 @@ where
         for i in (0..n_params.min(8)).rev() {
             ctx.writer.wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i]).map_err(HandleOpError::from)?;
         }
-        ctx.writer.adr_label(&mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
+        crate::load_label_addr(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         ctx.writer.bl(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)?;
         if n_results > 1 { ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(1)).map_err(HandleOpError::from)?; }
         if n_results > 0 { ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(0)).map_err(HandleOpError::from)?; }
@@ -161,7 +161,7 @@ where
         for i in (0..n_params.min(8)).rev() {
             ctx.writer.wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i]).map_err(HandleOpError::from)?;
         }
-        ctx.writer.adr_label(&mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
+        crate::load_label_addr(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         ctx.writer.br(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)
     }
 }
@@ -237,7 +237,7 @@ where
     HandleOpError<Infallible>: From<W::Error>,
 {
     fn push_ambient_addr(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
-        ctx.writer.adr_label(&mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
+        crate::load_label_addr(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, T0).map_err(HandleOpError::from)
     }
     fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
@@ -246,7 +246,7 @@ where
         for i in (0..n_params.min(8)).rev() {
             ctx.writer.wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i]).map_err(HandleOpError::from)?;
         }
-        ctx.writer.adr_label(&mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
+        crate::load_label_addr(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         ctx.writer.bl(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)?;
         if n_results > 1 { ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(1)).map_err(HandleOpError::from)?; }
         if n_results > 0 { ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(0)).map_err(HandleOpError::from)?; }
@@ -257,7 +257,7 @@ where
         for i in (0..n_params.min(8)).rev() {
             ctx.writer.wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i]).map_err(HandleOpError::from)?;
         }
-        ctx.writer.adr_label(&mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
+        crate::load_label_addr(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         ctx.writer.br(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)
     }
 }
@@ -341,7 +341,7 @@ where
     HandleOpError<Infallible>: From<W::Error>,
 {
     fn push_ambient_addr(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
-        ctx.writer.adr_label(&mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
+        crate::load_label_addr(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, T0).map_err(HandleOpError::from)
     }
     fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
@@ -350,7 +350,7 @@ where
         for i in (0..n_params.min(8)).rev() {
             ctx.writer.wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i]).map_err(HandleOpError::from)?;
         }
-        ctx.writer.adr_label(&mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
+        crate::load_label_addr(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         ctx.writer.bl(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)?;
         if n_results > 1 { ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(1)).map_err(HandleOpError::from)?; }
         if n_results > 0 { ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(0)).map_err(HandleOpError::from)?; }
@@ -361,7 +361,7 @@ where
         for i in (0..n_params.min(8)).rev() {
             ctx.writer.wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i]).map_err(HandleOpError::from)?;
         }
-        ctx.writer.adr_label(&mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
+        crate::load_label_addr(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
         ctx.writer.br(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)
     }
 }

@@ -105,14 +105,15 @@ where
 
         w.set_label(ctx, arch, AArch64Label::Func { r#fn: id })?;
 
-        // Trace preamble: after label, before frame setup.
-        state.tracing = data.tracing;
-        state.next_site_id = 1;
-        if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
+        // Function-entry probe: after label, before frame setup.
+        state.probes = data.probes;
+        state.next_probe_id = 1;
+        if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW::new(w, ctx, arch, 10);
-            portal_solutions_blitz_codegen::emit_jit_preamble(
-                &mut bw, cfg.table_base_off, 0,
-                T0.0, &mut state.label_index,
+            portal_solutions_blitz_codegen::emit_probe_site(
+                &mut bw, cfg.table_base_off, 0, T0.0,
+                portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                &mut state.label_index,
             )?;
         }
 
@@ -197,7 +198,7 @@ where
         match func_imports.get(fn_idx as usize) {
             Some((module, name)) => {
                 let sym = alloc::format!("{module}__{name}");
-                w.adr_label(ctx, arch, &reg(T0), AArch64Label::External { name: sym })?;
+                crate::load_label_addr(w, ctx, arch, &reg(T0), AArch64Label::External { name: sym })?;
                 w.bl(ctx, arch, &reg(T0))
             }
             None => {
@@ -260,13 +261,14 @@ where
             idx: id as usize + 0x80000000,
         })?;
 
-        // Trace preamble: after label, before frame setup so AAPCS64 arg regs
-        // (X0–X7) are delivered intact to the outer-JIT specialisation.
-        if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
+        // Function-entry probe: after label, before frame setup so AAPCS64
+        // arg regs (X0–X7) are delivered intact to the outer-JIT specialisation.
+        if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW::new(w, ctx, arch, 10);
-            portal_solutions_blitz_codegen::emit_jit_preamble(
-                &mut bw, cfg.table_base_off, 0,
-                T0.0, &mut state.label_index,
+            portal_solutions_blitz_codegen::emit_probe_site(
+                &mut bw, cfg.table_base_off, 0, T0.0,
+                portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                &mut state.label_index,
             )?;
         }
 

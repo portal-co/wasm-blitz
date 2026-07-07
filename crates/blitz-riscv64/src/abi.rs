@@ -77,14 +77,15 @@ where
 
         w.set_label(ctx, arch, RiscvLabel::Func { r#fn: id })?;
 
-        // Trace preamble: after label, before frame setup.
-        state.tracing = data.tracing;
-        state.next_site_id = 1;
-        if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
+        // Function-entry probe: after label, before frame setup.
+        state.probes = data.probes;
+        state.next_probe_id = 1;
+        if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW::new(w, ctx, arch, 6);
-            portal_solutions_blitz_codegen::emit_jit_preamble(
-                &mut bw, cfg.table_base_off, 0,
-                5, &mut state.label_index,
+            portal_solutions_blitz_codegen::emit_probe_site(
+                &mut bw, cfg.table_base_off, 0, 5,
+                portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                &mut state.label_index,
             )?;
         }
 
@@ -240,13 +241,14 @@ where
             idx: id as usize | (1 << 28),
         })?;
 
-        // Trace preamble: after label, before frame setup so SysV arg regs
-        // (a0–a7, Reg 10–17) are intact for the outer-JIT tail-jump.
-        if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
+        // Function-entry probe: after label, before frame setup so SysV arg
+        // regs (a0–a7, Reg 10–17) are intact for the outer-JIT tail-jump.
+        if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW::new(w, ctx, arch, 6);
-            portal_solutions_blitz_codegen::emit_jit_preamble(
-                &mut bw, cfg.table_base_off, 0,
-                5, &mut state.label_index,
+            portal_solutions_blitz_codegen::emit_probe_site(
+                &mut bw, cfg.table_base_off, 0, 5,
+                portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                &mut state.label_index,
             )?;
         }
 

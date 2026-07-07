@@ -5,6 +5,10 @@ edition = "2024"
 license.workspace = true
 description.workspace = true
 
+[dev-dependencies]
+# Enable the `iced` binary emitter for unit tests that assemble real bytes.
+portal-solutions-asm-x86-64 = { workspace = true, features = ["regalloc-integration", "iced"] }
+
 [dependencies]
 portal-solutions-blitz-codegen.workspace = true
 portal-solutions-asm-x86-64 = { workspace = true, features = ["regalloc-integration"] }

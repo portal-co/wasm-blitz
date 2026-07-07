@@ -20,26 +20,27 @@ extern crate alloc;
 
 use portal_solutions_asm_riscv64::RiscV64Arch;
 use portal_solutions_asm_riscv64::out::Writer;
+use portal_solutions_asm_regalloc as regalloc;
 use portal_solutions_blitz_common::{
     asm::Reg,
-    ops::MachOperator,
+    ops::{MachOperator, ProbeMode, ProbePlacement},
     wasm_encoder::{Instruction, reencode::{self as reencode, Reencode}},
 };
 use portal_pc_asm_common::types::mem::MemorySize;
 use portal_solutions_asm_riscv64::{RegisterClass, out::arg::{ArgKind, MemArgKind}};
 
 use crate::RiscvLabel;
-use crate::codegen::TraceBase;
+use crate::codegen::ProbeBase;
 use crate::naive::{State, WriterExt as NaiveExt, flush_regalloc, push, pop, pop_regalloc_to, SCR};
 
-/// Blitz register number of the RISC-V psABI **trace-base virtual parameter**
+/// Blitz register number of the RISC-V psABI **probe-base virtual parameter**
 /// (`t2` / x7).
 ///
 /// `t2` is caller-saved and never a positional argument register (a0–a7), nor
-/// the trace-preamble scratch (t0/t1), so the runtime can pass the per-function
-/// trace-table base in it.  Read directly at the function-entry site; spilled to
+/// the probe-preamble scratch (t0/t1), so the runtime can pass the per-function
+/// probe-table base in it.  Read directly at the function-entry site; spilled to
 /// an fp-relative frame slot for mid-function (loop/block) sites.
-pub const TRACE_BASE_REG: u8 = 7;
+pub const PROBE_BASE_REG: u8 = 7;
 
 // Argument registers in RISC-V psABI order: a0–a7
 const ARG_REGS: [Reg; 8] = [
@@ -175,24 +176,27 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                 state.local_count = data.num_params;
                 state.num_returns = data.num_returns;
                 state.control_depth = data.control_depth;
-                state.tracing = data.tracing;
-                state.next_site_id = 1; // site 0 is the function entry below
+                state.probes = data.probes;
+                state.next_probe_id = 1; // probe 0 is the function entry below
+                state.probe_plan = data.probe_plan.clone();
+                state.op_index = 0;
 
                 self.set_label(ctx, arch, RiscvLabel::Indexed {
                     idx: *id as usize | (1 << 28),
                 }).map_err(Err::from)?;
 
-                // Function-entry site (site 0): trace-table base arrives in the
+                // Function-entry probe (probe 0): probe-table base arrives in the
                 // virtual-param register t2; read it directly before frame setup
                 // so a0–a7 are intact for the tail-jump.  Scratch t0/t1.
-                if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
+                if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW {
                         writer: self, ctx, arch, scratch2: 6,
-                        trace_base: TraceBase::Reg(TRACE_BASE_REG),
+                        probe_base: ProbeBase::Reg(PROBE_BASE_REG),
                     };
-                    portal_solutions_blitz_codegen::emit_jit_preamble(
-                        &mut bw, cfg.table_base_off, 0,
-                        5, &mut state.label_index,
+                    portal_solutions_blitz_codegen::emit_probe_site(
+                        &mut bw, cfg.table_base_off, 0, 5,
+                        portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                        &mut state.label_index,
                     ).map_err(Err::from)?;
                 }
 
@@ -200,7 +204,7 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                 //   [FP-(1*8)]  = local 0   ← same offsets as naive, regalloc-compatible
                 //   ...
                 //   [SP+24] = saved SCR (s10)    ← extra slot when sharding active
-                //   [SP+16] = spilled trace base  ← extra slot for mid-function sites
+                //   [SP+16] = spilled probe base  ← extra slot for mid-function sites
                 //   [SP+8]  = saved old-FP   ← bottom two slots for callee-saves
                 //   [SP+0]  = saved RA
                 let shard_extra = if state.shard.is_some() { 1 } else { 0 };
@@ -217,10 +221,10 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
 
                 // Spill the virtual-param base (t2) to the [SP+16] slot and point
                 // mid-function sites at it (fp-relative).
-                if data.tracing.as_ref().map(|c| c.enabled).unwrap_or(false) {
+                if data.probes.as_ref().map(|c| c.enabled).unwrap_or(false) {
                     let disp = -frame_sz + 16;
-                    state.trace_base = TraceBase::FrameSlot(disp);
-                    self.sd(ctx, arch, &Reg(TRACE_BASE_REG), &mem64(FP, disp)).map_err(Err::from)?;
+                    state.probe_base = ProbeBase::FrameSlot(disp);
+                    self.sd(ctx, arch, &Reg(PROBE_BASE_REG), &mem64(FP, disp)).map_err(Err::from)?;
                 }
 
                 for i in 0..data.num_params.min(8) {
@@ -241,17 +245,82 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
             MachOperator::StartBody | MachOperator::EndBody => Ok(()),
 
             MachOperator::Instruction { op: insn, .. } => {
-                self.sysv_handle_insn(ctx, arch, state, func_imports, insn, rewriter, target)
-                    .map_err(Err::from)
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::Before).map_err(Err::from)?;
+                self.sysv_handle_insn(ctx, arch, state, func_imports, insn, rewriter, target).map_err(Err::from)?;
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::After).map_err(Err::from)?;
+                state.op_index += 1;
+                Ok(())
             }
             MachOperator::Operator { op: Some(op_wasm), .. } => {
                 let insn = rewriter.instruction(op_wasm.clone())?;
-                self.sysv_handle_insn(ctx, arch, state, func_imports, &insn, rewriter, target)
-                    .map_err(Err::from)
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::Before).map_err(Err::from)?;
+                self.sysv_handle_insn(ctx, arch, state, func_imports, &insn, rewriter, target).map_err(Err::from)?;
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::After).map_err(Err::from)?;
+                state.op_index += 1;
+                Ok(())
             }
             MachOperator::Operator { op: None, .. } => Ok(()),
             _ => Ok(()),
         }
+    }
+
+    /// Emit any embedder-requested probes (`state.probe_plan`) attached to
+    /// the instruction at `state.op_index` with the given `placement`.
+    ///
+    /// Unlike x86-64/AArch64, RISC-V has a real lazy register allocator, so
+    /// `ProbeSpec::mode` matters here: `Active` flushes it first (same
+    /// sequence `flush_regalloc`/`emit_control_flow_probe` use); `Passive`
+    /// saves/restores exactly the registers it currently has occupied
+    /// (`crate::naive::regalloc_occupied`) around the probe instead, leaving
+    /// its `frames`/`tos` bookkeeping untouched. Reuses the mid-function
+    /// probe-base addressing (`ProbeBase::FrameSlot`, already live in
+    /// `state.probe_base` once `StartFn` has run) and the t0/t1 scratch
+    /// registers the function-entry probe above already establishes.
+    fn sysv_emit_indexed_probes(
+        &mut self,
+        ctx: &mut Context,
+        arch: RiscV64Arch,
+        state: &mut State<'_>,
+        placement: ProbePlacement,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        let (Some(plan), Some(cfg)) = (state.probe_plan.as_ref(), state.probes) else {
+            return Ok(());
+        };
+        if !cfg.enabled {
+            return Ok(());
+        }
+        let specs: Vec<_> = plan.at(state.op_index, placement).copied().collect();
+        for spec in specs {
+            let passive_occupied = match spec.mode {
+                ProbeMode::Active => {
+                    if let Some(ralloc) = state.regalloc.as_mut() {
+                        let it = ralloc.flush();
+                        crate::naive::emit_cmds(self, ctx, arch, it)?;
+                        ralloc.tos = None;
+                    }
+                    None
+                }
+                ProbeMode::Passive => {
+                    let occ = state.regalloc.as_ref().map(crate::naive::regalloc_occupied).unwrap_or_default();
+                    crate::naive::emit_cmds(self, ctx, arch, occ.iter().cloned().map(regalloc::Cmd::Push))?;
+                    Some(occ)
+                }
+            };
+            let probe_base = state.probe_base;
+            let mut bw = crate::codegen::BlitzW {
+                writer: self, ctx, arch, scratch2: 6, probe_base,
+            };
+            portal_solutions_blitz_codegen::emit_probe_site(
+                &mut bw, cfg.table_base_off, spec.probe_id, 5, spec.binding, &mut state.label_index,
+            )?;
+            if let Some(occ) = passive_occupied {
+                crate::naive::emit_cmds(self, ctx, arch, occ.iter().rev().cloned().map(regalloc::Cmd::Pop))?;
+            }
+        }
+        Ok(())
     }
 }
 

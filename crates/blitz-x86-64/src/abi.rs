@@ -65,9 +65,9 @@ where
         state.local_count = data.num_params;
         state.num_returns = data.num_returns;
         state.control_depth = data.control_depth;
-        // Store tracing hooks; the preamble is emitted in emit_start_body so
+        // Store probe config; the preamble is emitted in emit_start_body so
         // it runs after the function-entry label is placed (every call path).
-        state.tracing = data.tracing;
+        state.probes = data.probes;
         w.pop(ctx, arch, &Reg(1))?;
         w.lea(
             ctx,
@@ -102,14 +102,16 @@ where
         arch: X64Arch,
         state: &mut Self::State<'_>,
     ) -> Result<(), W::Error> {
-        // Emit tracing preamble. Use Reg(2) (RDX) as scratch; Reg(0)/Reg(1)
-        // hold old-CTX and return-addr consumed by the pushes below.
-        state.next_site_id = 1;
-        if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
+        // Emit the function-entry probe. Use Reg(2) (RDX) as scratch;
+        // Reg(0)/Reg(1) hold old-CTX and return-addr consumed by the pushes
+        // below.
+        state.next_probe_id = 1;
+        if let Some(cfg) = state.probes.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW::new(w, ctx, arch);
-            portal_solutions_blitz_codegen::emit_jit_preamble(
-                &mut bw, cfg.table_base_off, 0,
-                2, &mut state.label_index,
+            portal_solutions_blitz_codegen::emit_probe_site(
+                &mut bw, cfg.table_base_off, 0, 2,
+                portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                &mut state.label_index,
             )?;
         }
         w.push(ctx, arch, &Reg(1))?;
@@ -381,14 +383,15 @@ where
             idx: id as usize | (1 << 28),
         })?;
 
-        // Trace preamble: after label, before frame setup so the tail-jump
-        // delivers SysV arg registers (RDI/RSI/…) intact to the outer JIT.
-        // Scratch: RAX (Reg(0)) — not a SysV argument register.
-        if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
+        // Function-entry probe: after label, before frame setup so the
+        // tail-jump delivers SysV arg registers (RDI/RSI/…) intact to the
+        // outer JIT. Scratch: RAX (Reg(0)) — not a SysV argument register.
+        if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW::new(w, ctx, arch);
-            portal_solutions_blitz_codegen::emit_jit_preamble(
-                &mut bw, cfg.table_base_off, 0,
-                0, &mut state.label_index,
+            portal_solutions_blitz_codegen::emit_probe_site(
+                &mut bw, cfg.table_base_off, 0, 0,
+                portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                &mut state.label_index,
             )?;
         }
 

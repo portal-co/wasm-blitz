@@ -17,11 +17,29 @@
 //! call the free functions in this crate:
 //!
 //! ```ignore
-//! blitz_codegen::emit_jit_preamble(&mut bw, counter_addr, spec_addr, scratch, &mut label_counter)?;
+//! blitz_codegen::emit_probe_site(&mut bw, base_off, probe_id, scratch, binding, &mut label_counter)?;
 //! blitz_codegen::emit_br_table(&mut bw, selector_reg, targets, default, &mut label_counter, resolve)?;
 //! ```
 
 #![no_std]
+
+/// How a probe site dispatches to its handler once the handler pointer is
+/// found to be non-null.
+///
+/// This is a compile-time choice (it changes which instructions get emitted),
+/// not something the runtime can toggle — only *whether* a handler is
+/// installed is runtime-switchable (a null handler pointer means "skip").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeBinding {
+    /// Call the handler and fall through to the rest of the function once it
+    /// returns. The handler is an ordinary function under a minimal,
+    /// register-only probe ABI (see the wasm-blitz ABI reference).
+    Call,
+    /// Unconditionally transfer control to the handler with the current
+    /// stack-state-contract intact; the probe site never regains control.
+    /// Used for specialization opt-entry.
+    TailTakeover,
+}
 
 /// Minimal architecture primitives for shared WASM instruction codegen.
 ///
@@ -38,11 +56,21 @@ pub trait BlitzWriter {
     fn branch_label(&mut self, label_idx: usize) -> Result<(), Self::Error>;
 
     /// Branch to `label_idx` if `reg` is zero (equal to zero).
-    /// Used by both `emit_br_table` (decrement approach) and `emit_jit_preamble`.
+    /// Used by both `emit_br_table` (decrement approach) and `emit_probe_site`.
     fn branch_zero_label(&mut self, reg: u8, label_idx: usize) -> Result<(), Self::Error>;
 
-    /// Indirect branch through the value in `reg`.
+    /// Indirect branch through the value in `reg`. Never returns to the
+    /// instruction after it — used for [`ProbeBinding::TailTakeover`].
     fn branch_reg(&mut self, reg: u8) -> Result<(), Self::Error>;
+
+    /// Indirect call through the value in `reg`; falls through to the next
+    /// instruction once the callee returns — used for [`ProbeBinding::Call`].
+    ///
+    /// The callee is expected to follow the minimal, register-only probe ABI
+    /// (no stack args/results) and to leave the real stack pointer net
+    /// unchanged, so this is always safe to splice in regardless of what the
+    /// surrounding code is using the stack for.
+    fn call_reg(&mut self, reg: u8) -> Result<(), Self::Error>;
 
     // ---- label placement --------------------------------------------------
 
@@ -71,13 +99,13 @@ pub trait BlitzWriter {
 
     // ---- CTX-relative trace-table access (JIT preamble) ------------------
 
-    /// Load the runtime-provided trace-table base pointer into `dest`.
+    /// Load the runtime-provided probe-table base pointer into `dest`.
     ///
     /// The base is stored by the runtime at a fixed, CTX-relative slot
-    /// `base_off` (see `TracingConfig::table_base_off`).  This is how the
-    /// preamble reaches its [`TraceSite`](../portal_solutions_blitz_common/ops/struct.TraceSite.html)
+    /// `base_off` (see `ProbeTableConfig::table_base_off`).  This is how the
+    /// preamble reaches its [`ProbeSlot`](../portal_solutions_blitz_common/ops/struct.ProbeSlot.html)
     /// table without any absolute address being baked into the code.
-    fn load_trace_base(&mut self, dest: u8, base_off: i32) -> Result<(), Self::Error>;
+    fn load_probe_base(&mut self, dest: u8, base_off: i32) -> Result<(), Self::Error>;
 
     /// Atomicity-free increment of the 64-bit value at `[ptr_reg + disp]`.
     fn inc_mem64_disp(&mut self, ptr_reg: u8, disp: i32) -> Result<(), Self::Error>;
@@ -86,26 +114,26 @@ pub trait BlitzWriter {
     fn load_mem64_disp(&mut self, dest: u8, src: u8, disp: i32) -> Result<(), Self::Error>;
 }
 
-/// Size in bytes of one `TraceSite` entry (`counter: u64` + `specialization: ptr`).
-pub const TRACE_SITE_SIZE: i32 = 16;
-/// Byte offset of the `specialization` pointer within a `TraceSite`.
-pub const TRACE_SITE_SPEC_OFF: i32 = 8;
+/// Size in bytes of one `ProbeSlot` entry (`counter: u64` + `handler: ptr`).
+pub const PROBE_SLOT_SIZE: i32 = 16;
+/// Byte offset of the `handler` pointer within a `ProbeSlot`.
+pub const PROBE_SLOT_HANDLER_OFF: i32 = 8;
 
 // ---------------------------------------------------------------------------
 // Shared instruction implementations
 // ---------------------------------------------------------------------------
 
-/// Emit a JIT tracing preamble for one trace site.
+/// Emit one probe site.
 ///
-/// Reaches the runtime [`TraceSite`] table through a CTX-relative base
-/// (`base_off`, see `TracingConfig::table_base_off`), indexes it by `site_id`,
-/// increments that site's invocation counter, then checks its specialisation
-/// code pointer.  If non-null it tail-jumps there (with the operand-stack /
-/// CTX-frame state intact for this site); otherwise it falls through to
+/// Reaches the runtime [`ProbeSlot`] table through a CTX-relative base
+/// (`base_off`, see `ProbeTableConfig::table_base_off`), indexes it by
+/// `probe_id`, increments that probe's invocation counter, then checks its
+/// handler code pointer.  If non-null it dispatches per `binding`; otherwise
+/// (or once a [`ProbeBinding::Call`] handler returns) it falls through to
 /// `body_label` (placed by this function).
 ///
 /// No absolute address is baked into the generated code — only the structural
-/// `base_off` and `site_id` — so compilation is independent of the runtime
+/// `base_off` and `probe_id` — so compilation is independent of the runtime
 /// address space.
 ///
 /// `scratch` is a caller-provided scratch register (by blitz register number).
@@ -114,28 +142,39 @@ pub const TRACE_SITE_SPEC_OFF: i32 = 8;
 ///
 /// The `label_counter` is incremented once by this function to allocate the
 /// body label.
-pub fn emit_jit_preamble<W: BlitzWriter>(
+///
+/// This function only encodes the "is a handler installed, and how do we
+/// reach it" logic. Callers emitting a [`ProbeBinding::Call`] probe are
+/// responsible for the surrounding save/restore of any state the call would
+/// otherwise disturb (the Active/Passive distinction — see the wasm-blitz
+/// probes design), since that is backend-specific and outside the minimal
+/// [`BlitzWriter`] vocabulary.
+pub fn emit_probe_site<W: BlitzWriter>(
     w: &mut W,
     base_off: i32,
-    site_id: u32,
+    probe_id: u32,
     scratch: u8,
+    binding: ProbeBinding,
     label_counter: &mut usize,
 ) -> Result<(), W::Error> {
     let body_label = *label_counter;
     *label_counter += 1;
 
-    let site_off = site_id as i32 * TRACE_SITE_SIZE;
+    let slot_off = probe_id as i32 * PROBE_SLOT_SIZE;
 
-    // 1. Load runtime trace-table base (no baked address).
-    w.load_trace_base(scratch, base_off)?;
+    // 1. Load runtime probe-table base (no baked address).
+    w.load_probe_base(scratch, base_off)?;
 
-    // 2. Increment this site's invocation counter (non-atomic, approximate).
-    w.inc_mem64_disp(scratch, site_off)?;
+    // 2. Increment this probe's invocation counter (non-atomic, approximate).
+    w.inc_mem64_disp(scratch, slot_off)?;
 
-    // 3. Load specialisation code-ptr; tail-jump if non-null.
-    w.load_mem64_disp(scratch, scratch, site_off + TRACE_SITE_SPEC_OFF)?;
+    // 3. Load handler code-ptr; dispatch if non-null.
+    w.load_mem64_disp(scratch, scratch, slot_off + PROBE_SLOT_HANDLER_OFF)?;
     w.branch_zero_label(scratch, body_label)?;
-    w.branch_reg(scratch)?;
+    match binding {
+        ProbeBinding::TailTakeover => w.branch_reg(scratch)?,
+        ProbeBinding::Call => w.call_reg(scratch)?,
+    }
     w.place_label(body_label)?;
     Ok(())
 }

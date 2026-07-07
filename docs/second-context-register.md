@@ -6,10 +6,10 @@ Each native backend reserves two special registers for runtime context:
 
 | Register | Name | x86-64 | AArch64 | RISC-V 64 | Purpose |
 |----------|------|---------|---------|-----------|---------|
-| `Reg::CTX` (`Reg(255)`) | Frame / CTX | r15 | x28 | s11 | WASM control-frame stack (NaiveAbi) / trace-table pointer (JIT entry) |
+| `Reg::CTX` (`Reg(255)`) | Frame / CTX | r15 | x28 | s11 | WASM control-frame stack (NaiveAbi) / probe-table pointer (probe entry) |
 | SCR | Static Context | r14 | x27 | s10 | Module-level static data, saved/restored only when a feature uses it |
 
-`Reg::CTX` is the existing register used by NaiveAbi as a shadow stack pointer (via `xchg RSP, r15`) and by the JIT preamble as the trace-table base at function entry.
+`Reg::CTX` is the existing register used by NaiveAbi as a shadow stack pointer (via `xchg RSP, r15`) and by the probe preamble as the probe-table base at function entry (see `docs/abi.md` § Probes).
 
 The **Static Context Register (SCR)** is the complement: a second callee-saved register that holds a pointer to static, module-level data throughout the entire function body (not just at entry). It is only saved and restored in the prologue/epilogue when at least one active feature requires it. Non-sharded, non-SCR functions leave it untouched.
 
@@ -39,7 +39,13 @@ pub struct ShardConfig {
 
 The SCR design is intentionally open-ended. Future features that need module-level data throughout a function body can extend the SCR contract without adding more reserved registers:
 
-- **JIT trace-table (planned):** Currently the trace-table pointer is only accessible at function entry via CTX. Moving it to SCR (or a composite struct behind SCR) would let specialisation checks happen mid-function.
+- **Probe-table base, SCR-resident (planned):** Mid-function probe sites already work
+  today without SCR — the probe-table base is passed as a virtual function parameter at
+  entry and spilled to a frame slot (`codegen::ProbeBase::{Reg, FrameSlot}`, see
+  `docs/abi.md` § Probes) — but that spill costs a frame slot and a reload at every
+  mid-function site. Moving the base to SCR (or a composite struct behind SCR) would let
+  every probe site reach it directly, at the cost of reserving SCR whenever probes are
+  enabled.
 - **Host memory mirror base:** A base pointer for sandboxed linear-memory access, avoiding a load from a global on every memory operation.
 - **Thread-local storage base:** For WASM threads, a per-thread context pointer accessible in generated code.
 
@@ -48,11 +54,11 @@ The SCR design is intentionally open-ended. Future features that need module-lev
 When multiple features are active simultaneously, SCR points to a composite context struct whose layout is determined at compile time by the active feature set:
 
 ```rust
-// Example (future): sharding + JIT
+// Example (future): sharding + probes
 #[repr(C)]
 struct CompositeCtx {
     shard_table: *const *const (),   // offset 0: cross-shard fn pointers
-    trace_table: *const TraceSite,   // offset 8: JIT trace sites
+    probe_table: *const ProbeSlot,   // offset 8: probe table
 }
 ```
 

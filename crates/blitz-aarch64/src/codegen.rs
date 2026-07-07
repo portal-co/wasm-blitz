@@ -22,13 +22,13 @@ fn aarch64_mem_base_disp(base: Reg, disp: i32) -> MemArgKind {
     }
 }
 
-/// Where the runtime trace-table base pointer is found, for `load_trace_base`.
+/// Where the runtime probe-table base pointer is found, for `load_probe_base`.
 ///
 /// NaiveAbi uses the CTX frame pointer; the AAPCS64 SysV ABI passes the base as
 /// a virtual function parameter (a reserved register) and spills it to an
 /// FP-relative frame slot for mid-function sites.  See `docs/abi.md`.
 #[derive(Clone, Copy, Default)]
-pub enum TraceBase {
+pub enum ProbeBase {
     /// Base pointer stored at `[CTX + base_off]` (NaiveAbi / LFI).
     #[default]
     CtxSlot,
@@ -48,14 +48,14 @@ pub struct BlitzW<'a, W, Context> {
     pub ctx: &'a mut Context,
     pub arch: AArch64Arch,
     pub scratch2: u8,
-    /// How `load_trace_base` reaches the runtime trace-table base.
-    pub trace_base: TraceBase,
+    /// How `load_probe_base` reaches the runtime probe-table base.
+    pub probe_base: ProbeBase,
 }
 
 impl<'a, W, Context> BlitzW<'a, W, Context> {
-    /// Construct a wrapper using the default CTX-relative trace-base convention.
+    /// Construct a wrapper using the default CTX-relative probe-base convention.
     pub fn new(writer: &'a mut W, ctx: &'a mut Context, arch: AArch64Arch, scratch2: u8) -> Self {
-        BlitzW { writer, ctx, arch, scratch2, trace_base: TraceBase::CtxSlot }
+        BlitzW { writer, ctx, arch, scratch2, probe_base: ProbeBase::CtxSlot }
     }
 }
 
@@ -83,6 +83,12 @@ where
 
     fn branch_reg(&mut self, reg_n: u8) -> Result<(), Self::Error> {
         self.writer.br(self.ctx, self.arch, &aarch64_reg(Reg(reg_n)))
+    }
+
+    // AArch64: `bl` with a register operand is emitted as `blr` (branch with
+    // link to register) by the writer — see asm-aarch64/src/out/asm.rs.
+    fn call_reg(&mut self, reg_n: u8) -> Result<(), Self::Error> {
+        self.writer.bl(self.ctx, self.arch, &aarch64_reg(Reg(reg_n)))
     }
 
     fn place_label(&mut self, label_idx: usize) -> Result<(), Self::Error> {
@@ -126,22 +132,22 @@ where
         self.load_mem64_disp(dest, src, 0)
     }
 
-    // Load the runtime trace-table base into `dest` from the configured source.
-    fn load_trace_base(&mut self, dest: u8, base_off: i32) -> Result<(), Self::Error> {
-        match self.trace_base {
-            TraceBase::CtxSlot => self.writer.ldr(
+    // Load the runtime probe-table base into `dest` from the configured source.
+    fn load_probe_base(&mut self, dest: u8, base_off: i32) -> Result<(), Self::Error> {
+        match self.probe_base {
+            ProbeBase::CtxSlot => self.writer.ldr(
                 self.ctx, self.arch,
                 &aarch64_reg(Reg(dest)),
                 &aarch64_mem_base_disp(Reg::CTX, base_off),
             ),
-            TraceBase::Reg(r) => {
+            ProbeBase::Reg(r) => {
                 if r != dest {
                     self.writer.mov(self.ctx, self.arch, &aarch64_reg(Reg(dest)), &aarch64_reg(Reg(r)))?;
                 }
                 Ok(())
             }
             // FP = crate::FP (x29); mid-function frame slot.
-            TraceBase::FrameSlot(disp) => self.writer.ldr(
+            ProbeBase::FrameSlot(disp) => self.writer.ldr(
                 self.ctx, self.arch,
                 &aarch64_reg(Reg(dest)),
                 &aarch64_mem_base_disp(crate::FP, disp),

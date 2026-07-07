@@ -34,22 +34,22 @@ use portal_solutions_asm_x86_64::{
 use portal_solutions_blitz_common::{
     asm::Reg,
     asm::common::mem::MemorySize,
-    ops::{FnData, MachOperator, TracingConfig},
+    ops::{FnData, MachOperator, ProbePlacement, ProbePlan, ProbeTableConfig},
     wasm_encoder::{self, FuncType, Instruction, reencode::{self as reencode, Reencode}},
 };
 
 use crate::{X64Label, RSP};
-use crate::codegen::TraceBase;
+use crate::codegen::ProbeBase;
 use crate::naive::WriterExt as NaiveExt;
 
-/// Blitz register number of the SysV **trace-base virtual parameter** (`r11`).
+/// Blitz register number of the SysV **probe-base virtual parameter** (`r11`).
 ///
 /// `r11` is caller-saved and never a SysV positional argument register, so the
-/// runtime can pass the per-function trace-table base pointer in it without
+/// runtime can pass the per-function probe-table base pointer in it without
 /// disturbing the function's real arguments.  The function-entry preamble reads
 /// it directly (before frame setup); `StartFn` then spills it to a frame slot so
 /// mid-function (loop/block) sites can reload it after `r11` is clobbered.
-pub const TRACE_BASE_REG: u8 = 11;
+pub const PROBE_BASE_REG: u8 = 11;
 
 // ---- register shortcuts ----
 const RAX: Reg = Reg(0);
@@ -115,19 +115,63 @@ pub struct SysVState<'a> {
     pub ctrl_stack: Vec<SysVCtrl>,
     pub body: u32,
     pub body_labels: BTreeMap<u32, usize>,
-    /// Tracing/specialization config for this function (`None`/disabled → no
-    /// preamble emitted).
-    pub tracing: Option<TracingConfig>,
-    /// Next trace-site id to assign (function entry = site 0; each loop/block
+    /// Probe-table config for this function (`None`/disabled → no probe code
+    /// emitted).
+    pub probes: Option<ProbeTableConfig>,
+    /// Next probe id to assign (function entry = probe 0; each loop/block
     /// consumes the next, in source order).
-    pub next_site_id: u32,
-    /// RBP-relative displacement of the spilled trace-base pointer slot, set by
-    /// `StartFn` when tracing is enabled.  Mid-function sites load the base from
-    /// `[RBP + trace_base_disp]`.
-    pub trace_base_disp: i32,
+    pub next_probe_id: u32,
+    /// RBP-relative displacement of the spilled probe-base pointer slot, set by
+    /// `StartFn` when probes are enabled.  Mid-function sites load the base from
+    /// `[RBP + probe_base_disp]`.
+    pub probe_base_disp: i32,
+    /// Embedder-requested probes at arbitrary instruction indices, in addition
+    /// to the function-entry/loop/block probes above.  `None` → zero overhead,
+    /// identical codegen to today.
+    pub probe_plan: Option<ProbePlan>,
+    /// Ordinal index of the next dispatched instruction (0 = the first real
+    /// WASM operator after locals), used to look up `probe_plan` entries.
+    pub op_index: usize,
     /// Present when sharding is active. SCR (r14) is pushed in the prologue and
     /// popped in all return paths. Cross-shard calls load the target from SCR.
     pub shard: Option<crate::naive::NaiveShardState<'a>>,
+    /// How linear-memory load/store addresses are translated. Propagated to the
+    /// naive backend that lowers memory ops. Defaults to [`crate::naive::MemBase::Raw`].
+    pub mem_base: crate::naive::MemBase,
+    /// Calling convention for inter-function calls and the function prologue.
+    /// Defaults to [`CallAbi::RegSysv`] (the legacy behavior, used by tests where
+    /// each function is invoked directly with register arguments).
+    pub call_abi: CallAbi,
+    /// Number of imported functions (their WASM indices `0..n_imports` are calls
+    /// to external `module__name` symbols using the C ABI). Only used in
+    /// [`CallAbi::AllStack`].
+    pub n_imports: u32,
+    /// Param count per WASM function index (imports first, then internal
+    /// functions). Only used in [`CallAbi::AllStack`] to marshal call arguments.
+    pub call_params: Vec<u32>,
+    /// Result count per WASM function index. Only used in [`CallAbi::AllStack`].
+    pub call_results: Vec<u32>,
+    /// Param count per WASM *type* index — the signature arity used by
+    /// `call_indirect`/`return_call_indirect` (the callee is unknown at compile
+    /// time, so the type determines the marshalling arity).
+    pub sig_params: Vec<u32>,
+    /// Result count per WASM type index. Companion to [`Self::sig_params`].
+    pub sig_results: Vec<u32>,
+}
+
+/// Inter-function calling convention selected by the recompiler.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CallAbi {
+    /// Legacy: each function reads its first 6 params from the SysV integer
+    /// argument registers (and the rest from the stack); calls are *not*
+    /// marshalled (the delegated naive path). Used by direct-invocation tests.
+    #[default]
+    RegSysv,
+    /// Recompiler mode: internal functions pass *all* params on the stack
+    /// (`param i` at `[RBP + 16 + i*8]`), so the per-instruction register-file
+    /// threading round-trips. Import calls still use the C ABI (register args).
+    /// The entry stays C-callable (its params are unused initial register values).
+    AllStack,
 }
 
 /// Extension trait for generating System V AMD64-compatible functions.
@@ -161,30 +205,269 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
         self.mov(ctx, arch, &dest, &mem64(RSP, 0))
     }
 
-    /// Emit a tracing/specialization preamble for a mid-function (loop/block)
-    /// site, consuming the next `site_id`.  No-op when tracing is disabled.
+    /// Emit a control-flow probe (`TailTakeover` binding) for a mid-function
+    /// (loop/block) site, consuming the next `probe_id`.  No-op when probes
+    /// are disabled.
     ///
-    /// The trace-table base is reloaded from the spilled frame slot
-    /// (`[RBP + trace_base_disp]`) since the virtual-param register `r11` has
+    /// The probe-table base is reloaded from the spilled frame slot
+    /// (`[RBP + probe_base_disp]`) since the virtual-param register `r11` has
     /// been clobbered by the body.  Uses `RAX` as scratch (free at a block
     /// boundary — operands live on the WASM stack).
-    fn sysv_emit_trace_site(&mut self, ctx: &mut Context, arch: X64Arch, state: &mut SysVState<'_>)
+    fn sysv_emit_control_flow_probe(&mut self, ctx: &mut Context, arch: X64Arch, state: &mut SysVState<'_>)
         -> Result<(), Self::Error>
     where
         Self: Sized,
     {
-        if let Some(cfg) = state.tracing.as_ref().copied().filter(|c| c.enabled) {
-            let site_id = state.next_site_id;
-            state.next_site_id += 1;
+        if let Some(cfg) = state.probes.as_ref().copied().filter(|c| c.enabled) {
+            let probe_id = state.next_probe_id;
+            state.next_probe_id += 1;
             let mut bw = crate::codegen::BlitzW {
                 writer: self, ctx, arch,
-                trace_base: TraceBase::FrameSlot(state.trace_base_disp),
+                probe_base: ProbeBase::FrameSlot(state.probe_base_disp),
             };
-            portal_solutions_blitz_codegen::emit_jit_preamble(
-                &mut bw, cfg.table_base_off, site_id, 0, &mut state.label_index,
+            portal_solutions_blitz_codegen::emit_probe_site(
+                &mut bw, cfg.table_base_off, probe_id, 0,
+                portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                &mut state.label_index,
             )?;
         }
         Ok(())
+    }
+
+    /// Emit any embedder-requested probes (`state.probe_plan`) attached to
+    /// the instruction at `state.op_index` with the given `placement`.
+    ///
+    /// Reuses the same mid-function probe-base addressing
+    /// (`ProbeBase::FrameSlot`) and scratch register (`RAX`, free at any op
+    /// boundary — operands live on the WASM stack between ops) that
+    /// [`sysv_emit_control_flow_probe`](Self::sysv_emit_control_flow_probe)
+    /// already establishes. `ProbeMode` (Active/Passive) makes no codegen
+    /// difference here: x86-64 has no register allocator to disturb between
+    /// ops, so both are already as non-disturbing as possible.
+    fn sysv_emit_indexed_probes(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        state: &mut SysVState<'_>,
+        placement: ProbePlacement,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        let (Some(plan), Some(cfg)) = (state.probe_plan.as_ref(), state.probes) else {
+            return Ok(());
+        };
+        if !cfg.enabled {
+            return Ok(());
+        }
+        let specs: Vec<_> = plan.at(state.op_index, placement).copied().collect();
+        for spec in specs {
+            let mut bw = crate::codegen::BlitzW {
+                writer: self, ctx, arch,
+                probe_base: ProbeBase::FrameSlot(state.probe_base_disp),
+            };
+            portal_solutions_blitz_codegen::emit_probe_site(
+                &mut bw, cfg.table_base_off, spec.probe_id, 0, spec.binding, &mut state.label_index,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Marshal `arity` operand-stack arguments and call `target`.
+    ///
+    /// Operand stack on entry (RSP-based): `param_{arity-1}` at `[RSP]`, …,
+    /// `param 0` at `[RSP + (arity-1)*8]`. `R15` holds the operand base across the
+    /// call (saved in a scratch slot so nested calls can clobber it).
+    /// - `is_import`: the target is a C-ABI host import — pass the first ≤6 params
+    ///   in the SysV integer argument registers (these imports take ≤6 args).
+    /// - otherwise (`CallAbi::AllStack`): write *all* params to `[SP_call + i*8]`
+    ///   so the callee's prologue reads `param i` at `[RBP + 16 + i*8]`.
+    /// `results` (0 or 1) values are pushed back onto the operand stack from RAX.
+    fn sysv_emit_marshalled_call(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        target: X64Label,
+        arity: u32,
+        results: u32,
+        is_import: bool,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        let r15 = Reg(15);
+        let lit = |v: u64| MemArgKind::NoMem(ArgKind::Lit(v));
+        self.mov(ctx, arch, &r15, &RSP)?; // R15 = operand base
+        if is_import {
+            // System V: first 6 integer args in registers; args 7+ on the stack
+            // at [RSP + (i-6)*8]. Reserve a 16-aligned region big enough for the
+            // stack args plus one slot to preserve the operand base across the call.
+            let stack_args = arity.saturating_sub(6);
+            let bytes = ((stack_args as u64) * 8 + 8 + 15) & !15;
+            for i in 0..arity.min(6) {
+                let disp = (arity - 1 - i) * 8;
+                self.mov(ctx, arch, &ARG_REGS[i as usize], &mem64(r15, disp))?;
+            }
+            self.mov(ctx, arch, &RSP, &r15)?;
+            self.mov64(ctx, arch, &RAX, bytes)?;
+            self.sub(ctx, arch, &RSP, &RAX)?;
+            self.and(ctx, arch, &RSP, &lit((-16i64) as u64))?;
+            for i in 6..arity {
+                self.mov(ctx, arch, &RAX, &mem64(r15, (arity - 1 - i) * 8))?;
+                self.mov(ctx, arch, &mem64(RSP, (i - 6) * 8), &RAX)?;
+            }
+            self.mov(ctx, arch, &mem64(RSP, stack_args * 8), &r15)?; // save base above args
+            self.lea_label(ctx, arch, &RAX, target)?;
+            self.call(ctx, arch, &RAX)?;
+            self.mov(ctx, arch, &r15, &mem64(RSP, stack_args * 8))?; // restore base
+            self.lea(ctx, arch, &RSP, &mem64(r15, arity * 8))?; // pop args
+        } else {
+            self.mov(ctx, arch, &RSP, &r15)?;
+            self.mov64(ctx, arch, &RAX, (arity as u64 + 1) * 8)?;
+            self.sub(ctx, arch, &RSP, &RAX)?;
+            self.and(ctx, arch, &RSP, &lit((-16i64) as u64))?;
+            for i in 0..arity {
+                self.mov(ctx, arch, &RAX, &mem64(r15, (arity - 1 - i) * 8))?;
+                self.mov(ctx, arch, &mem64(RSP, i * 8), &RAX)?;
+            }
+            self.mov(ctx, arch, &mem64(RSP, arity * 8), &r15)?; // save base above args
+            self.lea_label(ctx, arch, &RAX, target)?;
+            self.call(ctx, arch, &RAX)?;
+            self.mov(ctx, arch, &r15, &mem64(RSP, arity * 8))?; // restore base
+            self.lea(ctx, arch, &RSP, &mem64(r15, arity * 8))?; // pop args
+        }
+        if results > 0 {
+            self.push(ctx, arch, &RAX)?;
+        }
+        Ok(())
+    }
+
+    /// Emit a **true tail call** to an internal `target` with `arity` args.
+    ///
+    /// Unlike `sysv_emit_marshalled_call` (a real `call`), this reuses the current
+    /// frame: the `arity` operand-stack args overwrite our own incoming-arg slots
+    /// (`[RBP + 16 + scr_extra + i*8]`), the SysV epilogue restores the caller's
+    /// frame leaving RSP at the return address, and a `jmp` transfers control so
+    /// the callee returns straight to our caller. The machine stack therefore stays
+    /// O(1) across a `return_call` chain. Requires `arity <= param_count` (checked
+    /// by the caller) so the overwrite stays within our incoming-arg region.
+    fn sysv_emit_tail_call(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        target: X64Label,
+        arity: u32,
+        shard: bool,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        let r15 = Reg(15);
+        let scr_extra: u32 = if shard { 8 } else { 0 };
+        self.mov(ctx, arch, &r15, &RSP)?; // operand base (args are below RBP)
+        for i in 0..arity {
+            self.mov(ctx, arch, &RAX, &mem64(r15, (arity - 1 - i) * 8))?;
+            self.mov(ctx, arch, &mem64(RBP, 16 + scr_extra + i * 8), &RAX)?;
+        }
+        // Restore caller frame; RSP ends at the return address.
+        self.mov(ctx, arch, &RSP, &RBP)?;
+        if shard { self.pop(ctx, arch, &SCR)?; }
+        self.pop(ctx, arch, &RBP)?;
+        self.jmp_label(ctx, arch, target)
+    }
+
+    /// AllStack marshalled call to a **register** target (for `call_indirect`):
+    /// all `arity` args go on the stack and the callee is `call target`. `target`
+    /// must be a register the marshalling does not clobber (e.g. R10/R11).
+    fn sysv_emit_marshalled_call_reg(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        target: Reg,
+        arity: u32,
+        results: u32,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        let r15 = Reg(15);
+        let lit = |v: u64| MemArgKind::NoMem(ArgKind::Lit(v));
+        self.mov(ctx, arch, &r15, &RSP)?; // operand base
+        self.mov64(ctx, arch, &RAX, (arity as u64 + 1) * 8)?;
+        self.sub(ctx, arch, &RSP, &RAX)?;
+        self.and(ctx, arch, &RSP, &lit((-16i64) as u64))?;
+        for i in 0..arity {
+            self.mov(ctx, arch, &RAX, &mem64(r15, (arity - 1 - i) * 8))?;
+            self.mov(ctx, arch, &mem64(RSP, i * 8), &RAX)?;
+        }
+        self.mov(ctx, arch, &mem64(RSP, arity * 8), &r15)?; // save base above args
+        self.call(ctx, arch, &target)?;
+        self.mov(ctx, arch, &r15, &mem64(RSP, arity * 8))?; // restore base
+        self.lea(ctx, arch, &RSP, &mem64(r15, arity * 8))?; // pop args
+        if results > 0 {
+            self.push(ctx, arch, &RAX)?;
+        }
+        Ok(())
+    }
+
+    /// True tail call to a **register** target (`return_call_indirect`); mirrors
+    /// `sysv_emit_tail_call` but jumps to a register. Requires `arity <= param_count`.
+    fn sysv_emit_tail_call_reg(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        target: Reg,
+        arity: u32,
+        shard: bool,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        let r15 = Reg(15);
+        let scr_extra: u32 = if shard { 8 } else { 0 };
+        self.mov(ctx, arch, &r15, &RSP)?;
+        for i in 0..arity {
+            self.mov(ctx, arch, &RAX, &mem64(r15, (arity - 1 - i) * 8))?;
+            self.mov(ctx, arch, &mem64(RBP, 16 + scr_extra + i * 8), &RAX)?;
+        }
+        self.mov(ctx, arch, &RSP, &RBP)?;
+        if shard { self.pop(ctx, arch, &SCR)?; }
+        self.pop(ctx, arch, &RBP)?;
+        self.jmp(ctx, arch, &target)
+    }
+
+    /// Pop the `call_indirect` table index and load the function pointer from
+    /// `__wasm_table[index]` into R10 (a register the marshalling preserves).
+    fn sysv_load_indirect_target(&mut self, ctx: &mut Context, arch: X64Arch) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        self.pop(ctx, arch, &Reg(10))?; // table index → R10
+        self.lea_label(ctx, arch, &Reg(11), X64Label::External { name: "__wasm_table".into() })?;
+        // R10 := [R11 + R10*8]
+        self.mov(ctx, arch, &Reg(10), &MemArgKind::Mem {
+            base: Reg(11), offset: Some((Reg(10), 8)), disp: 0,
+            size: MemorySize::_64, reg_class: RegisterClass::Gpr, segment: Default::default(),
+        })
+    }
+
+    /// Resolve a call/return_call target index to its label + (arity, results, is_import).
+    fn sysv_call_target(
+        state: &SysVState<'_>,
+        func_imports: &[(&str, &str)],
+        idx: u32,
+    ) -> (X64Label, u32, u32, bool) {
+        let widx = idx as usize;
+        let is_import = idx < state.n_imports;
+        let arity = state.call_params.get(widx).copied().unwrap_or(0);
+        let results = state.call_results.get(widx).copied().unwrap_or(0);
+        let label = if is_import {
+            let (m, n) = func_imports[widx];
+            X64Label::External { name: alloc::format!("{m}__{n}") }
+        } else {
+            X64Label::Func { r#fn: idx - state.n_imports }
+        };
+        (label, arity, results, is_import)
     }
 
     /// Handle an instruction using the SysV ABI (overrides local access and Return).
@@ -234,6 +517,59 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 self.sysv_store_local(ctx, arch, RAX, *n as usize)
             }
 
+            // ---- Calls: marshal operand-stack args per the selected CallAbi ----
+            Instruction::Call(idx) if state.call_abi == CallAbi::AllStack => {
+                let (label, arity, results, is_import) =
+                    Self::sysv_call_target(state, func_imports, *idx);
+                self.sysv_emit_marshalled_call(ctx, arch, label, arity, results, is_import)
+            }
+            Instruction::ReturnCall(idx) if state.call_abi == CallAbi::AllStack => {
+                let (label, arity, results, is_import) =
+                    Self::sysv_call_target(state, func_imports, *idx);
+                if is_import || arity as usize > state.param_count {
+                    // Fake tail: a real call then the SysV epilogue. Required for C-ABI
+                    // imports (proper alignment/return), and a safe fallback when the
+                    // callee wants more args than our incoming-arg frame can hold.
+                    self.sysv_emit_marshalled_call(ctx, arch, label, arity, results, is_import)?;
+                    if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
+                    if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
+                    self.mov(ctx, arch, &RSP, &RBP)?;
+                    if state.shard.is_some() { self.pop(ctx, arch, &SCR)?; }
+                    self.pop(ctx, arch, &RBP)?;
+                    self.ret(ctx, arch)
+                } else {
+                    // True tail call to an internal function: O(1) machine stack for
+                    // long `return_call` chains (speet emits one cell per guest insn).
+                    self.sysv_emit_tail_call(ctx, arch, label, arity, state.shard.is_some())
+                }
+            }
+
+            // ---- Indirect calls: target = __wasm_table[index] ----
+            Instruction::CallIndirect { type_index, .. } if state.call_abi == CallAbi::AllStack => {
+                let ty = *type_index as usize;
+                let arity = state.sig_params.get(ty).copied().unwrap_or(0);
+                let results = state.sig_results.get(ty).copied().unwrap_or(0);
+                self.sysv_load_indirect_target(ctx, arch)?; // index → R10 (fn ptr)
+                self.sysv_emit_marshalled_call_reg(ctx, arch, Reg(10), arity, results)
+            }
+            Instruction::ReturnCallIndirect { type_index, .. } if state.call_abi == CallAbi::AllStack => {
+                let ty = *type_index as usize;
+                let arity = state.sig_params.get(ty).copied().unwrap_or(0);
+                let results = state.sig_results.get(ty).copied().unwrap_or(0);
+                self.sysv_load_indirect_target(ctx, arch)?; // index → R10 (fn ptr)
+                if arity as usize > state.param_count {
+                    self.sysv_emit_marshalled_call_reg(ctx, arch, Reg(10), arity, results)?;
+                    if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
+                    if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
+                    self.mov(ctx, arch, &RSP, &RBP)?;
+                    if state.shard.is_some() { self.pop(ctx, arch, &SCR)?; }
+                    self.pop(ctx, arch, &RBP)?;
+                    self.ret(ctx, arch)
+                } else {
+                    self.sysv_emit_tail_call_reg(ctx, arch, Reg(10), arity, state.shard.is_some())
+                }
+            }
+
             // ---- Return: always emit SysV epilogue regardless of block depth ----
             Instruction::Return => {
                 if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
@@ -262,14 +598,14 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 state.if_stack.push(crate::naive::Endable::Br);
                 state.ctrl_stack.push(SysVCtrl::Loop(i));
                 // Trace site after the loop-back label so it runs each iteration.
-                self.sysv_emit_trace_site(ctx, arch, state)
+                self.sysv_emit_control_flow_probe(ctx, arch, state)
             }
             Instruction::Block(_) => {
                 let i = state.label_index;
                 state.label_index += 1;
                 state.if_stack.push(crate::naive::Endable::Br);
                 state.ctrl_stack.push(SysVCtrl::Block(i));
-                self.sysv_emit_trace_site(ctx, arch, state)
+                self.sysv_emit_control_flow_probe(ctx, arch, state)
             }
             Instruction::If(_) => {
                 let i = state.label_index;
@@ -305,9 +641,10 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                         if_stack: core::mem::take(&mut state.if_stack),
                         body: state.body,
                         body_labels: core::mem::take(&mut state.body_labels),
-                        tracing: None,
-                        next_site_id: 0,
+                        probes: None,
+                        next_probe_id: 0,
                         shard: state.shard,
+                        mem_base: state.mem_base,
                     };
                     let result = self._handle_op(ctx, arch, &mut naive_state, func_imports, &[], &[], &other, target);
                     state.label_index = naive_state.label_index;
@@ -419,10 +756,11 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                     if_stack: core::mem::take(&mut state.if_stack),
                     body: state.body,
                     body_labels: core::mem::take(&mut state.body_labels),
-                    tracing: None,
-                    next_site_id: 0,
+                    probes: None,
+                    next_probe_id: 0,
                     // Propagate shard state so cross-shard Call dispatch works.
                     shard: state.shard,
+                    mem_base: state.mem_base,
                 };
                 let result = self._handle_op(ctx, arch, &mut naive_state, func_imports, &[], &[], other, target);
                 state.label_index = naive_state.label_index;
@@ -456,25 +794,32 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 state.param_count = data.num_params;
                 state.ret_count = data.num_returns;
                 state.local_count = data.num_params;
-                state.tracing = data.tracing;
-                state.next_site_id = 1; // site 0 is the function entry below
+                state.probes = data.probes;
+                state.next_probe_id = 1; // probe 0 is the function entry below
+                state.probe_plan = data.probe_plan.clone();
+                state.op_index = 0;
 
                 self.set_label(ctx, arch, X64Label::Indexed {
                     idx: *id as usize | (1 << 28),
                 }).map_err(Err::from)?;
+                // Also publish the `Func{id}` label at the entry so that
+                // inter-function calls (which the delegated naive Call/ReturnCall
+                // path emits as `Func{idx}`) resolve to this C-ABI entry.
+                self.set_label(ctx, arch, X64Label::Func { r#fn: *id }).map_err(Err::from)?;
 
-                // Function-entry site (site 0): the trace-table base arrives in
+                // Function-entry probe (probe 0): the probe-table base arrives in
                 // the virtual-param register r11; read it directly so the
                 // specialization tail-jump fires before any frame is built (SysV
                 // arg registers RDI/RSI/… still intact).  Scratch = RAX.
-                if let Some(cfg) = data.tracing.as_ref().copied().filter(|c| c.enabled) {
+                if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW {
                         writer: self, ctx, arch,
-                        trace_base: TraceBase::Reg(TRACE_BASE_REG),
+                        probe_base: ProbeBase::Reg(PROBE_BASE_REG),
                     };
-                    portal_solutions_blitz_codegen::emit_jit_preamble(
-                        &mut bw, cfg.table_base_off, 0,
-                        0, &mut state.label_index,
+                    portal_solutions_blitz_codegen::emit_probe_site(
+                        &mut bw, cfg.table_base_off, 0, 0,
+                        portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
+                        &mut state.label_index,
                     ).map_err(Err::from)?;
                 }
 
@@ -486,7 +831,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 }
                 self.mov(ctx, arch, &RBP, &RSP).map_err(Err::from)?;
 
-                // One extra slot (at the frame bottom) holds the spilled trace
+                // One extra slot (at the frame bottom) holds the spilled probe
                 // base for mid-function sites; +16 headroom is the pre-existing
                 // local budget.
                 let slots = data.num_params + 16 + 1;
@@ -495,15 +840,37 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 self.sub(ctx, arch, &RSP, &RAX).map_err(Err::from)?;
 
                 // Spill the virtual-param base (r11) to the bottom frame slot.
-                if data.tracing.as_ref().map(|c| c.enabled).unwrap_or(false) {
+                if data.probes.as_ref().map(|c| c.enabled).unwrap_or(false) {
                     let disp = 0u32.wrapping_sub(frame_sz as u32);
-                    state.trace_base_disp = -(frame_sz as i32);
-                    self.mov(ctx, arch, &mem64(RBP, disp), &Reg(TRACE_BASE_REG))
+                    state.probe_base_disp = -(frame_sz as i32);
+                    self.mov(ctx, arch, &mem64(RBP, disp), &Reg(PROBE_BASE_REG))
                         .map_err(Err::from)?;
                 }
 
-                for i in 0..data.num_params.min(6) {
-                    self.sysv_store_local(ctx, arch, ARG_REGS[i], i).map_err(Err::from)?;
+                let scr_extra: u32 = if state.shard.is_some() { 8 } else { 0 };
+                match state.call_abi {
+                    CallAbi::RegSysv => {
+                        for i in 0..data.num_params.min(6) {
+                            self.sysv_store_local(ctx, arch, ARG_REGS[i], i).map_err(Err::from)?;
+                        }
+                        // Params 7+ (index >= 6) are passed by the caller on the
+                        // stack, above the saved RBP (and saved SCR) and the
+                        // return address: incoming arg `i` at [RBP+16+scr_extra+(i-6)*8].
+                        for i in 6..data.num_params {
+                            let src_disp = 16 + scr_extra + ((i - 6) as u32) * 8;
+                            self.mov(ctx, arch, &RAX, &mem64(RBP, src_disp)).map_err(Err::from)?;
+                            self.sysv_store_local(ctx, arch, RAX, i).map_err(Err::from)?;
+                        }
+                    }
+                    CallAbi::AllStack => {
+                        // All params arrive on the stack; param `i` at
+                        // [RBP + 16 + scr_extra + i*8].
+                        for i in 0..data.num_params {
+                            let src_disp = 16 + scr_extra + (i as u32) * 8;
+                            self.mov(ctx, arch, &RAX, &mem64(RBP, src_disp)).map_err(Err::from)?;
+                            self.sysv_store_local(ctx, arch, RAX, i).map_err(Err::from)?;
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -520,13 +887,19 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
             MachOperator::StartBody | MachOperator::EndBody => Ok(()),
 
             MachOperator::Instruction { op: insn, .. } => {
-                self.sysv_handle_insn(ctx, arch, state, func_imports, insn, target)
-                    .map_err(Err::from)
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::Before).map_err(Err::from)?;
+                self.sysv_handle_insn(ctx, arch, state, func_imports, insn, target).map_err(Err::from)?;
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::After).map_err(Err::from)?;
+                state.op_index += 1;
+                Ok(())
             }
             MachOperator::Operator { op: Some(op_wasm), .. } => {
                 let insn = rewriter.instruction(op_wasm.clone())?;
-                self.sysv_handle_insn(ctx, arch, state, func_imports, &insn, target)
-                    .map_err(Err::from)
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::Before).map_err(Err::from)?;
+                self.sysv_handle_insn(ctx, arch, state, func_imports, &insn, target).map_err(Err::from)?;
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::After).map_err(Err::from)?;
+                state.op_index += 1;
+                Ok(())
             }
             MachOperator::Operator { op: None, .. } => Ok(()),
             _ => Ok(()),
@@ -535,3 +908,45 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
 }
 
 impl<T: Writer<X64Label, Context> + NaiveExt<Context> + ?Sized, Context> SysVWriterExt<Context> for T {}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod sysv_manyarg_tests {
+    use super::*;
+    use portal_solutions_asm_x86_64::out::iced::IcedWriter;
+
+    /// Drive `sysv_emit_marshalled_call` and return (code bytes, target relocs).
+    fn marshal(arity: u32, results: u32, is_import: bool, target: X64Label) -> (Vec<u8>, Vec<X64Label>) {
+        let mut w: IcedWriter<X64Label> = IcedWriter::new(0);
+        let mut ctx = ();
+        SysVWriterExt::sysv_emit_marshalled_call(
+            &mut w, &mut ctx, X64Arch::default(), target, arity, results, is_import,
+        )
+        .unwrap();
+        let (bytes, _labels, relocs) = w.into_parts_with_relocs();
+        (bytes, relocs.into_iter().map(|r| r.label).collect())
+    }
+
+    #[test]
+    fn internal_call_marshals_all_args_and_grows() {
+        let (small, rel) = marshal(4, 1, false, X64Label::Func { r#fn: 0 });
+        let (big, _) = marshal(20, 1, false, X64Label::Func { r#fn: 0 });
+        // Exactly one relocation (the call target), pointing at Func{0}.
+        assert_eq!(rel.len(), 1);
+        assert!(matches!(&rel[0], X64Label::Func { r#fn } if *r#fn == 0));
+        // AllStack marshals every arg to the stack, so 20 args emit more than 4.
+        assert!(big.len() > small.len());
+    }
+
+    #[test]
+    fn import_spills_args_beyond_six() {
+        // 6-arg import: all in registers. 9-arg import: 3 spilled to the stack.
+        let (six, _) = marshal(6, 1, true, X64Label::External { name: "env__f".into() });
+        let (nine, rel) = marshal(9, 1, true, X64Label::External { name: "env__f".into() });
+        assert!(nine.len() > six.len(), "args 7+ must add stack-store instructions");
+        assert!(rel
+            .iter()
+            .any(|l| matches!(l, X64Label::External { name } if name.as_str() == "env__f")));
+    }
+}

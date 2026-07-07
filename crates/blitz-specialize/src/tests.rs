@@ -38,9 +38,9 @@ fn branch_analysis_resolves_nested_targets() {
     assert_eq!(a.branch_target(2), Some(&[1usize][..]));
     assert_eq!(a.branch_target(4), Some(&[5usize][..]));
 
-    // Site numbering: function entry is 0, block=1, loop=2 (source order).
-    assert_eq!(a.site_id_of(0), Some(1));
-    assert_eq!(a.site_id_of(1), Some(2));
+    // Probe numbering: function entry is 0, block=1, loop=2 (source order).
+    assert_eq!(a.probe_id_of(0), Some(1));
+    assert_eq!(a.probe_id_of(1), Some(2));
 
     // Depth before each op.
     assert_eq!(a.depth_at, vec![0, 1, 2, 2, 1, 1]);
@@ -137,6 +137,9 @@ impl BlitzWriter for RecordWriter {
     fn branch_reg(&mut self, _r: u8) -> Result<(), Self::Error> {
         Ok(())
     }
+    fn call_reg(&mut self, _r: u8) -> Result<(), Self::Error> {
+        Ok(())
+    }
     fn place_label(&mut self, l: usize) -> Result<(), Self::Error> {
         self.events.push(Event::PlaceLabel(l));
         Ok(())
@@ -153,7 +156,7 @@ impl BlitzWriter for RecordWriter {
     fn load_mem64(&mut self, _d: u8, _s: u8) -> Result<(), Self::Error> {
         Ok(())
     }
-    fn load_trace_base(&mut self, _d: u8, _o: i32) -> Result<(), Self::Error> {
+    fn load_probe_base(&mut self, _d: u8, _o: i32) -> Result<(), Self::Error> {
         Ok(())
     }
     fn inc_mem64_disp(&mut self, _p: u8, _o: i32) -> Result<(), Self::Error> {
