@@ -296,6 +296,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 [[package]]
 name = "portal-pc-asm-common"
 version = "0.1.1"
+source = "git+https://github.com/portal-co/asm-common.git#a20807a89fa265243bf65d7c6f1b76b263da2e7f"
 dependencies = [
  "array-init",
  "bitvec",
@@ -310,6 +311,7 @@ dependencies = [
 [[package]]
 name = "portal-solutions-asm-aarch64"
 version = "0.1.0"
+source = "git+https://github.com/portal-co/asm-arch.git#0efcc4913908bd7e5fa6e8952d879b0fa1ea5f48"
 dependencies = [
  "portal-pc-asm-common",
  "typeid",
@@ -318,6 +320,7 @@ dependencies = [
 [[package]]
 name = "portal-solutions-asm-regalloc"
 version = "0.1.0"
+source = "git+https://github.com/portal-co/asm-arch.git#0efcc4913908bd7e5fa6e8952d879b0fa1ea5f48"
 dependencies = [
  "portal-pc-asm-common",
  "typeid",
@@ -326,6 +329,7 @@ dependencies = [
 [[package]]
 name = "portal-solutions-asm-riscv64"
 version = "0.1.0"
+source = "git+https://github.com/portal-co/asm-arch.git#0efcc4913908bd7e5fa6e8952d879b0fa1ea5f48"
 dependencies = [
  "portal-pc-asm-common",
  "portal-solutions-asm-regalloc",
@@ -336,6 +340,7 @@ dependencies = [
 [[package]]
 name = "portal-solutions-asm-x86-64"
 version = "0.1.0"
+source = "git+https://github.com/portal-co/asm-arch.git#0efcc4913908bd7e5fa6e8952d879b0fa1ea5f48"
 dependencies = [
  "iced-x86",
  "portal-pc-asm-common",
@@ -689,6 +694,7 @@ dependencies = [
 [[package]]
 name = "wax-core"
 version = "0.1.0"
+source = "git+https://github.com/portal-co/wax.git?branch=main#66dabfc73e44f8f904f9b414f4f680bdfcc8ac3d"
 dependencies = [
  "impl-trait-for-tuples",
  "wasm-encoder",
@@ -709,407 +715,3 @@ checksum = "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
 dependencies = [
  "tap",
 ]
-
-[[patch.unused]]
-name = "portal-jsc-common"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-generator"
-version = "0.8.0-pre.10"
-
-[[patch.unused]]
-name = "portal-jsc-simpl-js"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-cfg"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-ll-common"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-opt-ssa"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-ssa"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-tac"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-util"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "wax-tags"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcomp-ir-plugin-host"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcomp-plugin-common"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-arena"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-codegen"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-core"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-cps"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-cps-c-backend"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-e2e-tests"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-edu"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-fast-ir"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-lower"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-mini-target"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-minibc"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-minibc-c-interp"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-minibc-interp"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "pit-core"
-version = "0.5.0-alpha.1"
-
-[[patch.unused]]
-name = "ephemera"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "vaffle"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-c-backend"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-common"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-compiler"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-compiler-common"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-compiler-passes"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-dyn"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-ir"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-ir-common"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-ir-lir-target"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-ir-passes"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-lir"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-lir-codegen"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-primitives"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-provenance"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-spec"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-spec-dyn"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-vaffle-target"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-weaver"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "embedded-llm"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "embedded-llm-tools"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "ast-traits"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "cfg-traits"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "register-machine-traits"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "sift-trait"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "siftify"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "ssa-canon"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "ssa-cc"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "ssa-impls"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "ssa-pliron-compat"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "ssa-reloop"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "ssa-reloop2"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "ssa-rust"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "ssa-trace"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "ssa-traits"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "ssa-translation"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "tac-traits"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "type-onion"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "portal-pc-waffle"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-backend"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-copying"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-copying-passes"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-entity"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-frontend"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-fuzzing"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-hooking"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-ir"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-lowering"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-passes"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-passes-shared"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-solutions-swibb"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-solutions-asm-jvm"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-semantics"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-x86-64-shim"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dex-bytecode"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "osctx"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-dex"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-link-core"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-linker"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-memory"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-mips"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-module-builder"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-module-target"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-object"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-ordering"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-powerpc"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-reach"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-riscv"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-schedule"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-traps"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-wasm-helpers"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-x86_64"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "wasm-layout"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "yecta"
-version = "0.1.0"
