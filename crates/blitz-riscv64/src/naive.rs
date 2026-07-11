@@ -1624,6 +1624,8 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 }
             }
             Instruction::ThrowRef => { /* exnref deferred */ }
+            // drop: pop one value and discard it (no push back).
+            Instruction::Drop => pop(self, ctx, arch, &Reg(5))?,
             Instruction::TryTable(_, catches) => {
                 let exit_idx = state.label_index;
                 let dispatch_idx = state.label_index + 1;

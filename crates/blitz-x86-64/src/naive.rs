@@ -1530,6 +1530,9 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
             Instruction::F32DemoteF64 => self.fp_convert(ctx, arch, |w, c, a| { w.fmov_gp_to_d(c, a, &Reg(0), &Reg(0))?; w.fcvt_s_d(c, a, &Reg(1), &Reg(0))?; w.fmov_s_to_gp(c, a, &Reg(0), &Reg(1)) })?,
             Instruction::F64PromoteF32 => self.fp_convert(ctx, arch, |w, c, a| { w.fmov_gp_to_s(c, a, &Reg(0), &Reg(0))?; w.fcvt_d_s(c, a, &Reg(1), &Reg(0))?; w.fmov_d_to_gp(c, a, &Reg(0), &Reg(1)) })?,
 
+            // drop: pop one value and discard it (no push back).
+            Instruction::Drop => self.pop(ctx, arch, &Reg(0))?,
+
             other => panic!("unimplemented WASM instruction in x86-64 naive _handle_op: {other:?}"),
         };
         Ok(())

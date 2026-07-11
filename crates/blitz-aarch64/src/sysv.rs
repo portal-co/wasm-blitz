@@ -33,8 +33,20 @@ use portal_solutions_blitz_common::{
     wasm_encoder::{FuncType, reencode::Reencode},
 };
 
-use crate::naive::{CallAbi, State, WriterExt, SCR, WASM_SLOT};
+use crate::naive::{State, WriterExt, SCR, WASM_SLOT};
 use crate::AArch64Label;
+
+// Re-exported (renamed to match `blitz-x86-64::sysv::{SysVState, CallAbi}`'s
+// naming) so callers building a C-callable (AAPCS64) entry never need to
+// reach into `crate::naive` themselves — that module's *name* is
+// historically a source of ABI confusion here: `naive::State`/
+// `naive::CallAbi` are what this file's `SysVWriterExt` actually configures
+// to produce genuinely SysV/AAPCS64-compliant code (see this file's module
+// doc), despite living in a module called "naive". `naive` is slated for a
+// deeper split/removal (see `docs/naive-abi-deprecation.md`); until then,
+// `sysv::{SysVState, CallAbi, MemBase}` is the name a caller should reach
+// for instead of `naive::{State, CallAbi, MemBase}`.
+pub use crate::naive::{CallAbi, MemBase, State as SysVState};
 use crate::codegen::ProbeBase;
 use crate::{FP, LR, SP};
 
@@ -262,6 +274,21 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
 
     /// Emit the AAPCS64 epilogue (restore frame) and return. Shared by `Return`,
     /// function-level `End`, and the tail of `ReturnCall`.
+    ///
+    /// WASM multi-value results are pushed on the operand stack in
+    /// *declaration* order: result 0 is pushed first (deepest), result
+    /// `n-1` last (on top) — see the WASM spec. AAPCS64 can carry at most
+    /// two results back through registers (X0, X1), so this reads result 0
+    /// and result 1 directly by their known offset from `SP`
+    /// (`(n-1)*WASM_SLOT` and `(n-2)*WASM_SLOT` respectively) instead of
+    /// just popping the top two values in stack order — popping in stack
+    /// order would put the *last*-declared result in X0 instead of the
+    /// first, which is wrong whenever a caller outside this WASM module
+    /// (e.g. a C entry shim reading a recompiled guest's `main` return
+    /// value) reads X0 expecting "result 0". Any results beyond index 1
+    /// are simply skipped (there is no native register for them); `mov
+    /// sp, fp` below discards the whole operand stack unconditionally, so
+    /// leaving them unread is not a leak.
     fn sysv_emit_epilogue(
         &mut self,
         ctx: &mut Context,
@@ -271,8 +298,15 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
     where
         Self: Sized,
     {
-        if state.num_returns > 0 { self.wasm_pop(ctx, arch, Reg(0))?; }
-        if state.num_returns > 1 { self.wasm_pop(ctx, arch, Reg(1))?; }
+        let n = state.num_returns;
+        if n > 0 {
+            let disp = (n - 1) as i32 * WASM_SLOT;
+            self.ldr(ctx, arch, &reg(Reg(0)), &mem_base_disp(SP, disp))?;
+        }
+        if n > 1 {
+            let disp = (n - 2) as i32 * WASM_SLOT;
+            self.ldr(ctx, arch, &reg(Reg(1)), &mem_base_disp(SP, disp))?;
+        }
         self.mov(ctx, arch, &reg(SP), &reg(FP))?;
         self.ldp(ctx, arch, &reg(FP), &reg(LR), &mem_post(SP, 16))?;
         if state.shard.is_some() {

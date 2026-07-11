@@ -1126,6 +1126,9 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 self.wasm_push(ctx, arch, T0)
             }
 
+            // drop: pop one value and discard it (no push back).
+            Instruction::Drop => self.wasm_pop(ctx, arch, T0),
+
             // select: c ? a : b (pop c, b, a).
             Instruction::Select | Instruction::TypedSelect { .. } => {
                 self.wasm_pop(ctx, arch, T2)?; // condition

@@ -42,6 +42,11 @@ use crate::{X64Label, RSP};
 use crate::codegen::ProbeBase;
 use crate::naive::WriterExt as NaiveExt;
 
+/// Re-exported so callers don't need a separate `crate::naive::MemBase`
+/// import alongside this module's own [`SysVState`]/[`CallAbi`] just to
+/// configure memory addressing — see `docs/naive-abi-deprecation.md`.
+pub use crate::naive::MemBase;
+
 /// Blitz register number of the SysV **probe-base virtual parameter** (`r11`).
 ///
 /// `r11` is caller-saved and never a SysV positional argument register, so the
@@ -451,6 +456,42 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
         })
     }
 
+    /// Emit the SysV epilogue (restore frame, `ret`) — shared by `Return`,
+    /// function-level `End`, and every `Br`/`BrIf` targeting the function's
+    /// outermost block.
+    ///
+    /// WASM multi-value results are pushed on the operand stack in
+    /// *declaration* order: result 0 is pushed first (deepest), result
+    /// `n-1` last (on top) — see the WASM spec. The SysV ABI can carry at
+    /// most two results back through registers (RAX, RDX), so this reads
+    /// result 0 and result 1 directly by their known stack offset from
+    /// `RSP` (`(n-1)*8` and `(n-2)*8` respectively) instead of just
+    /// popping the top two values in stack order — popping in stack order
+    /// would put the *last*-declared result in RAX instead of the first,
+    /// which is wrong whenever a caller outside this WASM module (e.g. a C
+    /// entry shim reading a recompiled guest's `main` return value) reads
+    /// RAX expecting "result 0". Any results beyond index 1 are simply
+    /// skipped (there is no native register for them); `mov rsp, rbp`
+    /// below discards the whole operand stack unconditionally, so leaving
+    /// them unread is not a leak.
+    fn sysv_emit_epilogue(&mut self, ctx: &mut Context, arch: X64Arch, state: &SysVState<'_>)
+        -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        let n = state.ret_count;
+        if n > 0 {
+            self.mov(ctx, arch, &RAX, &mem64(RSP, ((n - 1) * 8) as u32))?;
+        }
+        if n > 1 {
+            self.mov(ctx, arch, &Reg(2), &mem64(RSP, ((n - 2) * 8) as u32))?;
+        }
+        self.mov(ctx, arch, &RSP, &RBP)?;
+        if state.shard.is_some() { self.pop(ctx, arch, &SCR)?; }
+        self.pop(ctx, arch, &RBP)?;
+        self.ret(ctx, arch)
+    }
+
     /// Resolve a call/return_call target index to its label + (arity, results, is_import).
     fn sysv_call_target(
         state: &SysVState<'_>,
@@ -531,12 +572,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                     // imports (proper alignment/return), and a safe fallback when the
                     // callee wants more args than our incoming-arg frame can hold.
                     self.sysv_emit_marshalled_call(ctx, arch, label, arity, results, is_import)?;
-                    if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
-                    if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
-                    self.mov(ctx, arch, &RSP, &RBP)?;
-                    if state.shard.is_some() { self.pop(ctx, arch, &SCR)?; }
-                    self.pop(ctx, arch, &RBP)?;
-                    self.ret(ctx, arch)
+                    self.sysv_emit_epilogue(ctx, arch, state)
                 } else {
                     // True tail call to an internal function: O(1) machine stack for
                     // long `return_call` chains (speet emits one cell per guest insn).
@@ -559,34 +595,17 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 self.sysv_load_indirect_target(ctx, arch)?; // index → R10 (fn ptr)
                 if arity as usize > state.param_count {
                     self.sysv_emit_marshalled_call_reg(ctx, arch, Reg(10), arity, results)?;
-                    if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
-                    if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
-                    self.mov(ctx, arch, &RSP, &RBP)?;
-                    if state.shard.is_some() { self.pop(ctx, arch, &SCR)?; }
-                    self.pop(ctx, arch, &RBP)?;
-                    self.ret(ctx, arch)
+                    self.sysv_emit_epilogue(ctx, arch, state)
                 } else {
                     self.sysv_emit_tail_call_reg(ctx, arch, Reg(10), arity, state.shard.is_some())
                 }
             }
 
             // ---- Return: always emit SysV epilogue regardless of block depth ----
-            Instruction::Return => {
-                if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
-                if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
-                self.mov(ctx, arch, &RSP, &RBP)?;
-                if state.shard.is_some() { self.pop(ctx, arch, &SCR)?; }
-                self.pop(ctx, arch, &RBP)?;
-                self.ret(ctx, arch)
-            }
+            Instruction::Return => self.sysv_emit_epilogue(ctx, arch, state),
             // ---- Function-level End (empty ctrl_stack) ----
             Instruction::End if state.if_stack.is_empty() => {
-                if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
-                if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
-                self.mov(ctx, arch, &RSP, &RBP)?;
-                if state.shard.is_some() { self.pop(ctx, arch, &SCR)?; }
-                self.pop(ctx, arch, &RBP)?;
-                self.ret(ctx, arch)
+                self.sysv_emit_epilogue(ctx, arch, state)
             }
 
             // ---- Control flow — CTX-free (no naive delegation) ----
@@ -677,12 +696,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                     self.jmp_label(ctx, arch, X64Label::Indexed { idx: ctrl.br_target() })
                 } else {
                     // Br targeting the function block = return
-                    if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
-                    if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
-                    self.mov(ctx, arch, &RSP, &RBP)?;
-                    if state.shard.is_some() { self.pop(ctx, arch, &SCR)?; }
-                    self.pop(ctx, arch, &RBP)?;
-                    self.ret(ctx, arch)
+                    self.sysv_emit_epilogue(ctx, arch, state)
                 }
             }
             Instruction::BrIf(n) => {
@@ -699,12 +713,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 } else {
                     // BrIf targeting the function block = conditional return
                     self.jcc_label(ctx, arch, ConditionCode::E, X64Label::Indexed { idx: skip })?;
-                    if state.ret_count > 0 { self.pop(ctx, arch, &RAX)?; }
-                    if state.ret_count > 1 { self.pop(ctx, arch, &Reg(2))?; }
-                    self.mov(ctx, arch, &RSP, &RBP)?;
-                    if state.shard.is_some() { self.pop(ctx, arch, &SCR)?; }
-                    self.pop(ctx, arch, &RBP)?;
-                    self.ret(ctx, arch)?;
+                    self.sysv_emit_epilogue(ctx, arch, state)?;
                 }
                 self.set_label(ctx, arch, X64Label::Indexed { idx: skip })
             }

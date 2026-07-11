@@ -115,13 +115,35 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
             // Return: always emit RISC-V SysV epilogue.
             // flush_regalloc spills any register-held values to the memory stack,
             // after which they are readable with the normal memory pop.
+            //
+            // WASM multi-value results are held in *declaration* order:
+            // result 0 first/deepest, result n-1 last/top (see the WASM
+            // spec, and the matching fix in blitz-aarch64/blitz-x86-64's
+            // `sysv_emit_epilogue`). The RISC-V psABI can carry at most two
+            // results back through registers (A0, A1); pop-and-drop any
+            // results beyond index 1 first (there's no register for them),
+            // so the *last* two pops land (result 1, result 0) into
+            // (A1, A0) — not the two most-recently-pushed values.
+            //
+            // NOTE: unlike blitz-aarch64/blitz-x86-64, this fix is
+            // currently untested — speet's `drive.rs` doesn't wire RISC-V
+            // through wasm-blitz's native codegen yet (only through the
+            // WASM-interpreter path, which is unaffected by this bug: an
+            // interpreter reads all `n` results directly regardless of
+            // this backend's 2-register cap). Add a native RISC-V sysv
+            // test exercising `num_returns > 1` before relying on this in
+            // a real native RISC-V build.
             Instruction::Return => {
                 // Use pop_regalloc_to: pops from regalloc (if active) or memory stack.
-                if state.num_returns > 0 {
-                    pop_regalloc_to(self, ctx, arch, state, A0)?;
+                let scratch = Reg(6); // t1: caller-saved, not PROBE_BASE_REG (t2/Reg(7))
+                for _ in 0..state.num_returns.saturating_sub(2) {
+                    pop_regalloc_to(self, ctx, arch, state, scratch)?;
                 }
                 if state.num_returns > 1 {
                     pop_regalloc_to(self, ctx, arch, state, A1)?;
+                }
+                if state.num_returns > 0 {
+                    pop_regalloc_to(self, ctx, arch, state, A0)?;
                 }
                 flush_regalloc(self, ctx, arch, state)?;
                 // Restore: RA at [FP - frame_sz + 0], old-FP at [FP - frame_sz + 8]
@@ -134,13 +156,18 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                 self.jalr(ctx, arch, &Reg(0), &RA, 0)
             }
             // Function-level End (empty if_stack) acts as implicit return.
+            // See the matching multi-value-order comment on `Return` above.
             Instruction::End if state.if_stack.is_empty() => {
                 flush_regalloc(self, ctx, arch, state)?;
-                if state.num_returns > 0 {
-                    pop(self, ctx, arch, &A0)?;
+                let scratch = Reg(6); // t1
+                for _ in 0..state.num_returns.saturating_sub(2) {
+                    pop(self, ctx, arch, &scratch)?;
                 }
                 if state.num_returns > 1 {
                     pop(self, ctx, arch, &A1)?;
+                }
+                if state.num_returns > 0 {
+                    pop(self, ctx, arch, &A0)?;
                 }
                 self.addi(ctx, arch, &SP, &FP, -state.sysv_frame_sz)?;
                 self.ld(ctx, arch, &RA, &mem64(SP, 0))?;
