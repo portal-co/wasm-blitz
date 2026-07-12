@@ -327,118 +327,61 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 self.sd(ctx, arch, &tmp, &spmem2)?;
             }
             Instruction::I64Load(memarg) => {
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                // pop address
-                let (addr_t, cmds1) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds1)?;
-                // allocate dest reg for loaded value
-                let (didx, cmds2) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push(riscv_regalloc::RegKind::Int)
-                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
-                emit_cmds(self, ctx, arch, cmds2)?;
-                let addr = Reg(addr_t.reg);
-                let dest = Reg(didx as u8);
-                let mem = MemArgKind::Mem {
-                    base: ArgKind::Reg {
-                        reg: addr,
-                        size: MemorySize::_64,
+                let disp = memarg.offset as i32;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::load(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    |rw, dest, addr| {
+                        let mem = MemArgKind::Mem {
+                            base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 },
+                            offset: None, disp, size: MemorySize::_64, reg_class: RegisterClass::Gpr,
+                        };
+                        rw.writer.ld(rw.ctx, rw.arch, &Reg(dest), &mem)
                     },
-                    offset: None,
-                    disp: memarg.offset as i32,
-                    size: MemorySize::_64,
-                    reg_class: RegisterClass::Gpr,
-                };
-                // push() already marks the register as Stack and updates TOS.
-                self.ld(ctx, arch, &dest, &mem)?;
+                )?;
             }
             Instruction::I32Load(memarg) => {
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    state.regalloc = Some(regalloc::RegAlloc { frames: Frames(r.frames), tos: r.tos });
-                }
-                let (addr_t, cmds1) = state.regalloc.as_mut().unwrap().pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds1)?;
-                // push() marks the register as Stack and updates TOS; lw writes the loaded value.
-                let (didx, cmds2) = state.regalloc.as_mut().unwrap().push(riscv_regalloc::RegKind::Int)
-                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
-                emit_cmds(self, ctx, arch, cmds2)?;
-                let addr = Reg(addr_t.reg);
-                let dest = Reg(didx as u8);
-                let mem = MemArgKind::Mem {
-                    base: ArgKind::Reg { reg: addr, size: MemorySize::_64 },
-                    offset: None, disp: memarg.offset as i32, size: MemorySize::_32, reg_class: RegisterClass::Gpr,
-                };
-                self.lw(ctx, arch, &dest, &mem)?;
+                let disp = memarg.offset as i32;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::load(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    |rw, dest, addr| {
+                        let mem = MemArgKind::Mem {
+                            base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 },
+                            offset: None, disp, size: MemorySize::_32, reg_class: RegisterClass::Gpr,
+                        };
+                        rw.writer.lw(rw.ctx, rw.arch, &Reg(dest), &mem)
+                    },
+                )?;
             }
             Instruction::I32Store(memarg) => {
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    state.regalloc = Some(regalloc::RegAlloc { frames: Frames(r.frames), tos: r.tos });
-                }
-                let (val_t, cmds1) = state.regalloc.as_mut().unwrap().pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds1)?;
-                let (addr_t, cmds2) = state.regalloc.as_mut().unwrap().pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds2)?;
-                let val = Reg(val_t.reg);
-                let addr = Reg(addr_t.reg);
-                let mem = MemArgKind::Mem {
-                    base: ArgKind::Reg { reg: addr, size: MemorySize::_64 },
-                    offset: None, disp: memarg.offset as i32, size: MemorySize::_32, reg_class: RegisterClass::Gpr,
-                };
-                self.sw(ctx, arch, &val, &mem)?;
+                let disp = memarg.offset as i32;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::store(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    |rw, val, addr| {
+                        let mem = MemArgKind::Mem {
+                            base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 },
+                            offset: None, disp, size: MemorySize::_32, reg_class: RegisterClass::Gpr,
+                        };
+                        rw.writer.sw(rw.ctx, rw.arch, &Reg(val), &mem)
+                    },
+                )?;
             }
             Instruction::I64Store(memarg) => {
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                // pop value then pop address
-                let (val_t, cmds1) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds1)?;
-                let (addr_t, cmds2) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds2)?;
-                let val = Reg(val_t.reg);
-                let addr = Reg(addr_t.reg);
-                let mem = MemArgKind::Mem {
-                    base: ArgKind::Reg {
-                        reg: addr,
-                        size: MemorySize::_64,
+                let disp = memarg.offset as i32;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::store(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    |rw, val, addr| {
+                        let mem = MemArgKind::Mem {
+                            base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 },
+                            offset: None, disp, size: MemorySize::_64, reg_class: RegisterClass::Gpr,
+                        };
+                        rw.writer.sd(rw.ctx, rw.arch, &Reg(val), &mem)
                     },
-                    offset: None,
-                    disp: memarg.offset as i32,
-                    size: MemorySize::_64,
-                    reg_class: RegisterClass::Gpr,
-                };
-                self.sd(ctx, arch, &val, &mem)?;
+                )?;
             }
-            // I32Add is the same as I64Add at the regalloc/register level — RISC-V add
-            // operates on 64-bit registers; the lower 32 bits give the correct i32 result.
             // I32Add is the same as I64Add at the regalloc/register level — RISC-V add
             // operates on 64-bit registers; the lower 32 bits give the correct i32 result.
             Instruction::I32Add |

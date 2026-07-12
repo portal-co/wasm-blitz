@@ -171,3 +171,52 @@ where
     w.emit_regalloc_cmds(cmds3)?;
     emit_cmp(w, dest, lhs.reg, rhs.reg)
 }
+
+/// `I32Load`/`I64Load`-shaped dispatch: pop an address, allocate a new dest
+/// register, and load into it. `emit_load` receives `(dest, addr)`.
+pub fn load<W, K, const N: usize>(
+    w: &mut W,
+    kind: K,
+    emit_load: impl FnOnce(&mut W, u8, u8) -> Result<(), W::Error>,
+) -> Result<(), W::Error>
+where
+    W: RegAllocWriter<K, N>,
+    K: Clone + Eq + TryFrom<usize>,
+{
+    ensure_regalloc(w);
+    let (addr, cmds1) = w.regalloc_mut().as_mut().unwrap().pop(kind.clone());
+    let cmds1: Vec<_> = cmds1.collect();
+    w.emit_regalloc_cmds(cmds1)?;
+    let (dest, cmds2) = w
+        .regalloc_mut()
+        .as_mut()
+        .unwrap()
+        .push(kind)
+        .unwrap_or_else(|_| panic!("regalloc error: kind conversion failed"));
+    let cmds2: Vec<_> = cmds2.collect();
+    w.emit_regalloc_cmds(cmds2)?;
+    emit_load(w, dest, addr.reg)
+}
+
+/// `I32Store`/`I64Store`-shaped dispatch: pop the value then the address
+/// (WASM stack order puts the address below the value, so the value pops
+/// first) and store — no push, both operands are consumed. `emit_store`
+/// receives `(val, addr)`.
+pub fn store<W, K, const N: usize>(
+    w: &mut W,
+    kind: K,
+    emit_store: impl FnOnce(&mut W, u8, u8) -> Result<(), W::Error>,
+) -> Result<(), W::Error>
+where
+    W: RegAllocWriter<K, N>,
+    K: Clone + Eq + TryFrom<usize>,
+{
+    ensure_regalloc(w);
+    let (val, cmds1) = w.regalloc_mut().as_mut().unwrap().pop(kind.clone());
+    let cmds1: Vec<_> = cmds1.collect();
+    w.emit_regalloc_cmds(cmds1)?;
+    let (addr, cmds2) = w.regalloc_mut().as_mut().unwrap().pop(kind);
+    let cmds2: Vec<_> = cmds2.collect();
+    w.emit_regalloc_cmds(cmds2)?;
+    emit_store(w, val.reg, addr.reg)
+}
