@@ -6,3 +6,4 @@ license.workspace = true
 description.workspace = true
 
 [dependencies]
+portal-solutions-asm-regalloc.workspace = true

@@ -28,7 +28,6 @@ use portal_pc_asm_common::types::mem::MemorySize;
 use portal_solutions_asm_riscv64::RegisterClass;
 use portal_solutions_asm_riscv64::out::arg::{ArgKind, MemArgKind};
 
-use core::ops::{Index, IndexMut};
 use portal_solutions_asm_regalloc as regalloc;
 use portal_solutions_asm_riscv64 as asm_riscv;
 use portal_solutions_asm_riscv64::regalloc as riscv_regalloc;
@@ -78,7 +77,7 @@ pub struct State<'a> {
     pub num_returns: usize,
     pub control_depth: usize,
     pub if_stack: Vec<Endable>,
-    pub regalloc: Option<regalloc::RegAlloc<riscv_regalloc::RegKind, 32, Frames>>,
+    pub regalloc: Option<regalloc::RegAlloc<riscv_regalloc::RegKind, 32, Frames<riscv_regalloc::RegKind, 32>>>,
     pub body: u32,
     pub body_labels: alloc::collections::BTreeMap<u32, usize>,
     /// Carried from `StartFn` to `StartBody` for RISC-V NaiveAbi — not actually
@@ -107,32 +106,11 @@ pub struct State<'a> {
     pub op_index: usize,
 }
 
-pub struct Frames(pub [[regalloc::RegAllocFrame<riscv_regalloc::RegKind>; 32]; 2]);
-
-impl Index<riscv_regalloc::RegKind> for Frames {
-    type Output = [regalloc::RegAllocFrame<riscv_regalloc::RegKind>; 32];
-    fn index(&self, k: riscv_regalloc::RegKind) -> &Self::Output {
-        match k {
-            riscv_regalloc::RegKind::Int => &self.0[0],
-            riscv_regalloc::RegKind::Float => &self.0[1],
-        }
-    }
-}
-
-impl IndexMut<riscv_regalloc::RegKind> for Frames {
-    fn index_mut(&mut self, k: riscv_regalloc::RegKind) -> &mut Self::Output {
-        match k {
-            riscv_regalloc::RegKind::Int => &mut self.0[0],
-            riscv_regalloc::RegKind::Float => &mut self.0[1],
-        }
-    }
-}
-
-impl regalloc::Length for Frames {
-    fn len(&self) -> usize {
-        2
-    }
-}
+/// Register frames for the RISC-V regalloc, sized for 32 int/32 float regs.
+///
+/// Shared adapter — see `portal_solutions_blitz_codegen::regalloc_adapter`.
+/// The x86-64 `fast` backend uses the same adapter with its own `RegKind`.
+pub use portal_solutions_blitz_codegen::regalloc_adapter::Frames;
 
 pub enum Endable {
     Block { idx: usize },
@@ -1847,7 +1825,7 @@ pub fn flush_regalloc<W: Writer<RiscvLabel, Context>, Context>(
 /// are public, so this reads the allocator's bookkeeping directly rather
 /// than needing any new query on `portal-solutions-asm-regalloc` itself.
 pub(crate) fn regalloc_occupied(
-    ralloc: &regalloc::RegAlloc<riscv_regalloc::RegKind, 32, Frames>,
+    ralloc: &regalloc::RegAlloc<riscv_regalloc::RegKind, 32, Frames<riscv_regalloc::RegKind, 32>>,
 ) -> Vec<regalloc::Target<riscv_regalloc::RegKind>> {
     [riscv_regalloc::RegKind::Int, riscv_regalloc::RegKind::Float]
         .into_iter()

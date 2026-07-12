@@ -23,6 +23,8 @@
 
 #![no_std]
 
+pub mod regalloc_adapter;
+
 /// How a probe site dispatches to its handler once the handler pointer is
 /// found to be non-null.
 ///
