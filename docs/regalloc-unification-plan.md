@@ -47,23 +47,40 @@ forcing one mega-trait):
 `RegAllocWriter<K, N>` trait (`regalloc_mut`, `init_regalloc`, `emit_regalloc_cmds`
 — the three genuinely arch-specific pieces: reserved-register layout,
 `process_cmd` plus any extra state like x86's `StackManager`) plus free
-functions `push_const`, `push_local`, `pop_to_local`, `binop` covering the
-"pop → emit spill/reload cmds → op → push → emit spill/reload cmds" shape.
-Instruction selection (e.g. `add` vs `lea`+`not`-for-subtract) stays a
+functions `push_const`, `push_local`, `pop_to_local`, `binop`, `compare`
+covering the "pop → emit spill/reload cmds → op → push → emit spill/reload
+cmds" shape (`compare` differs from `binop` only in allocating a *new* dest
+register rather than reusing one operand's in place — comparisons need a
+register distinct from either operand for their branch+`li 0`/`li 1`
+sequence). Instruction selection (e.g. `add` vs `lea`+`not`-for-subtract, or
+which `ConditionCode`/operand order a comparison uses) stays a
 caller-supplied closure over allocated register numbers — that's where
 backends legitimately differ, not something to force-unify.
 
-**Control flow — not started.** Design sketched but unimplemented: a `Frame`
-enum (`Block{end}`/`Loop{head}`/`If{then,else,end}`) plus free functions
-(`open_block`/`open_loop`/`open_if`/`emit_else`/`close_frame`/`branch_to_depth`)
-generic over the *existing* `BlitzWriter` trait (it already has exactly the
-needed primitives — `branch_label`/`branch_zero_label`/`place_label` — no new
-trait needed for those) plus two extra hooks (`flush`, `pop_cond`) for
-regalloc-flush-before-branch and reading the WASM condition operand off the
-now-flushed real stack. `TryTable`/`Throw`/`ThrowRef` (exception handling)
-are deliberately excluded — the catch-arm arity/scratch-register conventions
-are genuinely arch-specific and higher-risk to generalize; `Endable::TryTable`
-stays a RISC-V-local case, resolved outside the shared resolver.
+**Control flow — done**, see `crates/blitz-codegen/src/control_flow.rs`. A
+`Frame` enum (`Block{end}`/`Loop{head}`/`If{then,else_,end}`) plus free
+functions `open_block`/`open_loop`/`open_if`/`emit_else`/`close_frame`/
+`branch_to_depth`/`resolve_depth`/`branch_if_to_depth`. `ControlFlowWriter`
+is a **standalone** trait (`branch_label`/`branch_zero_label`/`place_label`
+plus two new hooks, `flush`/`pop_cond`) rather than a `BlitzWriter`
+supertrait — despite the first three methods meaning the same thing in
+both traits, a backend's control-flow adapter is often a different wrapper
+type than its `BlitzWriter` adapter (RISC-V's is `RegAllocW`, which needs a
+`regalloc` field for `flush` that `BlitzW` has no reason to carry), and
+forcing the supertrait would mean implementing nine unreachable stub
+methods just to satisfy it. `TryTable`/`Throw`/`ThrowRef` (exception
+handling) are deliberately excluded — the catch-arm arity/scratch-register
+conventions are genuinely arch-specific and higher-risk to generalize;
+`Endable::TryTable` stays a RISC-V-local case, resolved outside the shared
+resolver (`Endable::{Block,Loop,If}` collapse into `Endable::Std(Frame)`).
+`Br`/`BrIf`/`BrTable`'s own resolution (`WriterExt::br`/`br_after_flush`)
+deliberately stays hand-rolled rather than routed through
+`branch_to_depth`/`branch_if_to_depth`: `if_stack: Vec<Endable>` mixes
+`Frame`-representable frames with the arch-local `TryTable` frame, and
+`resolve_depth` takes `&[Frame]` — it can't represent that mix generically
+without either forcing `TryTable` into `Frame` (rejected above) or an
+enum-of-enums, so `br_after_flush`'s per-arm lookup was simplified via
+`Frame::branch_target()` in place instead of being replaced outright.
 
 Each arch's existing `codegen.rs` gains small adapter structs (mirroring
 `BlitzW`) implementing these traits, supplying only the arch-specific pieces.
@@ -72,10 +89,11 @@ Each arch's existing `codegen.rs` gains small adapter structs (mirroring
 
 1. **Generic regalloc adapter** — done (commit `93a1ce0`).
 2. **Wire RISC-V's `BrTable` onto the pre-existing (previously-unused-anywhere) `emit_br_table`** — done (commit `aec082f`). Also split `naive::WriterExt::br` into `br`/`br_after_flush` so `BrTable`'s `resolve` closure could call the label-resolution half without re-flushing per arm or needing `&mut State` inside the closure.
-3. **Shared data-flow dispatch (`regalloc_frontend`), ported RISC-V's `I32Const`/`I64Const`/`LocalGet`/`LocalSet`/`I32Add`|`I64Add`/`I32Sub`|`I64Sub`** — done (commit `cc8e9ec`). Remaining arithmetic/comparison ops (`Mul`/`Div`/`Rem`/`And`/`Or`/`Xor`/`Shl`/`Shr*`/`Rot*`/comparisons), `LocalTee`, and `I32Load`/`I64Load`/`I32Store`/`I64Store` on RISC-V still hand-roll the same shape — straightforward follow-up using the same `binop`/`push_const`-style pattern, not yet done.
-4. **Build the shared control-flow resolver** (`Frame`/`open_block`/`open_loop`/`open_if`/`emit_else`/`close_frame`/`branch_to_depth`) and port RISC-V's `Block`/`Loop`/`If`/`Else`/`End`/`Br`/`BrIf` onto it (leaving `TryTable` local, as above) — not started.
-5. **Complete x86-64's `fast.rs`** — migrate its control flow off the copy-pasted runtime-CTX-stack trick onto the shared resolver from step 4, replace its ad-hoc per-arm regalloc dance with `regalloc_frontend`, and fill in the `_ => {}` gap (most instructions are currently silently dropped). `fast.rs` has **zero existing test coverage** (`grep -c "fast::" crates/blitz-tests/tests/e2e.rs` → 0) — this increment must add new tests, not just rerun the existing suite. Not started.
-6. **New AArch64 regalloc-backed backend** — net-new integration (an AArch64 `RegKind`/instruction-selection adapter for `regalloc_frontend`), reusing the already-existing upstream `asm-aarch64` regalloc primitives. Its control-flow model already matches the target, so only the data-flow half is new. Recommend landing as a new `blitz-aarch64/src/fast.rs` sibling (mirroring x86-64's naming) rather than modifying `naive.rs` in place, to keep the stable path stable while the new one is proven. Not started.
+3. **Shared data-flow dispatch (`regalloc_frontend`), ported RISC-V's `I32Const`/`I64Const`/`LocalGet`/`LocalSet`/`I32Add`|`I64Add`/`I32Sub`|`I64Sub`** — done (commit `cc8e9ec`).
+4. **Ported RISC-V's remaining `Mul`/`DivU`/`And`/`Or`/`Xor`/`Shl`/`ShrS`/`ShrU` (via `binop`) and `Eq`/`Ne`/`LtS`/`LtU`/`GtS`/`GtU`/`LeS`/`LeU` (via the new `compare`)** — done (commit `24d2c47`). `I32Eqz`/`I64Eqz` intentionally left untouched (pre-existing broken/TODO'd code, unrelated to this refactor); `LocalTee` and `I32Load`/`I64Load`/`I32Store`/`I64Store` on RISC-V still hand-roll their own shape — follow-up, not yet done (memory ops in particular need a new shared shape, since `binop`/`compare` don't cover address computation).
+5. **Build the shared control-flow resolver** (`Frame`/`open_block`/`open_loop`/`open_if`/`emit_else`/`close_frame`/`branch_to_depth`/`resolve_depth`/`branch_if_to_depth`) and port RISC-V's `Block`/`Loop`/`If`/`Else`/`End` onto it — done (commit `711d37b`). `Br`/`BrIf`/`BrTable` intentionally kept hand-rolled (see design section above for why); `TryTable` stays local, as planned.
+6. **Complete x86-64's `fast.rs`** — migrate its control flow off the copy-pasted runtime-CTX-stack trick onto the shared resolver from step 4, replace its ad-hoc per-arm regalloc dance with `regalloc_frontend`, and fill in the `_ => {}` gap (most instructions are currently silently dropped). `fast.rs` has **zero existing test coverage** (`grep -c "fast::" crates/blitz-tests/tests/e2e.rs` → 0) — this increment must add new tests, not just rerun the existing suite. Not started.
+7. **New AArch64 regalloc-backed backend** — net-new integration (an AArch64 `RegKind`/instruction-selection adapter for `regalloc_frontend`), reusing the already-existing upstream `asm-aarch64` regalloc primitives. Its control-flow model already matches the target, so only the data-flow half is new. Recommend landing as a new `blitz-aarch64/src/fast.rs` sibling (mirroring x86-64's naming) rather than modifying `naive.rs` in place, to keep the stable path stable while the new one is proven. Not started.
 
 **Explicitly out of scope, indefinitely**: `blitz-x86-64/src/naive.rs` is not touched or migrated by any step above — it's the long-term deprecation target, but actually removing it is future work. `sysv.rs`/`lfi.rs` per arch, float ops, and memory load/store instruction selection are left for follow-up once the integer/control-flow core is proven.
 
