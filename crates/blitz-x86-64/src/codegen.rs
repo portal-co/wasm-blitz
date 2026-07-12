@@ -166,3 +166,126 @@ where
         )
     }
 }
+
+/// Wrapper binding an x86-64 writer + ctx + arch + regalloc state for
+/// [`portal_solutions_blitz_codegen::regalloc_frontend::RegAllocWriter`] and
+/// [`portal_solutions_blitz_codegen::control_flow::ControlFlowWriter`].
+///
+/// `init_regalloc` reserves rsp/rbp (as `portal_solutions_asm_x86_64::regalloc`'s
+/// own default does) *plus* r11/r14/r15 — the SysV-specific fixed registers for
+/// the probe-base virtual param, the Static Context Register, and call-argument
+/// marshalling (see `sysv.rs`'s `PROBE_BASE_REG`/`SCR`/`sysv_emit_marshalled_call`).
+/// Reserving them here means the allocator never hands one to a WASM operand,
+/// so SysV's own fixed-register code stays correct without needing to prove
+/// there's no live regalloc value in them at every call site — it only needs a
+/// `flush()` beforehand (spilling the *other*, non-reserved registers it does use).
+pub struct RegAllocW<'a, W, Context> {
+    pub writer: &'a mut W,
+    pub ctx: &'a mut Context,
+    pub arch: X64Arch,
+    pub regalloc: &'a mut Option<
+        portal_solutions_asm_regalloc::RegAlloc<
+            portal_solutions_asm_x86_64::regalloc::RegKind,
+            32,
+            portal_solutions_blitz_codegen::regalloc_adapter::Frames<
+                portal_solutions_asm_x86_64::regalloc::RegKind,
+                32,
+            >,
+        >,
+    >,
+}
+
+/// Scratch register [`RegAllocW`]'s `ControlFlowWriter::pop_cond` reads the
+/// WASM condition operand into. RAX (0) — free at any control-flow boundary,
+/// since operands there are either regalloc-held (popped fresh here) or,
+/// after `flush`, on the real RSP-based stack.
+const COND_SCRATCH: u8 = 0;
+
+impl<'a, W, Context> portal_solutions_blitz_codegen::regalloc_frontend::RegAllocWriter<
+    portal_solutions_asm_x86_64::regalloc::RegKind,
+    32,
+> for RegAllocW<'a, W, Context>
+where
+    W: WriterCore<Context> + Writer<X64Label, Context>,
+{
+    type Error = W::Error;
+
+    fn regalloc_mut(
+        &mut self,
+    ) -> &mut Option<
+        portal_solutions_asm_regalloc::RegAlloc<
+            portal_solutions_asm_x86_64::regalloc::RegKind,
+            32,
+            portal_solutions_blitz_codegen::regalloc_adapter::Frames<
+                portal_solutions_asm_x86_64::regalloc::RegKind,
+                32,
+            >,
+        >,
+    > {
+        self.regalloc
+    }
+
+    fn init_regalloc(
+        &self,
+    ) -> portal_solutions_asm_regalloc::RegAlloc<
+        portal_solutions_asm_x86_64::regalloc::RegKind,
+        32,
+        portal_solutions_blitz_codegen::regalloc_adapter::Frames<
+            portal_solutions_asm_x86_64::regalloc::RegKind,
+            32,
+        >,
+    > {
+        let r = portal_solutions_asm_x86_64::regalloc::init_regalloc::<32>(self.arch);
+        let mut frames = portal_solutions_blitz_codegen::regalloc_adapter::Frames(r.frames);
+        for reg in [11u8, 14, 15] {
+            frames.0[0][reg as usize] = portal_solutions_asm_regalloc::RegAllocFrame::Reserved;
+        }
+        portal_solutions_asm_regalloc::RegAlloc { frames, tos: r.tos }
+    }
+
+    fn emit_regalloc_cmds(
+        &mut self,
+        cmds: alloc::vec::Vec<portal_solutions_asm_regalloc::Cmd<portal_solutions_asm_x86_64::regalloc::RegKind>>,
+    ) -> Result<(), Self::Error> {
+        crate::regalloc_core::emit_cmds(self.writer, self.ctx, self.arch, cmds.into_iter())
+    }
+}
+
+impl<'a, W, Context> portal_solutions_blitz_codegen::control_flow::ControlFlowWriter for RegAllocW<'a, W, Context>
+where
+    W: WriterCore<Context> + Writer<X64Label, Context>,
+{
+    type Error = W::Error;
+
+    fn branch_label(&mut self, label_idx: usize) -> Result<(), Self::Error> {
+        self.writer.jmp_label(self.ctx, self.arch, X64Label::Indexed { idx: label_idx })
+    }
+
+    fn branch_zero_label(&mut self, reg_n: u8, label_idx: usize) -> Result<(), Self::Error> {
+        self.writer.cmp0(self.ctx, self.arch, &Reg(reg_n))?;
+        self.writer.jcc_label(self.ctx, self.arch, ConditionCode::E, X64Label::Indexed { idx: label_idx })
+    }
+
+    fn place_label(&mut self, label_idx: usize) -> Result<(), Self::Error> {
+        self.writer.set_label(self.ctx, self.arch, X64Label::Indexed { idx: label_idx })
+    }
+
+    // Flush any register-held operand-stack values to memory and reset TOS,
+    // so every path into a following label sees consistent state.
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        if let Some(ralloc) = self.regalloc.as_mut() {
+            let it = ralloc.flush();
+            let cmds: alloc::vec::Vec<_> = it.collect();
+            crate::regalloc_core::emit_cmds(self.writer, self.ctx, self.arch, cmds.into_iter())?;
+            ralloc.tos = None;
+        }
+        Ok(())
+    }
+
+    // Read the WASM condition operand directly off the real stack (valid
+    // immediately after `flush`, which guarantees it's there) via `pop`.
+    fn pop_cond(&mut self) -> Result<u8, Self::Error> {
+        self.writer.pop(self.ctx, self.arch, &Reg(COND_SCRATCH))?;
+        Ok(COND_SCRATCH)
+    }
+}
