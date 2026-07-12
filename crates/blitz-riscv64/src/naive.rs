@@ -487,667 +487,250 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
             }
             Instruction::I32Mul |
             Instruction::I64Mul => {
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                let (t1, cmds1) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds1)?;
-                let (t2, cmds2) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds2)?;
-                let r1 = Reg(t1.reg);
-                let r2 = Reg(t2.reg);
-                self.mul(ctx, arch, &r2, &r2, &r1)?;
-                let it = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push_existing(regalloc::Target {
-                        reg: t2.reg,
-                        kind: t2.kind,
-                    });
-                emit_cmds(self, ctx, arch, it)?;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.mul(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                )?;
             }
             Instruction::I32And |
             Instruction::I64And => {
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                let (t1, cmds1) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds1)?;
-                let (t2, cmds2) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds2)?;
-                let r1 = Reg(t1.reg);
-                let r2 = Reg(t2.reg);
-                self.and(ctx, arch, &r2, &r2, &r1)?;
-                let it = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push_existing(regalloc::Target {
-                        reg: t2.reg,
-                        kind: t2.kind,
-                    });
-                emit_cmds(self, ctx, arch, it)?;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.and(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                )?;
             }
             Instruction::I32Or |
             Instruction::I64Or => {
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                let (t1, cmds1) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds1)?;
-                let (t2, cmds2) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds2)?;
-                let r1 = Reg(t1.reg);
-                let r2 = Reg(t2.reg);
-                self.or(ctx, arch, &r2, &r2, &r1)?;
-                let it = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push_existing(regalloc::Target {
-                        reg: t2.reg,
-                        kind: t2.kind,
-                    });
-                emit_cmds(self, ctx, arch, it)?;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.or(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                )?;
             }
             Instruction::I32Xor |
             Instruction::I64Xor => {
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                let (t1, cmds1) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds1)?;
-                let (t2, cmds2) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds2)?;
-                let r1 = Reg(t1.reg);
-                let r2 = Reg(t2.reg);
-                self.xor(ctx, arch, &r2, &r2, &r1)?;
-                let it = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push_existing(regalloc::Target {
-                        reg: t2.reg,
-                        kind: t2.kind,
-                    });
-                emit_cmds(self, ctx, arch, it)?;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.xor(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                )?;
             }
             Instruction::I32Shl |
             Instruction::I64Shl => {
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                // shift amount then source
-                let (tsh, cmds1) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds1)?;
-                let (tsrc, cmds2) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds2)?;
-                let rsh = Reg(tsh.reg);
-                let rsrc = Reg(tsrc.reg);
-                self.sll(ctx, arch, &rsrc, &rsrc, &rsh)?;
-                let it = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push_existing(regalloc::Target {
-                        reg: tsrc.reg,
-                        kind: tsrc.kind,
-                    });
-                emit_cmds(self, ctx, arch, it)?;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.sll(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                )?;
             }
             Instruction::I32ShrS |
             Instruction::I64ShrS => {
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                let (tsh, cmds1) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds1)?;
-                let (tsrc, cmds2) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds2)?;
-                let rsh = Reg(tsh.reg);
-                let rsrc = Reg(tsrc.reg);
-                self.sra(ctx, arch, &rsrc, &rsrc, &rsh)?;
-                let it = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push_existing(regalloc::Target {
-                        reg: tsrc.reg,
-                        kind: tsrc.kind,
-                    });
-                emit_cmds(self, ctx, arch, it)?;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.sra(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                )?;
             }
             Instruction::I32ShrU |
             Instruction::I64ShrU => {
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                let (tsh, cmds1) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds1)?;
-                let (tsrc, cmds2) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds2)?;
-                let rsh = Reg(tsh.reg);
-                let rsrc = Reg(tsrc.reg);
-                self.srl(ctx, arch, &rsrc, &rsrc, &rsh)?;
-                let it = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push_existing(regalloc::Target {
-                        reg: tsrc.reg,
-                        kind: tsrc.kind,
-                    });
-                emit_cmds(self, ctx, arch, it)?;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.srl(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                )?;
             }
             Instruction::I32Eq |
             Instruction::I64Eq => {
-                // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a==b)
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                // pop b then a
-                let (tb, cb) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cb)?;
-                let (ta, ca) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, ca)?;
-                // allocate dest
-                let (didx, cd) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push(riscv_regalloc::RegKind::Int)
-                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
-                emit_cmds(self, ctx, arch, cd)?;
-                let ra = Reg(ta.reg);
-                let rb = Reg(tb.reg);
-                let dest = Reg(didx as u8);
-                let i = state.label_index;
-                state.label_index += 2;
-                let lbl_true = RiscvLabel::Indexed { idx: i };
-                let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                self.bcond_label(ctx, arch, ConditionCode::EQ, &ra, &rb, lbl_true.clone())?;
-                // false: dest = 0
-                self.li(ctx, arch, &dest, 0)?;
-                self.jal_label(
-                    ctx,
-                    arch,
-                    &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_end.clone(),
+                let label_index = &mut state.label_index;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::compare(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    move |rw, dest, ta, tb| {
+                        let (ra, rb) = (Reg(ta), Reg(tb));
+                        let dest = Reg(dest);
+                        let i = *label_index;
+                        *label_index += 2;
+                        let lbl_true = RiscvLabel::Indexed { idx: i };
+                        let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
+                        rw.writer.bcond_label(rw.ctx, rw.arch, ConditionCode::EQ, &ra, &rb, lbl_true.clone())?;
+                        rw.writer.li(rw.ctx, rw.arch, &dest, 0)?;
+                        rw.writer.jal_label(rw.ctx, rw.arch, &portal_solutions_blitz_common::asm::Reg(0), lbl_end.clone())?;
+                        rw.writer.set_label(rw.ctx, rw.arch, lbl_true)?;
+                        rw.writer.li(rw.ctx, rw.arch, &dest, 1)?;
+                        rw.writer.set_label(rw.ctx, rw.arch, lbl_end)?;
+                        Ok(())
+                    },
                 )?;
-                self.set_label(ctx, arch, lbl_true)?;
-                self.li(ctx, arch, &dest, 1)?;
-                self.set_label(ctx, arch, lbl_end)?;
             }
             Instruction::I32Ne |
             Instruction::I64Ne => {
-                // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a!=b)
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                // pop b then a
-                let (tb, cb) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cb)?;
-                let (ta, ca) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, ca)?;
-                // allocate dest
-                let (didx, cd) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push(riscv_regalloc::RegKind::Int)
-                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
-                emit_cmds(self, ctx, arch, cd)?;
-                let ra = Reg(ta.reg);
-                let rb = Reg(tb.reg);
-                let dest = Reg(didx as u8);
-                let i = state.label_index;
-                state.label_index += 2;
-                let lbl_true = RiscvLabel::Indexed { idx: i };
-                let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                self.bcond_label(ctx, arch, ConditionCode::NE, &ra, &rb, lbl_true.clone())?;
-                // false: dest = 0
-                self.li(ctx, arch, &dest, 0)?;
-                self.jal_label(
-                    ctx,
-                    arch,
-                    &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_end.clone(),
+                let label_index = &mut state.label_index;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::compare(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    move |rw, dest, ta, tb| {
+                        let (ra, rb) = (Reg(ta), Reg(tb));
+                        let dest = Reg(dest);
+                        let i = *label_index;
+                        *label_index += 2;
+                        let lbl_true = RiscvLabel::Indexed { idx: i };
+                        let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
+                        rw.writer.bcond_label(rw.ctx, rw.arch, ConditionCode::NE, &ra, &rb, lbl_true.clone())?;
+                        rw.writer.li(rw.ctx, rw.arch, &dest, 0)?;
+                        rw.writer.jal_label(rw.ctx, rw.arch, &portal_solutions_blitz_common::asm::Reg(0), lbl_end.clone())?;
+                        rw.writer.set_label(rw.ctx, rw.arch, lbl_true)?;
+                        rw.writer.li(rw.ctx, rw.arch, &dest, 1)?;
+                        rw.writer.set_label(rw.ctx, rw.arch, lbl_end)?;
+                        Ok(())
+                    },
                 )?;
-                self.set_label(ctx, arch, lbl_true)?;
-                self.li(ctx, arch, &dest, 1)?;
-                self.set_label(ctx, arch, lbl_end)?;
             }
             Instruction::I32LtS |
             Instruction::I64LtS => {
-                // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a<b) signed
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                let (tb, cb) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cb)?;
-                let (ta, ca) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, ca)?;
-                let (didx, cd) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push(riscv_regalloc::RegKind::Int)
-                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
-                emit_cmds(self, ctx, arch, cd)?;
-                let ra = Reg(ta.reg);
-                let rb = Reg(tb.reg);
-                let dest = Reg(didx as u8);
-                let i = state.label_index;
-                state.label_index += 2;
-                let lbl_true = RiscvLabel::Indexed { idx: i };
-                let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                self.bcond_label(ctx, arch, ConditionCode::LT, &ra, &rb, lbl_true.clone())?;
-                self.li(ctx, arch, &dest, 0)?;
-                self.jal_label(
-                    ctx,
-                    arch,
-                    &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_end.clone(),
+                let label_index = &mut state.label_index;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::compare(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    move |rw, dest, ta, tb| {
+                        let (ra, rb) = (Reg(ta), Reg(tb));
+                        let dest = Reg(dest);
+                        let i = *label_index;
+                        *label_index += 2;
+                        let lbl_true = RiscvLabel::Indexed { idx: i };
+                        let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
+                        rw.writer.bcond_label(rw.ctx, rw.arch, ConditionCode::LT, &ra, &rb, lbl_true.clone())?;
+                        rw.writer.li(rw.ctx, rw.arch, &dest, 0)?;
+                        rw.writer.jal_label(rw.ctx, rw.arch, &portal_solutions_blitz_common::asm::Reg(0), lbl_end.clone())?;
+                        rw.writer.set_label(rw.ctx, rw.arch, lbl_true)?;
+                        rw.writer.li(rw.ctx, rw.arch, &dest, 1)?;
+                        rw.writer.set_label(rw.ctx, rw.arch, lbl_end)?;
+                        Ok(())
+                    },
                 )?;
-                self.set_label(ctx, arch, lbl_true)?;
-                self.li(ctx, arch, &dest, 1)?;
-                self.set_label(ctx, arch, lbl_end)?;
             }
             Instruction::I32LtU |
             Instruction::I64LtU => {
-                // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a<b) unsigned
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                let (tb, cb) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cb)?;
-                let (ta, ca) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, ca)?;
-                let (didx, cd) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push(riscv_regalloc::RegKind::Int)
-                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
-                emit_cmds(self, ctx, arch, cd)?;
-                let ra = Reg(ta.reg);
-                let rb = Reg(tb.reg);
-                let dest = Reg(didx as u8);
-                let i = state.label_index;
-                state.label_index += 2;
-                let lbl_true = RiscvLabel::Indexed { idx: i };
-                let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                self.bcond_label(ctx, arch, ConditionCode::LTU, &ra, &rb, lbl_true.clone())?;
-                self.li(ctx, arch, &dest, 0)?;
-                self.jal_label(
-                    ctx,
-                    arch,
-                    &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_end.clone(),
+                let label_index = &mut state.label_index;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::compare(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    move |rw, dest, ta, tb| {
+                        let (ra, rb) = (Reg(ta), Reg(tb));
+                        let dest = Reg(dest);
+                        let i = *label_index;
+                        *label_index += 2;
+                        let lbl_true = RiscvLabel::Indexed { idx: i };
+                        let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
+                        rw.writer.bcond_label(rw.ctx, rw.arch, ConditionCode::LTU, &ra, &rb, lbl_true.clone())?;
+                        rw.writer.li(rw.ctx, rw.arch, &dest, 0)?;
+                        rw.writer.jal_label(rw.ctx, rw.arch, &portal_solutions_blitz_common::asm::Reg(0), lbl_end.clone())?;
+                        rw.writer.set_label(rw.ctx, rw.arch, lbl_true)?;
+                        rw.writer.li(rw.ctx, rw.arch, &dest, 1)?;
+                        rw.writer.set_label(rw.ctx, rw.arch, lbl_end)?;
+                        Ok(())
+                    },
                 )?;
-                self.set_label(ctx, arch, lbl_true)?;
-                self.li(ctx, arch, &dest, 1)?;
-                self.set_label(ctx, arch, lbl_end)?;
             }
             Instruction::I32GtS |
             Instruction::I64GtS => {
-                // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a>b) signed
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                let (tb, cb) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cb)?;
-                let (ta, ca) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, ca)?;
-                let (didx, cd) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push(riscv_regalloc::RegKind::Int)
-                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
-                emit_cmds(self, ctx, arch, cd)?;
-                let ra = Reg(ta.reg);
-                let rb = Reg(tb.reg);
-                let dest = Reg(didx as u8);
-                let i = state.label_index;
-                state.label_index += 2;
-                let lbl_true = RiscvLabel::Indexed { idx: i };
-                let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                // a > b  <=> b < a
-                self.bcond_label(ctx, arch, ConditionCode::LT, &rb, &ra, lbl_true.clone())?;
-                self.li(ctx, arch, &dest, 0)?;
-                self.jal_label(
-                    ctx,
-                    arch,
-                    &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_end.clone(),
+                let label_index = &mut state.label_index;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::compare(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    move |rw, dest, ta, tb| {
+                        let (ra, rb) = (Reg(ta), Reg(tb));
+                        let dest = Reg(dest);
+                        let i = *label_index;
+                        *label_index += 2;
+                        let lbl_true = RiscvLabel::Indexed { idx: i };
+                        let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
+                        rw.writer.bcond_label(rw.ctx, rw.arch, ConditionCode::LT, &rb, &ra, lbl_true.clone())?;
+                        rw.writer.li(rw.ctx, rw.arch, &dest, 0)?;
+                        rw.writer.jal_label(rw.ctx, rw.arch, &portal_solutions_blitz_common::asm::Reg(0), lbl_end.clone())?;
+                        rw.writer.set_label(rw.ctx, rw.arch, lbl_true)?;
+                        rw.writer.li(rw.ctx, rw.arch, &dest, 1)?;
+                        rw.writer.set_label(rw.ctx, rw.arch, lbl_end)?;
+                        Ok(())
+                    },
                 )?;
-                self.set_label(ctx, arch, lbl_true)?;
-                self.li(ctx, arch, &dest, 1)?;
-                self.set_label(ctx, arch, lbl_end)?;
             }
             Instruction::I32GtU |
             Instruction::I64GtU => {
-                // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a>b) unsigned
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                let (tb, cb) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cb)?;
-                let (ta, ca) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, ca)?;
-                let (didx, cd) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push(riscv_regalloc::RegKind::Int)
-                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
-                emit_cmds(self, ctx, arch, cd)?;
-                let ra = Reg(ta.reg);
-                let rb = Reg(tb.reg);
-                let dest = Reg(didx as u8);
-                let i = state.label_index;
-                state.label_index += 2;
-                let lbl_true = RiscvLabel::Indexed { idx: i };
-                let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                // a > b <=> b < a
-                self.bcond_label(ctx, arch, ConditionCode::LTU, &rb, &ra, lbl_true.clone())?;
-                self.li(ctx, arch, &dest, 0)?;
-                self.jal_label(
-                    ctx,
-                    arch,
-                    &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_end.clone(),
+                let label_index = &mut state.label_index;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::compare(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    move |rw, dest, ta, tb| {
+                        let (ra, rb) = (Reg(ta), Reg(tb));
+                        let dest = Reg(dest);
+                        let i = *label_index;
+                        *label_index += 2;
+                        let lbl_true = RiscvLabel::Indexed { idx: i };
+                        let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
+                        rw.writer.bcond_label(rw.ctx, rw.arch, ConditionCode::LTU, &rb, &ra, lbl_true.clone())?;
+                        rw.writer.li(rw.ctx, rw.arch, &dest, 0)?;
+                        rw.writer.jal_label(rw.ctx, rw.arch, &portal_solutions_blitz_common::asm::Reg(0), lbl_end.clone())?;
+                        rw.writer.set_label(rw.ctx, rw.arch, lbl_true)?;
+                        rw.writer.li(rw.ctx, rw.arch, &dest, 1)?;
+                        rw.writer.set_label(rw.ctx, rw.arch, lbl_end)?;
+                        Ok(())
+                    },
                 )?;
-                self.set_label(ctx, arch, lbl_true)?;
-                self.li(ctx, arch, &dest, 1)?;
-                self.set_label(ctx, arch, lbl_end)?;
             }
             Instruction::I32LeS |
             Instruction::I64LeS => {
-                // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a<=b) signed
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                let (tb, cb) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cb)?;
-                let (ta, ca) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, ca)?;
-                let (didx, cd) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push(riscv_regalloc::RegKind::Int)
-                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
-                emit_cmds(self, ctx, arch, cd)?;
-                let ra = Reg(ta.reg);
-                let rb = Reg(tb.reg);
-                let dest = Reg(didx as u8);
-                let i = state.label_index;
-                state.label_index += 2;
-                let lbl_true = RiscvLabel::Indexed { idx: i };
-                let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                // a <= b <=> !(a > b)  => branch if GT then true
-                self.bcond_label(ctx, arch, ConditionCode::GT, &ra, &rb, lbl_true.clone())?;
-                self.li(ctx, arch, &dest, 0)?;
-                self.jal_label(
-                    ctx,
-                    arch,
-                    &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_end.clone(),
+                let label_index = &mut state.label_index;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::compare(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    move |rw, dest, ta, tb| {
+                        let (ra, rb) = (Reg(ta), Reg(tb));
+                        let dest = Reg(dest);
+                        let i = *label_index;
+                        *label_index += 2;
+                        let lbl_true = RiscvLabel::Indexed { idx: i };
+                        let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
+                        rw.writer.bcond_label(rw.ctx, rw.arch, ConditionCode::GT, &ra, &rb, lbl_true.clone())?;
+                        rw.writer.li(rw.ctx, rw.arch, &dest, 0)?;
+                        rw.writer.jal_label(rw.ctx, rw.arch, &portal_solutions_blitz_common::asm::Reg(0), lbl_end.clone())?;
+                        rw.writer.set_label(rw.ctx, rw.arch, lbl_true)?;
+                        rw.writer.li(rw.ctx, rw.arch, &dest, 1)?;
+                        rw.writer.set_label(rw.ctx, rw.arch, lbl_end)?;
+                        Ok(())
+                    },
                 )?;
-                self.set_label(ctx, arch, lbl_true)?;
-                self.li(ctx, arch, &dest, 1)?;
-                self.set_label(ctx, arch, lbl_end)?;
             }
             Instruction::I32LeU |
             Instruction::I64LeU => {
-                // regalloc-driven compare: pop a,b -> allocate dest reg -> set dest = (a<=b) unsigned
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                let (tb, cb) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cb)?;
-                let (ta, ca) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, ca)?;
-                let (didx, cd) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push(riscv_regalloc::RegKind::Int)
-                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
-                emit_cmds(self, ctx, arch, cd)?;
-                let ra = Reg(ta.reg);
-                let rb = Reg(tb.reg);
-                let dest = Reg(didx as u8);
-                let i = state.label_index;
-                state.label_index += 2;
-                let lbl_true = RiscvLabel::Indexed { idx: i };
-                let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                // a <= b <=> !(a > b unsigned)
-                self.bcond_label(ctx, arch, ConditionCode::GTU, &ra, &rb, lbl_true.clone())?;
-                self.li(ctx, arch, &dest, 0)?;
-                self.jal_label(
-                    ctx,
-                    arch,
-                    &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_end.clone(),
+                let label_index = &mut state.label_index;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::compare(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    move |rw, dest, ta, tb| {
+                        let (ra, rb) = (Reg(ta), Reg(tb));
+                        let dest = Reg(dest);
+                        let i = *label_index;
+                        *label_index += 2;
+                        let lbl_true = RiscvLabel::Indexed { idx: i };
+                        let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
+                        rw.writer.bcond_label(rw.ctx, rw.arch, ConditionCode::GTU, &ra, &rb, lbl_true.clone())?;
+                        rw.writer.li(rw.ctx, rw.arch, &dest, 0)?;
+                        rw.writer.jal_label(rw.ctx, rw.arch, &portal_solutions_blitz_common::asm::Reg(0), lbl_end.clone())?;
+                        rw.writer.set_label(rw.ctx, rw.arch, lbl_true)?;
+                        rw.writer.li(rw.ctx, rw.arch, &dest, 1)?;
+                        rw.writer.set_label(rw.ctx, rw.arch, lbl_end)?;
+                        Ok(())
+                    },
                 )?;
-                self.set_label(ctx, arch, lbl_true)?;
-                self.li(ctx, arch, &dest, 1)?;
-                self.set_label(ctx, arch, lbl_end)?;
             }
             Instruction::I32DivU | Instruction::I64DivU => {
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    state.regalloc = Some(regalloc::RegAlloc { frames: Frames(r.frames), tos: r.tos });
-                }
-                let (tb, cmds_b) = state.regalloc.as_mut().unwrap().pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds_b)?;
-                let (ta, cmds_a) = state.regalloc.as_mut().unwrap().pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds_a)?;
-                let ra = Reg(ta.reg);
-                let rb = Reg(tb.reg);
-                self.divu(ctx, arch, &ra, &ra, &rb)?;
-                let it = state.regalloc.as_mut().unwrap()
-                    .push_existing(regalloc::Target { reg: ta.reg, kind: ta.kind });
-                emit_cmds(self, ctx, arch, it)?;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.divu(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                )?;
             }
             Instruction::I32Eqz | Instruction::I64Eqz => {
                 if state.regalloc.is_none() {

@@ -139,3 +139,35 @@ where
     let cmds3: Vec<_> = w.regalloc_mut().as_mut().unwrap().push_existing(lhs).collect();
     w.emit_regalloc_cmds(cmds3)
 }
+
+/// The "pop rhs, pop lhs, allocate a *new* dest register, compute" shape used
+/// by comparison ops (`I32Lt*`, `I32Eq`, ...) — unlike [`binop`], the result
+/// needs a register distinct from either operand (typically materialized via
+/// a branch + `li 0`/`li 1` sequence that still needs both operands live).
+/// `emit_cmp` receives `(dest, lhs, rhs)`.
+pub fn compare<W, K, const N: usize>(
+    w: &mut W,
+    kind: K,
+    emit_cmp: impl FnOnce(&mut W, u8, u8, u8) -> Result<(), W::Error>,
+) -> Result<(), W::Error>
+where
+    W: RegAllocWriter<K, N>,
+    K: Clone + Eq + TryFrom<usize>,
+{
+    ensure_regalloc(w);
+    let (rhs, cmds1) = w.regalloc_mut().as_mut().unwrap().pop(kind.clone());
+    let cmds1: Vec<_> = cmds1.collect();
+    w.emit_regalloc_cmds(cmds1)?;
+    let (lhs, cmds2) = w.regalloc_mut().as_mut().unwrap().pop(kind.clone());
+    let cmds2: Vec<_> = cmds2.collect();
+    w.emit_regalloc_cmds(cmds2)?;
+    let (dest, cmds3) = w
+        .regalloc_mut()
+        .as_mut()
+        .unwrap()
+        .push(kind)
+        .unwrap_or_else(|_| panic!("regalloc error: kind conversion failed"));
+    let cmds3: Vec<_> = cmds3.collect();
+    w.emit_regalloc_cmds(cmds3)?;
+    emit_cmp(w, dest, lhs.reg, rhs.reg)
+}
