@@ -22,8 +22,10 @@
 //! ```
 
 #![no_std]
+extern crate alloc;
 
 pub mod regalloc_adapter;
+pub mod regalloc_frontend;
 
 /// How a probe site dispatches to its handler once the handler pointer is
 /// found to be non-null.

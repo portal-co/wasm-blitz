@@ -284,71 +284,34 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
         use portal_solutions_blitz_common::wasm_encoder::Instruction;
         match op {
             Instruction::I32Const(v) => {
-                // Use regalloc to push an int value
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                let (ridx, cmds) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push(riscv_regalloc::RegKind::Int)
-                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
-                emit_cmds(self, ctx, arch, cmds)?;
-                let phys = Reg(ridx as u8);
-                self.li(ctx, arch, &phys, *v as u64)?;
+                let v = *v as u64;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::push_const(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    |rw, reg| rw.writer.li(rw.ctx, rw.arch, &Reg(reg), v),
+                )?;
             }
             Instruction::I64Const(v) => {
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                let (ridx, cmds) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push(riscv_regalloc::RegKind::Int)
-                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
-                emit_cmds(self, ctx, arch, cmds)?;
-                let phys = Reg(ridx as u8);
-                self.li(ctx, arch, &phys, *v as u64)?;
+                let v = *v as u64;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::push_const(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    |rw, reg| rw.writer.li(rw.ctx, rw.arch, &Reg(reg), v),
+                )?;
             }
             Instruction::LocalGet(local_index) => {
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                let cmds = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push_local(riscv_regalloc::RegKind::Int, *local_index)
-                    .unwrap_or_else(|e| panic!("regalloc error: {e:?}"));
-                emit_cmds(self, ctx, arch, cmds)?;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::push_local(
+                    &mut rw, riscv_regalloc::RegKind::Int, *local_index,
+                )?;
             }
             Instruction::LocalSet(local_index) => {
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    state.regalloc = Some(regalloc::RegAlloc { frames: Frames(r.frames), tos: r.tos });
-                }
-                // pop_local transitions TOS from Stack → Local(N), marking the register as holding
-                // local N's value. No memory write yet; flush() or eviction will emit SetLocal.
-                let it = state.regalloc.as_mut().unwrap()
-                    .pop_local(riscv_regalloc::RegKind::Int, *local_index);
-                emit_cmds(self, ctx, arch, it)?;
+                // pop_to_local transitions TOS from Stack → Local(N), marking the register as
+                // holding local N's value. No memory write yet; flush() or eviction emits SetLocal.
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::pop_to_local(
+                    &mut rw, riscv_regalloc::RegKind::Int, *local_index,
+                )?;
             }
             Instruction::LocalTee(local_index) => {
                 let fp = Reg(8);
@@ -504,80 +467,23 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
             }
             // I32Add is the same as I64Add at the regalloc/register level — RISC-V add
             // operates on 64-bit registers; the lower 32 bits give the correct i32 result.
+            // I32Add is the same as I64Add at the regalloc/register level — RISC-V add
+            // operates on 64-bit registers; the lower 32 bits give the correct i32 result.
             Instruction::I32Add |
             Instruction::I64Add => {
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                // pop t1 (b)
-                let (t1, cmds1) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds1)?;
-                // pop t2 (a)
-                let (t2, cmds2) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds2)?;
-                let r1 = Reg(t1.reg);
-                let r2 = Reg(t2.reg);
-                // perform add into r2 (a = a + b)
-                self.add(ctx, arch, &r2, &r2, &r1)?;
-                // push existing r2 as result
-                let mut it = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push_existing(regalloc::Target {
-                        reg: t2.reg,
-                        kind: t2.kind,
-                    });
-                emit_cmds(self, ctx, arch, it)?;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.add(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                )?;
             }
             Instruction::I32Sub |
             Instruction::I64Sub => {
-                if state.regalloc.is_none() {
-                    let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    let new = regalloc::RegAlloc {
-                        frames: Frames(r.frames),
-                        tos: r.tos,
-                    };
-                    state.regalloc = Some(new);
-                }
-                // pop b then a
-                let (t1, cmds1) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds1)?;
-                let (t2, cmds2) = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .pop(riscv_regalloc::RegKind::Int);
-                emit_cmds(self, ctx, arch, cmds2)?;
-                let r1 = Reg(t1.reg);
-                let r2 = Reg(t2.reg);
-                self.sub(ctx, arch, &r2, &r2, &r1)?;
-                let it = state
-                    .regalloc
-                    .as_mut()
-                    .unwrap()
-                    .push_existing(regalloc::Target {
-                        reg: t2.reg,
-                        kind: t2.kind,
-                    });
-                emit_cmds(self, ctx, arch, it)?;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.sub(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                )?;
             }
             Instruction::I32Mul |
             Instruction::I64Mul => {

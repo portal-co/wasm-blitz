@@ -161,3 +161,70 @@ where
         self.writer.ld(self.ctx, self.arch, &riscv_reg(Reg(dest)), &riscv_mem_base_disp(Reg(src), disp))
     }
 }
+
+/// Wrapper binding a RISC-V writer + ctx + arch + regalloc state for
+/// [`portal_solutions_blitz_codegen::regalloc_frontend::RegAllocWriter`].
+pub struct RegAllocW<'a, W, Context> {
+    pub writer: &'a mut W,
+    pub ctx: &'a mut Context,
+    pub arch: RiscV64Arch,
+    pub regalloc: &'a mut Option<
+        portal_solutions_asm_regalloc::RegAlloc<
+            portal_solutions_asm_riscv64::regalloc::RegKind,
+            32,
+            portal_solutions_blitz_codegen::regalloc_adapter::Frames<
+                portal_solutions_asm_riscv64::regalloc::RegKind,
+                32,
+            >,
+        >,
+    >,
+}
+
+impl<'a, W, Context> portal_solutions_blitz_codegen::regalloc_frontend::RegAllocWriter<
+    portal_solutions_asm_riscv64::regalloc::RegKind,
+    32,
+> for RegAllocW<'a, W, Context>
+where
+    W: WriterCore<Context> + Writer<RiscvLabel, Context>,
+{
+    type Error = W::Error;
+
+    fn regalloc_mut(
+        &mut self,
+    ) -> &mut Option<
+        portal_solutions_asm_regalloc::RegAlloc<
+            portal_solutions_asm_riscv64::regalloc::RegKind,
+            32,
+            portal_solutions_blitz_codegen::regalloc_adapter::Frames<
+                portal_solutions_asm_riscv64::regalloc::RegKind,
+                32,
+            >,
+        >,
+    > {
+        self.regalloc
+    }
+
+    fn init_regalloc(
+        &self,
+    ) -> portal_solutions_asm_regalloc::RegAlloc<
+        portal_solutions_asm_riscv64::regalloc::RegKind,
+        32,
+        portal_solutions_blitz_codegen::regalloc_adapter::Frames<
+            portal_solutions_asm_riscv64::regalloc::RegKind,
+            32,
+        >,
+    > {
+        let r = portal_solutions_asm_riscv64::regalloc::init_regalloc::<32>(self.arch);
+        portal_solutions_asm_regalloc::RegAlloc {
+            frames: portal_solutions_blitz_codegen::regalloc_adapter::Frames(r.frames),
+            tos: r.tos,
+        }
+    }
+
+    fn emit_regalloc_cmds(
+        &mut self,
+        cmds: alloc::vec::Vec<portal_solutions_asm_regalloc::Cmd<portal_solutions_asm_riscv64::regalloc::RegKind>>,
+    ) -> Result<(), Self::Error> {
+        crate::naive::emit_cmds(self.writer, self.ctx, self.arch, cmds.into_iter())
+    }
+}
