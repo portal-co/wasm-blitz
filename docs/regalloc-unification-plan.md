@@ -36,26 +36,49 @@ Two shared pieces in `crates/blitz-codegen` (the crate already holds one instanc
 
 `blitz-riscv64::naive::Frames` now `pub use`s the generic version (a `pub use`, not `pub type`, because tuple-struct constructor syntax `Frames(...)` requires the name to resolve in the *value* namespace too, which a type alias doesn't provide).
 
-### 2. Shared WASM frontend — **not started**
+### 2. Shared WASM frontend
 
-A minimal backend trait (in the spirit of `BlitzWriter`) exposing what a regalloc-backed backend needs:
-- Acquiring/releasing a physical register for a pushed/popped value (`push_value`/`push_local`/`pop_value`/`pop_local` → reg + spill `cmds` to emit)
-- Instruction-selection callback for binary/unary ops on already-allocated registers
-- Label/branch primitives for the compile-time label-stack control-flow model (`open_block`/`open_loop`/`open_if`/`close`/`branch_depth`), mirroring `Endable`/`if_stack` from `blitz-riscv64/src/naive.rs` and `blitz-aarch64/src/naive.rs` (already near-identical shape).
+Split into two independent pieces (control flow and data flow don't need the
+same trait — see `handle_op_`'s `flush`-before-jump calls, the only coupling
+point, which stays a plain sequential call from each match arm rather than
+forcing one mega-trait):
 
-Free functions implementing, once: the const/arithmetic/comparison/local-access dispatch (regalloc pop/push sequencing + spill emission, generic over instruction selection), and structured control-flow resolution (`Block`/`Loop`/`If`/`Else`/`End`/`Br`/`BrIf`/`BrTable` → label placement/branches).
+**Data flow — done**, see `crates/blitz-codegen/src/regalloc_frontend.rs`.
+`RegAllocWriter<K, N>` trait (`regalloc_mut`, `init_regalloc`, `emit_regalloc_cmds`
+— the three genuinely arch-specific pieces: reserved-register layout,
+`process_cmd` plus any extra state like x86's `StackManager`) plus free
+functions `push_const`, `push_local`, `pop_to_local`, `binop` covering the
+"pop → emit spill/reload cmds → op → push → emit spill/reload cmds" shape.
+Instruction selection (e.g. `add` vs `lea`+`not`-for-subtract) stays a
+caller-supplied closure over allocated register numbers — that's where
+backends legitimately differ, not something to force-unify.
 
-Each arch's existing `codegen.rs` `BlitzW`-style wrapper gains an impl of the new trait, supplying only genuinely arch-specific pieces (which physical registers exist, how to encode ops on allocated registers, how to encode a conditional branch).
+**Control flow — not started.** Design sketched but unimplemented: a `Frame`
+enum (`Block{end}`/`Loop{head}`/`If{then,else,end}`) plus free functions
+(`open_block`/`open_loop`/`open_if`/`emit_else`/`close_frame`/`branch_to_depth`)
+generic over the *existing* `BlitzWriter` trait (it already has exactly the
+needed primitives — `branch_label`/`branch_zero_label`/`place_label` — no new
+trait needed for those) plus two extra hooks (`flush`, `pop_cond`) for
+regalloc-flush-before-branch and reading the WASM condition operand off the
+now-flushed real stack. `TryTable`/`Throw`/`ThrowRef` (exception handling)
+are deliberately excluded — the catch-arm arity/scratch-register conventions
+are genuinely arch-specific and higher-risk to generalize; `Endable::TryTable`
+stays a RISC-V-local case, resolved outside the shared resolver.
+
+Each arch's existing `codegen.rs` gains small adapter structs (mirroring
+`BlitzW`) implementing these traits, supplying only the arch-specific pieces.
 
 ## Sequencing (risk-ordered, not a single PR)
 
 1. **Generic regalloc adapter** — done (commit `93a1ce0`).
-2. **Port `blitz-riscv64/src/naive.rs` onto the new shared frontend** (once built) — it already implements the target model on both axes, so this should be a close-to-mechanical extraction with no intended behavior change. Cheapest way to prove the abstraction before other backends depend on it.
-3. **Complete x86-64's `fast.rs`** — migrate its control flow off the copy-pasted runtime-CTX-stack trick onto the shared compile-time-label-stack frontend, replace its ad-hoc per-arm regalloc dance with the shared dispatch, and fill in the `_ => {}` gap (most instructions are currently silently dropped). `fast.rs` has **zero existing test coverage** (`grep -c "fast::" crates/blitz-tests/tests/e2e.rs` → 0) — this increment must add new tests, not just rerun the existing suite.
-4. **New AArch64 regalloc-backed backend** — net-new integration (an AArch64 `RegKind`/instruction-selection adapter for the shared frontend), reusing the already-existing upstream `asm-aarch64` regalloc primitives. Its control-flow model already matches the target, so only the data-flow half is new. Recommend landing as a new `blitz-aarch64/src/fast.rs` sibling (mirroring x86-64's naming) rather than modifying `naive.rs` in place, to keep the stable path stable while the new one is proven.
+2. **Wire RISC-V's `BrTable` onto the pre-existing (previously-unused-anywhere) `emit_br_table`** — done (commit `aec082f`). Also split `naive::WriterExt::br` into `br`/`br_after_flush` so `BrTable`'s `resolve` closure could call the label-resolution half without re-flushing per arm or needing `&mut State` inside the closure.
+3. **Shared data-flow dispatch (`regalloc_frontend`), ported RISC-V's `I32Const`/`I64Const`/`LocalGet`/`LocalSet`/`I32Add`|`I64Add`/`I32Sub`|`I64Sub`** — done (commit `cc8e9ec`). Remaining arithmetic/comparison ops (`Mul`/`Div`/`Rem`/`And`/`Or`/`Xor`/`Shl`/`Shr*`/`Rot*`/comparisons), `LocalTee`, and `I32Load`/`I64Load`/`I32Store`/`I64Store` on RISC-V still hand-roll the same shape — straightforward follow-up using the same `binop`/`push_const`-style pattern, not yet done.
+4. **Build the shared control-flow resolver** (`Frame`/`open_block`/`open_loop`/`open_if`/`emit_else`/`close_frame`/`branch_to_depth`) and port RISC-V's `Block`/`Loop`/`If`/`Else`/`End`/`Br`/`BrIf` onto it (leaving `TryTable` local, as above) — not started.
+5. **Complete x86-64's `fast.rs`** — migrate its control flow off the copy-pasted runtime-CTX-stack trick onto the shared resolver from step 4, replace its ad-hoc per-arm regalloc dance with `regalloc_frontend`, and fill in the `_ => {}` gap (most instructions are currently silently dropped). `fast.rs` has **zero existing test coverage** (`grep -c "fast::" crates/blitz-tests/tests/e2e.rs` → 0) — this increment must add new tests, not just rerun the existing suite. Not started.
+6. **New AArch64 regalloc-backed backend** — net-new integration (an AArch64 `RegKind`/instruction-selection adapter for `regalloc_frontend`), reusing the already-existing upstream `asm-aarch64` regalloc primitives. Its control-flow model already matches the target, so only the data-flow half is new. Recommend landing as a new `blitz-aarch64/src/fast.rs` sibling (mirroring x86-64's naming) rather than modifying `naive.rs` in place, to keep the stable path stable while the new one is proven. Not started.
 
 **Explicitly out of scope, indefinitely**: `blitz-x86-64/src/naive.rs` is not touched or migrated by any step above — it's the long-term deprecation target, but actually removing it is future work. `sysv.rs`/`lfi.rs` per arch, float ops, and memory load/store instruction selection are left for follow-up once the integer/control-flow core is proven.
 
 ## Verification
 
-`crates/blitz-tests/tests/e2e.rs` (~6700 lines) executes emitted code via `unicorn-engine` across x86-64/aarch64/riscv64, plus a clang-assembled textual-asm path. Baseline before this effort started: `cargo test -p portal-solutions-blitz-tests` → 361 passed, 0 failed. Run `cargo build --workspace` and the full test suite before/after each step above; diff pass/fail sets.
+`crates/blitz-tests/tests/e2e.rs` (~6700 lines) executes emitted code via `unicorn-engine` across x86-64/aarch64/riscv64, plus a clang-assembled textual-asm path. Baseline before this effort started: `cargo test -p portal-solutions-blitz-tests` → 361 passed, 0 failed. Every step above so far has been verified against the same 361/361 (no regressions, no newly-skipped tests). Run `cargo build --workspace` and the full test suite before/after each step above; diff pass/fail sets.
