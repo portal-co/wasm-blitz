@@ -113,9 +113,8 @@ pub struct State<'a> {
 pub use portal_solutions_blitz_codegen::regalloc_adapter::Frames;
 
 pub enum Endable {
-    Block { idx: usize },
-    Loop { idx: usize },
-    If { idx: usize },
+    /// `Block`/`Loop`/`If` — see `portal_solutions_blitz_codegen::control_flow`.
+    Std(portal_solutions_blitz_codegen::control_flow::Frame),
     TryTable {
         exit_idx: usize,
         dispatch_idx: usize,
@@ -194,43 +193,16 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
         let mut depth = relative_depth as usize;
         for entry in if_stack.iter().rev() {
             if depth == 0 {
-                match entry {
-                    Endable::Block { idx } => {
-                        let lbl = RiscvLabel::Indexed { idx: *idx };
-                        self.jal_label(
-                            ctx,
-                            arch,
-                            &portal_solutions_blitz_common::asm::Reg(0),
-                            lbl,
-                        )?;
-                        return Ok(());
-                    }
-                    Endable::Loop { idx } => {
-                        let lbl = RiscvLabel::Indexed { idx: *idx };
-                        self.jal_label(
-                            ctx,
-                            arch,
-                            &portal_solutions_blitz_common::asm::Reg(0),
-                            lbl,
-                        )?;
-                        return Ok(());
-                    }
-                    Endable::If { idx } => {
-                        let lbl = RiscvLabel::Indexed { idx: *idx + 2 };
-                        self.jal_label(
-                            ctx,
-                            arch,
-                            &portal_solutions_blitz_common::asm::Reg(0),
-                            lbl,
-                        )?;
-                        return Ok(());
-                    }
-                    Endable::TryTable { exit_idx, .. } => {
-                        let lbl = RiscvLabel::Indexed { idx: *exit_idx };
-                        self.jal_label(ctx, arch, &portal_solutions_blitz_common::asm::Reg(0), lbl)?;
-                        return Ok(());
-                    }
-                }
+                // Which label to jump to is the same rule for Block/Loop/If
+                // regardless of ISA — see Frame::branch_target(). TryTable
+                // stays local (its exit label isn't part of the shared Frame).
+                let target_idx = match entry {
+                    Endable::Std(frame) => frame.branch_target(),
+                    Endable::TryTable { exit_idx, .. } => *exit_idx,
+                };
+                let lbl = RiscvLabel::Indexed { idx: target_idx };
+                self.jal_label(ctx, arch, &portal_solutions_blitz_common::asm::Reg(0), lbl)?;
+                return Ok(());
             }
             depth -= 1;
         }
@@ -831,95 +803,45 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 )?;
             }
             Instruction::Block(_blockty) => {
-                let i = state.label_index;
-                state.label_index += 1;
-                state.if_stack.push(Endable::Block { idx: i });
                 // Do NOT emit the label here: Br(N) to a Block is a forward branch to
                 // the block's End, so the label must only be placed at End time.
+                let frame = portal_solutions_blitz_codegen::control_flow::open_block(&mut state.label_index);
+                state.if_stack.push(Endable::Std(frame));
                 self.emit_control_flow_probe(ctx, arch, state)?;
             }
             Instruction::If(_blockty) => {
-                // Flush regalloc so the condition value is on the memory stack.
-                if let Some(ralloc) = state.regalloc.as_mut() {
-                    let it = ralloc.flush();
-                    emit_cmds(self, ctx, arch, it)?;
-                    ralloc.tos = None;
-                }
-                let i = state.label_index;
-                state.label_index += 3;
-                state.if_stack.push(Endable::If { idx: i });
-                let tmp = Reg(10);
-                let spmem = MemArgKind::Mem {
-                    base: ArgKind::Reg {
-                        reg: Reg(2),
-                        size: MemorySize::_64,
-                    },
-                    offset: None,
-                    disp: 0,
-                    size: MemorySize::_64,
-                    reg_class: RegisterClass::Gpr,
-                };
-                self.ld(ctx, arch, &tmp, &spmem)?;
-                self.addi(ctx, arch, &Reg(2), &Reg(2), 8)?;
-                let lbl_else = RiscvLabel::Indexed { idx: i + 1 };
-                self.bcond_label(
-                    ctx,
-                    arch,
-                    ConditionCode::EQ,
-                    &tmp,
-                    &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_else,
-                )?;
-                self.set_label(ctx, arch, RiscvLabel::Indexed { idx: i })?;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let frame = portal_solutions_blitz_codegen::control_flow::open_if(&mut rw, &mut state.label_index)?;
+                state.if_stack.push(Endable::Std(frame));
             }
             Instruction::Else => {
-                // flush regalloc on else boundary; reset TOS
-                if let Some(ralloc) = state.regalloc.as_mut() {
-                    let it = ralloc.flush();
-                    emit_cmds(self, ctx, arch, it)?;
-                    ralloc.tos = None;
-                }
-                let endable = state.if_stack.last().unwrap();
-                let idx = match endable {
-                    Endable::If { idx } => *idx,
+                let frame = match state.if_stack.last() {
+                    Some(Endable::Std(frame)) => *frame,
                     _ => panic!("Else without If"),
                 };
-                let lbl_end = RiscvLabel::Indexed { idx: idx + 2 };
-                self.jal_label(
-                    ctx,
-                    arch,
-                    &portal_solutions_blitz_common::asm::Reg(0),
-                    lbl_end.clone(),
-                )?;
-                self.set_label(ctx, arch, RiscvLabel::Indexed { idx: idx + 1 })?;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::control_flow::emit_else(&mut rw, &frame)?;
             }
             Instruction::Loop(_blockty) => {
-                let i = state.label_index;
-                state.label_index += 1;
-                state.if_stack.push(Endable::Loop { idx: i });
-                self.set_label(ctx, arch, RiscvLabel::Indexed { idx: i })?;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let frame = portal_solutions_blitz_codegen::control_flow::open_loop(&mut rw, &mut state.label_index)?;
+                state.if_stack.push(Endable::Std(frame));
                 self.emit_control_flow_probe(ctx, arch, state)?;
             }
             Instruction::End => {
                 // Function-level End (empty if_stack) is a no-op: the function
                 // return path already cleaned up the frame.
                 if let Some(top) = state.if_stack.pop() {
-                    if let Some(ralloc) = state.regalloc.as_mut() {
-                        let it = ralloc.flush();
-                        emit_cmds(self, ctx, arch, it)?;
-                    }
                     match top {
-                        Endable::Block { idx } => {
-                            self.set_label(ctx, arch, RiscvLabel::Indexed { idx })?;
-                        }
-                        Endable::Loop { .. } => {}
-                        Endable::If { idx } => {
-                            // Set both the else label (idx+1) and the end label (idx+2)
-                            // so that If without Else has a resolved else-branch target.
-                            self.set_label(ctx, arch, RiscvLabel::Indexed { idx: idx + 1 })?;
-                            self.set_label(ctx, arch, RiscvLabel::Indexed { idx: idx + 2 })?;
+                        Endable::Std(frame) => {
+                            let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                            portal_solutions_blitz_codegen::control_flow::close_frame(&mut rw, frame)?;
                         }
                         Endable::TryTable { exit_idx, dispatch_idx, after_dispatch_idx, catches } => {
+                            if let Some(ralloc) = state.regalloc.as_mut() {
+                                let it = ralloc.flush();
+                                emit_cmds(self, ctx, arch, it)?;
+                            }
                             let ra = portal_solutions_blitz_common::asm::Reg(0);
                             // Normal path: jump over dispatch stub.
                             self.jal_label(ctx, arch, &ra, RiscvLabel::Indexed { idx: after_dispatch_idx })?;

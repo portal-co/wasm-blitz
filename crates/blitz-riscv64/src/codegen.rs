@@ -228,3 +228,54 @@ where
         crate::naive::emit_cmds(self.writer, self.ctx, self.arch, cmds.into_iter())
     }
 }
+
+/// Scratch register [`ControlFlowW::pop_cond`] reads the WASM condition
+/// operand into — matches the `tmp = Reg(10)` convention the hand-written
+/// `If`/`BrIf` arms used before this was extracted.
+const COND_SCRATCH: Reg = Reg(10);
+
+impl<'a, W, Context> portal_solutions_blitz_codegen::control_flow::ControlFlowWriter for RegAllocW<'a, W, Context>
+where
+    W: WriterCore<Context> + Writer<RiscvLabel, Context>,
+{
+    type Error = W::Error;
+
+    fn branch_label(&mut self, label_idx: usize) -> Result<(), Self::Error> {
+        self.writer.jal_label(self.ctx, self.arch, &riscv_reg(Reg(0)), RiscvLabel::Indexed { idx: label_idx })
+    }
+
+    fn branch_zero_label(&mut self, reg_n: u8, label_idx: usize) -> Result<(), Self::Error> {
+        self.writer.bcond_label(
+            self.ctx, self.arch,
+            ConditionCode::EQ,
+            &riscv_reg(Reg(reg_n)),
+            &riscv_reg(Reg(0)),
+            RiscvLabel::Indexed { idx: label_idx },
+        )
+    }
+
+    fn place_label(&mut self, label_idx: usize) -> Result<(), Self::Error> {
+        self.writer.set_label(self.ctx, self.arch, RiscvLabel::Indexed { idx: label_idx })
+    }
+
+    // Flush any register-held operand-stack values to memory and reset TOS,
+    // so every path into a following label sees consistent state.
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        if let Some(ralloc) = self.regalloc.as_mut() {
+            let it = ralloc.flush();
+            let cmds: alloc::vec::Vec<_> = it.collect();
+            crate::naive::emit_cmds(self.writer, self.ctx, self.arch, cmds.into_iter())?;
+            ralloc.tos = None;
+        }
+        Ok(())
+    }
+
+    // Read the WASM condition operand directly off the real stack (valid
+    // immediately after `flush`, which guarantees it's there rather than
+    // live in a register) via `ld tmp, [sp]; addi sp, sp, 8`.
+    fn pop_cond(&mut self) -> Result<u8, Self::Error> {
+        self.writer.ld(self.ctx, self.arch, &riscv_reg(COND_SCRATCH), &riscv_mem_base(Reg(2)))?;
+        self.writer.addi(self.ctx, self.arch, &riscv_reg(Reg(2)), &riscv_reg(Reg(2)), 8)?;
+        Ok(COND_SCRATCH.0)
+    }
+}
