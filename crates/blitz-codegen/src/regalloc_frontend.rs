@@ -132,12 +132,56 @@ where
     let (rhs, cmds1) = w.regalloc_mut().as_mut().unwrap().pop(kind.clone());
     let cmds1: Vec<_> = cmds1.collect();
     w.emit_regalloc_cmds(cmds1)?;
+    let guard = guard_reg(w, &rhs);
     let (lhs, cmds2) = w.regalloc_mut().as_mut().unwrap().pop(kind);
     let cmds2: Vec<_> = cmds2.collect();
+    unguard_reg(w, &rhs, guard);
     w.emit_regalloc_cmds(cmds2)?;
     emit_op(w, lhs.reg, rhs.reg)?;
     let cmds3: Vec<_> = w.regalloc_mut().as_mut().unwrap().push_existing(lhs).collect();
     w.emit_regalloc_cmds(cmds3)
+}
+
+/// Temporarily reserve `t`'s register so a subsequent `pop()` can't select
+/// the same slot.
+///
+/// The allocator's `pop()` frees a register the instant it hands out that
+/// register's value (whether the value was already chained via a prior
+/// `push`, or freshly materialized from the real stack because nothing was
+/// chained — `tos == None`). In the freshly-materialized case specifically,
+/// nothing else marks that register "still in use", so a *second* `pop()`
+/// call made before the first value is consumed will see the same register
+/// as the first available slot and pick it again — its real pop instruction
+/// then clobbers the first value before any caller reads it. This is exactly
+/// the shape `binop`/`compare`/`store` need (two pops before either value is
+/// used), and is exactly what happens whenever the allocator's `tos` is
+/// `None` for both — e.g. right after a `flush()`, or (on a backend that
+/// falls back to a non-regalloc-aware sibling for some instructions, as
+/// `blitz-x86-64::sysv` does) immediately after that sibling pushes a raw,
+/// untracked value. Reserving `t`'s register in between makes the second
+/// `pop()` skip it and materialize a genuinely different one.
+fn guard_reg<W, K, const N: usize>(w: &mut W, t: &portal_solutions_asm_regalloc::Target<K>) -> portal_solutions_asm_regalloc::RegAllocFrame<K>
+where
+    W: RegAllocWriter<K, N>,
+    K: Clone + Eq + TryFrom<usize>,
+{
+    core::mem::replace(
+        &mut w.regalloc_mut().as_mut().unwrap().frames[t.kind.clone()][t.reg as usize],
+        portal_solutions_asm_regalloc::RegAllocFrame::Reserved,
+    )
+}
+
+/// Undo [`guard_reg`], restoring whatever was there before (always `Empty`
+/// in practice, since `pop()` only ever hands back a register it just freed).
+fn unguard_reg<W, K, const N: usize>(
+    w: &mut W,
+    t: &portal_solutions_asm_regalloc::Target<K>,
+    prev: portal_solutions_asm_regalloc::RegAllocFrame<K>,
+) where
+    W: RegAllocWriter<K, N>,
+    K: Clone + Eq + TryFrom<usize>,
+{
+    w.regalloc_mut().as_mut().unwrap().frames[t.kind.clone()][t.reg as usize] = prev;
 }
 
 /// The "pop rhs, pop lhs, allocate a *new* dest register, compute" shape used
@@ -158,9 +202,16 @@ where
     let (rhs, cmds1) = w.regalloc_mut().as_mut().unwrap().pop(kind.clone());
     let cmds1: Vec<_> = cmds1.collect();
     w.emit_regalloc_cmds(cmds1)?;
+    let guard = guard_reg(w, &rhs);
     let (lhs, cmds2) = w.regalloc_mut().as_mut().unwrap().pop(kind.clone());
     let cmds2: Vec<_> = cmds2.collect();
+    unguard_reg(w, &rhs, guard);
     w.emit_regalloc_cmds(cmds2)?;
+    // Guard both operands so `dest` (needed distinct — see doc comment) can't
+    // alias either: `push`'s "first empty slot" scan would otherwise happily
+    // hand back whichever of rhs/lhs's now-freed registers sorts lowest.
+    let guard_rhs = guard_reg(w, &rhs);
+    let guard_lhs = guard_reg(w, &lhs);
     let (dest, cmds3) = w
         .regalloc_mut()
         .as_mut()
@@ -168,6 +219,8 @@ where
         .push(kind)
         .unwrap_or_else(|_| panic!("regalloc error: kind conversion failed"));
     let cmds3: Vec<_> = cmds3.collect();
+    unguard_reg(w, &rhs, guard_rhs);
+    unguard_reg(w, &lhs, guard_lhs);
     w.emit_regalloc_cmds(cmds3)?;
     emit_cmp(w, dest, lhs.reg, rhs.reg)
 }
@@ -215,8 +268,10 @@ where
     let (val, cmds1) = w.regalloc_mut().as_mut().unwrap().pop(kind.clone());
     let cmds1: Vec<_> = cmds1.collect();
     w.emit_regalloc_cmds(cmds1)?;
+    let guard = guard_reg(w, &val);
     let (addr, cmds2) = w.regalloc_mut().as_mut().unwrap().pop(kind);
     let cmds2: Vec<_> = cmds2.collect();
+    unguard_reg(w, &val, guard);
     w.emit_regalloc_cmds(cmds2)?;
     emit_store(w, val.reg, addr.reg)
 }

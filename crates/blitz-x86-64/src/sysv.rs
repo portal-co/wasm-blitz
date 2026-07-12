@@ -162,6 +162,15 @@ pub struct SysVState<'a> {
     pub sig_params: Vec<u32>,
     /// Result count per WASM type index. Companion to [`Self::sig_params`].
     pub sig_results: Vec<u32>,
+    /// Regalloc-backed data-flow state (see `crate::regalloc_core`), shared
+    /// with `crate::codegen::RegAllocW`'s `flush()`. `None` until the first
+    /// regalloc-backed instruction runs. Every one of this file's own
+    /// control-flow/branch/call arms must flush this *before* touching RSP or
+    /// a fixed register directly — a label can be reached by more than one
+    /// path, so it must always see the canonical (fully-spilled) state
+    /// regardless of which branch got there, exactly as in
+    /// `blitz-riscv64::naive`'s `emit_control_flow_probe`/`br`/`If`/etc.
+    pub regalloc: Option<crate::regalloc_core::X64RegAlloc>,
 }
 
 /// Inter-function calling convention selected by the recompiler.
@@ -208,6 +217,19 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
         -> Result<(), Self::Error>
     {
         self.mov(ctx, arch, &dest, &mem64(RSP, 0))
+    }
+
+    /// Flush `state.regalloc` to the real RSP-based stack, if any values are
+    /// currently register-held. Must be called before any control-flow,
+    /// branch, call, or local-access code that touches RSP or a fixed
+    /// register directly — see [`SysVState::regalloc`]'s doc comment.
+    fn sysv_flush_regalloc(&mut self, ctx: &mut Context, arch: X64Arch, state: &mut SysVState<'_>)
+        -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+        portal_solutions_blitz_codegen::control_flow::ControlFlowWriter::flush(&mut rw)
     }
 
     /// Emit a control-flow probe (`TailTakeover` binding) for a mid-function
@@ -474,11 +496,14 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
     /// skipped (there is no native register for them); `mov rsp, rbp`
     /// below discards the whole operand stack unconditionally, so leaving
     /// them unread is not a leak.
-    fn sysv_emit_epilogue(&mut self, ctx: &mut Context, arch: X64Arch, state: &SysVState<'_>)
+    fn sysv_emit_epilogue(&mut self, ctx: &mut Context, arch: X64Arch, state: &mut SysVState<'_>)
         -> Result<(), Self::Error>
     where
         Self: Sized,
     {
+        // Every result this reads comes straight off [RSP]; flush first so a
+        // regalloc-held result isn't silently skipped.
+        self.sysv_flush_regalloc(ctx, arch, state)?;
         let n = state.ret_count;
         if n > 0 {
             self.mov(ctx, arch, &RAX, &mem64(RSP, ((n - 1) * 8) as u32))?;
@@ -544,27 +569,26 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
 
         match op {
             // ---- local access (SysV rbp-relative frame) ----
-            Instruction::LocalGet(n) => {
-                self.sysv_load_local(ctx, arch, RAX, *n as usize)?;
-                self.push(ctx, arch, &RAX)
-            }
-            Instruction::LocalSet(n) => {
-                self.pop(ctx, arch, &RAX)?;
-                self.sysv_store_local(ctx, arch, RAX, *n as usize)
-            }
+            // LocalGet/LocalSet fall through to the "everything else" arm below,
+            // which tries the regalloc-backed core first.
             Instruction::LocalTee(n) => {
-                // Peek (don't pop), store
+                // Peek (don't pop), store. Flush first: the regalloc may be
+                // holding the top-of-stack value in a register rather than
+                // where `sysv_peek`'s raw `[RSP]` read expects it.
+                self.sysv_flush_regalloc(ctx, arch, state)?;
                 self.sysv_peek(ctx, arch, RAX)?;
                 self.sysv_store_local(ctx, arch, RAX, *n as usize)
             }
 
             // ---- Calls: marshal operand-stack args per the selected CallAbi ----
             Instruction::Call(idx) if state.call_abi == CallAbi::AllStack => {
+                self.sysv_flush_regalloc(ctx, arch, state)?;
                 let (label, arity, results, is_import) =
                     Self::sysv_call_target(state, func_imports, *idx);
                 self.sysv_emit_marshalled_call(ctx, arch, label, arity, results, is_import)
             }
             Instruction::ReturnCall(idx) if state.call_abi == CallAbi::AllStack => {
+                self.sysv_flush_regalloc(ctx, arch, state)?;
                 let (label, arity, results, is_import) =
                     Self::sysv_call_target(state, func_imports, *idx);
                 if is_import || arity as usize > state.param_count {
@@ -582,6 +606,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
 
             // ---- Indirect calls: target = __wasm_table[index] ----
             Instruction::CallIndirect { type_index, .. } if state.call_abi == CallAbi::AllStack => {
+                self.sysv_flush_regalloc(ctx, arch, state)?;
                 let ty = *type_index as usize;
                 let arity = state.sig_params.get(ty).copied().unwrap_or(0);
                 let results = state.sig_results.get(ty).copied().unwrap_or(0);
@@ -589,6 +614,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 self.sysv_emit_marshalled_call_reg(ctx, arch, Reg(10), arity, results)
             }
             Instruction::ReturnCallIndirect { type_index, .. } if state.call_abi == CallAbi::AllStack => {
+                self.sysv_flush_regalloc(ctx, arch, state)?;
                 let ty = *type_index as usize;
                 let arity = state.sig_params.get(ty).copied().unwrap_or(0);
                 let results = state.sig_results.get(ty).copied().unwrap_or(0);
@@ -629,6 +655,8 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
             Instruction::If(_) => {
                 let i = state.label_index;
                 state.label_index += 3;
+                // Flush first: the condition may be regalloc-held rather than at [RSP].
+                self.sysv_flush_regalloc(ctx, arch, state)?;
                 self.pop(ctx, arch, &RAX)?;
                 self.cmp0(ctx, arch, &RAX)?;
                 self.jcc_label(ctx, arch, ConditionCode::E, X64Label::Indexed { idx: i + 1 })?;
@@ -639,6 +667,11 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 Ok(())
             }
             Instruction::Else => {
+                // Flush: the then-arm may have left values regalloc-held, but
+                // the else-arm must start from the same (fully-spilled) state
+                // the `if` itself started from, not inherit the then-arm's
+                // now-irrelevant register assignments.
+                self.sysv_flush_regalloc(ctx, arch, state)?;
                 let Some(SysVCtrl::If { base: i, else_seen }) = state.ctrl_stack.last_mut() else {
                     return Ok(());
                 };
@@ -648,6 +681,10 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 self.set_label(ctx, arch, X64Label::Indexed { idx: i + 1 })
             }
             Instruction::End if !state.if_stack.is_empty() => {
+                // Flush unconditionally before resolving any frame kind (matching
+                // blitz-riscv64::naive's End arm) — a label may be reached by
+                // more than one path and must always see canonical state.
+                self.sysv_flush_regalloc(ctx, arch, state)?;
                 if state.ctrl_stack.is_empty() {
                     // TryTable's End: ctrl_stack has no entry for it (naive tracks it in
                     // if_stack only). Delegate to naive so TryTable can emit its dispatch stub.
@@ -688,6 +725,9 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 }
             }
             Instruction::Br(n) => {
+                // Flush: this label (or the function epilogue) may be reached
+                // from other paths and must see canonical state.
+                self.sysv_flush_regalloc(ctx, arch, state)?;
                 let n = *n as usize;
                 if let Some(ctrl) = state.ctrl_stack.len().checked_sub(n + 1)
                     .and_then(|idx| state.ctrl_stack.get(idx))
@@ -700,6 +740,8 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 }
             }
             Instruction::BrIf(n) => {
+                // Flush first: the condition may be regalloc-held rather than at [RSP].
+                self.sysv_flush_regalloc(ctx, arch, state)?;
                 let n = *n as usize;
                 let skip = state.label_index;
                 state.label_index += 1;
@@ -718,6 +760,8 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 self.set_label(ctx, arch, X64Label::Indexed { idx: skip })
             }
             Instruction::BrTable(targets, default) => {
+                // Flush first: the selector may be regalloc-held rather than at [RSP].
+                self.sysv_flush_regalloc(ctx, arch, state)?;
                 // Pop selector once; for each target: if selector==0 branch, else decrement.
                 self.pop(ctx, arch, &RAX)?;
                 let has_shard = state.shard.is_some();
@@ -755,8 +799,16 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 Ok(())
             }
 
-            // ---- Everything else: naive _handle_op (no CTX ops in these paths) ----
+            // ---- Everything else: try the regalloc-backed core first, else
+            // fall back to naive's pure-stack _handle_op (no CTX ops in these
+            // paths). LocalGet/LocalSet land here and are handled by the core.
             other => {
+                if crate::regalloc_core::handle_op(self, ctx, arch, &mut state.regalloc, other)? {
+                    return Ok(());
+                }
+                // Not covered by the regalloc core: flush so naive's raw-stack
+                // path sees canonical (fully-spilled) state, then delegate.
+                self.sysv_flush_regalloc(ctx, arch, state)?;
                 let mut naive_state = crate::naive::State {
                     local_count: state.local_count,
                     num_returns: state.ret_count,
@@ -807,6 +859,11 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 state.next_probe_id = 1; // probe 0 is the function entry below
                 state.probe_plan = data.probe_plan.clone();
                 state.op_index = 0;
+                // Register allocation is per-function state, unlike label_index
+                // (which must stay monotonic across the whole compilation unit
+                // for global label uniqueness) — reset it here or a multi-function
+                // compilation exhausts the 32-register frame after enough functions.
+                state.regalloc = None;
 
                 self.set_label(ctx, arch, X64Label::Indexed {
                     idx: *id as usize | (1 << 28),

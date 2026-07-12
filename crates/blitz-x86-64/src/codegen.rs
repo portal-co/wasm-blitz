@@ -172,13 +172,18 @@ where
 /// [`portal_solutions_blitz_codegen::control_flow::ControlFlowWriter`].
 ///
 /// `init_regalloc` reserves rsp/rbp (as `portal_solutions_asm_x86_64::regalloc`'s
-/// own default does) *plus* r11/r14/r15 — the SysV-specific fixed registers for
-/// the probe-base virtual param, the Static Context Register, and call-argument
-/// marshalling (see `sysv.rs`'s `PROBE_BASE_REG`/`SCR`/`sysv_emit_marshalled_call`).
-/// Reserving them here means the allocator never hands one to a WASM operand,
-/// so SysV's own fixed-register code stays correct without needing to prove
-/// there's no live regalloc value in them at every call site — it only needs a
-/// `flush()` beforehand (spilling the *other*, non-reserved registers it does use).
+/// own default does) *plus* RAX/r11/r14/r15 — RAX because `sysv.rs` uses it
+/// pervasively as an assumed-free scratch register (locals, probes, epilogue,
+/// `BrTable`'s selector, ...) in code that predates this regalloc integration
+/// and doesn't all flush first (in particular `sysv_emit_control_flow_probe`/
+/// `sysv_emit_indexed_probes`, which fire *without* a flush at exactly the
+/// points — block/loop entry, arbitrary instruction boundaries — where a
+/// WASM operand is most likely to be sitting in a register); r11/r14/r15 for
+/// the SysV-specific probe-base virtual param, Static Context Register, and
+/// call-argument marshalling (see `sysv.rs`'s `PROBE_BASE_REG`/`SCR`/
+/// `sysv_emit_marshalled_call`). Reserving all four means the allocator never
+/// hands one to a WASM operand, so SysV's own fixed-register code stays
+/// correct without having to audit every call site for a missing `flush()`.
 pub struct RegAllocW<'a, W, Context> {
     pub writer: &'a mut W,
     pub ctx: &'a mut Context,
@@ -237,7 +242,7 @@ where
     > {
         let r = portal_solutions_asm_x86_64::regalloc::init_regalloc::<32>(self.arch);
         let mut frames = portal_solutions_blitz_codegen::regalloc_adapter::Frames(r.frames);
-        for reg in [11u8, 14, 15] {
+        for reg in [0u8, 11, 14, 15] {
             frames.0[0][reg as usize] = portal_solutions_asm_regalloc::RegAllocFrame::Reserved;
         }
         portal_solutions_asm_regalloc::RegAlloc { frames, tos: r.tos }
