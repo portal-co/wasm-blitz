@@ -172,8 +172,27 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
             emit_cmds(self, ctx, arch, it)?;
             ralloc.tos = None;
         }
+        self.br_after_flush(ctx, arch, &state.if_stack, relative_depth)
+    }
+
+    /// The label-resolution half of [`Self::br`], without the regalloc flush.
+    ///
+    /// Split out so `BrTable` (which flushes once up front, then resolves
+    /// each arm via [`portal_solutions_blitz_codegen::emit_br_table`]) can
+    /// reuse it without re-flushing per arm and without needing `&mut State`
+    /// inside the `resolve` closure (see the `BrTable` match arm below).
+    fn br_after_flush(
+        &mut self,
+        ctx: &mut Context,
+        arch: RiscV64Arch,
+        if_stack: &[Endable],
+        relative_depth: u32,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
         let mut depth = relative_depth as usize;
-        for entry in state.if_stack.iter().rev() {
+        for entry in if_stack.iter().rev() {
             if depth == 0 {
                 match entry {
                     Endable::Block { idx } => {
@@ -1288,7 +1307,8 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 self.set_label(ctx, arch, skip)?;
             }
             Instruction::BrTable(targets, default) => {
-                // flush regalloc before br_table; reset TOS
+                // flush regalloc once, up front — emit_br_table's resolve
+                // closure calls br_after_flush (no per-arm re-flush needed).
                 if let Some(ralloc) = state.regalloc.as_mut() {
                     let it = ralloc.flush();
                     emit_cmds(self, ctx, arch, it)?;
@@ -1307,33 +1327,19 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 };
                 self.ld(ctx, arch, &idx_reg, &spmem)?;
                 self.addi(ctx, arch, &Reg(2), &Reg(2), 8)?;
-                // emit chain of comparisons
-                let mut case_labels = Vec::new();
-                for _ in targets.iter() {
-                    let i = state.label_index;
-                    state.label_index += 1;
-                    case_labels.push(RiscvLabel::Indexed { idx: i });
-                }
-                let default_label = RiscvLabel::Indexed {
-                    idx: state.label_index,
-                };
-                state.label_index += 1;
-                // Use decrement pattern: BEQ idx,x0,case[i]; ADDI idx,idx,-1 per arm.
-                // RISC-V branch needs two registers; decrementing avoids a temp register.
-                for (i, _) in targets.iter().enumerate() {
-                    self.bcond_label(ctx, arch, ConditionCode::EQ, &idx_reg, &portal_solutions_blitz_common::asm::Reg(0), case_labels[i].clone())?;
-                    if i + 1 < targets.len() {
-                        self.addi(ctx, arch, &idx_reg, &idx_reg, -1)?;
-                    }
-                }
-                // none matched -> branch to default
-                self.br(ctx, arch, state, *default)?;
-                // cases
-                for (i, target) in targets.iter().enumerate() {
-                    self.set_label(ctx, arch, case_labels[i].clone())?;
-                    self.br(ctx, arch, state, *target)?;
-                }
-                self.set_label(ctx, arch, default_label)?;
+                // Shared decrement-approach br_table (branch_zero_label + reg_decrement
+                // per arm) — see portal_solutions_blitz_codegen::emit_br_table.
+                let mut bw = crate::codegen::BlitzW::new(self, ctx, arch, 6);
+                portal_solutions_blitz_codegen::emit_br_table(
+                    &mut bw,
+                    idx_reg.0,
+                    &targets[..],
+                    *default,
+                    &mut state.label_index,
+                    |w, relative_depth| {
+                        w.writer.br_after_flush(w.ctx, w.arch, &state.if_stack, relative_depth)
+                    },
+                )?;
             }
             Instruction::Block(_blockty) => {
                 let i = state.label_index;
