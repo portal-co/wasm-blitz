@@ -289,15 +289,34 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
     /// are simply skipped (there is no native register for them); `mov
     /// sp, fp` below discards the whole operand stack unconditionally, so
     /// leaving them unread is not a leak.
+    /// Flush `state.regalloc` to the real SP-based stack, if any values are
+    /// currently register-held. Must be called before any of this file's own
+    /// code that touches SP or a fixed register directly — `sysv_handle_insn`
+    /// intercepts `LocalGet`/`LocalSet`/`LocalTee`/`Return`/`End`/the `Call`
+    /// variants *before* they ever reach `naive`'s `_handle_op` (where the
+    /// regalloc-covered arms and their own flush pre-check live), so none of
+    /// that protection applies here without this being called explicitly.
+    fn sysv_flush_regalloc(&mut self, ctx: &mut Context, arch: AArch64Arch, state: &mut State<'_>)
+        -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+        portal_solutions_blitz_codegen::control_flow::ControlFlowWriter::flush(&mut rw)
+    }
+
     fn sysv_emit_epilogue(
         &mut self,
         ctx: &mut Context,
         arch: AArch64Arch,
-        state: &State<'_>,
+        state: &mut State<'_>,
     ) -> Result<(), Self::Error>
     where
         Self: Sized,
     {
+        // Every result this reads comes straight off [SP]; flush first so a
+        // regalloc-held result isn't silently skipped.
+        self.sysv_flush_regalloc(ctx, arch, state)?;
         let n = state.num_returns;
         if n > 0 {
             let disp = (n - 1) as i32 * WASM_SLOT;
@@ -331,30 +350,29 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         match op {
             // ---- local access (AAPCS64 FP-relative frame) ------------------
             // The SysV prologue stores args at [FP - (n+1)*8], which is exactly
-            // the layout that naive's load_local/store_local use, so we can
-            // delegate directly.  Reg(9) = x9, a caller-saved scratch register.
-            Instruction::LocalGet(idx) => {
-                self.load_local(ctx, arch, Reg(9), *idx as usize)?;
-                self.wasm_push(ctx, arch, Reg(9))
-            }
-            Instruction::LocalSet(idx) => {
-                self.wasm_pop(ctx, arch, Reg(9))?;
-                self.store_local(ctx, arch, Reg(9), *idx as usize)
-            }
+            // the layout that naive's load_local/store_local use — LocalGet/
+            // LocalSet fall through to the `other` arm below, which reaches
+            // naive's regalloc-covered versions of them directly. LocalTee
+            // isn't regalloc-covered in naive either, so it stays a raw
+            // override here (flushed first, like everything else in this
+            // match — see `sysv_flush_regalloc`'s doc comment for why).
             Instruction::LocalTee(idx) => {
                 // Peek at the top of the WASM stack without popping.
                 // SP = Reg(31) in AArch64.
+                self.sysv_flush_regalloc(ctx, arch, state)?;
                 self.ldr(ctx, arch, &reg(Reg(9)), &mem_base_disp(Reg(31), 0))?;
                 self.store_local(ctx, arch, Reg(9), *idx as usize)
             }
 
             // ---- Calls: marshal operand-stack args per AAPCS64 (AllStack mode) ----
             Instruction::Call(idx) if state.call_abi == CallAbi::AllStack => {
+                self.sysv_flush_regalloc(ctx, arch, state)?;
                 let (label, arity, results, _is_import) =
                     Self::sysv_call_target(state, func_imports, *idx);
                 self.sysv_emit_marshalled_call(ctx, arch, Some(label), None, arity, results)
             }
             Instruction::ReturnCall(idx) if state.call_abi == CallAbi::AllStack => {
+                self.sysv_flush_regalloc(ctx, arch, state)?;
                 let (label, arity, results, is_import) =
                     Self::sysv_call_target(state, func_imports, *idx);
                 if is_import || arity as usize > state.param_count {
@@ -372,6 +390,7 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
 
             // ---- Indirect calls: target = __wasm_table[index] ----
             Instruction::CallIndirect { type_index, .. } if state.call_abi == CallAbi::AllStack => {
+                self.sysv_flush_regalloc(ctx, arch, state)?;
                 let ty = *type_index as usize;
                 let arity = state.sig_params.get(ty).copied().unwrap_or(0);
                 let results = state.sig_results.get(ty).copied().unwrap_or(0);
@@ -379,6 +398,7 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 self.sysv_emit_marshalled_call(ctx, arch, None, Some(Reg(14)), arity, results)
             }
             Instruction::ReturnCallIndirect { type_index, .. } if state.call_abi == CallAbi::AllStack => {
+                self.sysv_flush_regalloc(ctx, arch, state)?;
                 let ty = *type_index as usize;
                 let arity = state.sig_params.get(ty).copied().unwrap_or(0);
                 let results = state.sig_results.get(ty).copied().unwrap_or(0);
@@ -425,6 +445,9 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 state.next_probe_id = 1; // probe 0 is the function entry below
                 state.probe_plan = data.probe_plan.clone();
                 state.op_index = 0;
+                // Register allocation is per-function (see naive::State::regalloc's
+                // doc comment) — sysv has its own StartFn separate from naive's.
+                state.regalloc = None;
 
                 self.set_label(ctx, arch, AArch64Label::Indexed { idx: *id as usize + 0x80000000 })
                     .map_err(Err::from)?;

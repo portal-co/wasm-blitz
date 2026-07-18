@@ -140,6 +140,22 @@ pub struct State<'a> {
     pub sig_params: Vec<u32>,
     /// Result count per WASM type index. Companion to [`Self::sig_params`].
     pub sig_results: Vec<u32>,
+    /// Regalloc-backed data-flow state (see `crate::codegen::RegAllocW`),
+    /// reset at every `StartFn` — register allocation is per-function state,
+    /// unlike `label_index` which must stay monotonic across the whole
+    /// compilation unit. Every control-flow/branch boundary that touches the
+    /// real WASM stack directly (`If`, `BrIf`, `BrTable`, ...) must flush this
+    /// first — see `docs/regalloc-unification-plan.md`.
+    pub regalloc: Option<
+        portal_solutions_asm_regalloc::RegAlloc<
+            portal_solutions_asm_aarch64::regalloc::RegKind,
+            32,
+            portal_solutions_blitz_codegen::regalloc_adapter::Frames<
+                portal_solutions_asm_aarch64::regalloc::RegKind,
+                32,
+            >,
+        >,
+    >,
 }
 
 /// Inter-function calling convention selected by the recompiler for the AAPCS64
@@ -602,25 +618,56 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 }
             }
         }
+        // Every instruction below this point that is *not* one of the
+        // regalloc-covered arms still reads/writes the WASM operand stack
+        // directly via wasm_pop/wasm_push at [sp] — exactly like naive.rs
+        // did before any regalloc existed here. If a regalloc-covered
+        // instruction just ran and left a value register-held (not yet
+        // spilled), one of those raw accesses would silently read stale or
+        // wrong memory. Flush first for anything not in the covered set;
+        // extend this list as more instructions are ported (see
+        // docs/regalloc-unification-plan.md).
+        let regalloc_covered = matches!(
+            op,
+            Instruction::I64Const(_) | Instruction::I32Const(_)
+                | Instruction::LocalGet(_) | Instruction::LocalSet(_)
+                | Instruction::I64Add | Instruction::I64Sub
+        );
+        if !regalloc_covered {
+            let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+            portal_solutions_blitz_codegen::control_flow::ControlFlowWriter::flush(&mut rw)?;
+        }
         match op {
             // ---- constants ----
             Instruction::I64Const(v) => {
-                self.mov_imm(ctx, arch, &reg(T0), *v as u64)?;
-                self.wasm_push(ctx, arch, T0)
+                let v = *v as u64;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::push_const(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, r| rw.writer.mov_imm(rw.ctx, rw.arch, &reg(Reg(r)), v),
+                )
             }
             Instruction::I32Const(v) => {
-                self.mov_imm(ctx, arch, &reg(T0), *v as u32 as u64)?;
-                self.wasm_push(ctx, arch, T0)
+                let v = *v as u32 as u64;
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::push_const(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, r| rw.writer.mov_imm(rw.ctx, rw.arch, &reg(Reg(r)), v),
+                )
             }
 
             // ---- locals ----
             Instruction::LocalGet(idx) => {
-                self.load_local(ctx, arch, T0, *idx as usize)?;
-                self.wasm_push(ctx, arch, T0)
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::push_local(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int, *idx,
+                )
             }
             Instruction::LocalSet(idx) => {
-                self.wasm_pop(ctx, arch, T0)?;
-                self.store_local(ctx, arch, T0, *idx as usize)
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::pop_to_local(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int, *idx,
+                )
             }
             Instruction::LocalTee(idx) => {
                 // peek (don't pop), store
@@ -629,8 +676,20 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             }
 
             // ---- i64 arithmetic ----
-            Instruction::I64Add => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.add(c, a, &reg(d), &reg(x), &reg(y))),
-            Instruction::I64Sub => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.sub(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::I64Add => {
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.add(rw.ctx, rw.arch, &reg(Reg(dst)), &reg(Reg(dst)), &reg(Reg(rhs))),
+                )
+            }
+            Instruction::I64Sub => {
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.sub(rw.ctx, rw.arch, &reg(Reg(dst)), &reg(Reg(dst)), &reg(Reg(rhs))),
+                )
+            }
             Instruction::I64Mul => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.mul(c, a, &reg(d), &reg(x), &reg(y))),
             Instruction::I64DivU => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.udiv(c, a, &reg(d), &reg(x), &reg(y))),
             Instruction::I64DivS => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.sdiv(c, a, &reg(d), &reg(x), &reg(y))),
@@ -885,7 +944,24 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 if let Some(frame) = state.if_stack.pop() {
                     match frame {
                         Endable::Block { end_lbl } => self.set_label(ctx, arch, end_lbl)?,
-                        Endable::If { end_lbl, .. } => self.set_label(ctx, arch, end_lbl)?,
+                        Endable::If { else_lbl, end_lbl } => {
+                            // `else_lbl` (the false-branch target `If`'s own
+                            // handler emits `bcond_label(EQ, else_lbl)`
+                            // against) is only ever bound by
+                            // `Instruction::Else`'s handler, which replaces
+                            // it with a `usize::MAX` sentinel afterward. If
+                            // this `if` had no `else`, that handler never
+                            // ran, so `else_lbl` was never bound to any
+                            // address — the false branch above resolved
+                            // against an unresolved label instead of
+                            // correctly skipping straight past the (empty)
+                            // else-body. Bind it here, coinciding with
+                            // `end_lbl`, in that case.
+                            if !matches!(else_lbl, AArch64Label::Indexed { idx: usize::MAX }) {
+                                self.set_label(ctx, arch, else_lbl)?;
+                            }
+                            self.set_label(ctx, arch, end_lbl)?;
+                        }
                         Endable::Loop { .. } => {}
                         Endable::TryTable { end_lbl, dispatch_lbl, catches } => {
                             let after_lbl = AArch64Label::Indexed { idx: state.label_index };
@@ -1171,6 +1247,9 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 state.local_count = data.num_params;
                 state.num_returns = data.num_returns;
                 state.control_depth = data.control_depth;
+                // Register allocation is per-function; label_index stays
+                // monotonic (see State::regalloc doc comment) but this resets.
+                state.regalloc = None;
 
                 self.set_label(ctx, arch, AArch64Label::Func { r#fn: *id }).map_err(Err::from)?;
 

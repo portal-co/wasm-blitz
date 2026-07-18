@@ -151,6 +151,9 @@ where
         state.control_depth = data.control_depth;
         state.probes = data.probes;
         state.next_probe_id = 1;
+        // Register allocation is per-function (see naive::State::regalloc's
+        // doc comment) — LFI has its own prologue separate from naive's.
+        state.regalloc = None;
         // No explicit alignment needed — AArch64 instructions are fixed 4-byte.
         w.set_label(ctx, arch, AArch64Label::Func { r#fn: id })?;
         if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {

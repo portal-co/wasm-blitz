@@ -245,6 +245,20 @@ where
         for reg in [0u8, 11, 14, 15] {
             frames.0[0][reg as usize] = portal_solutions_asm_regalloc::RegAllocFrame::Reserved;
         }
+        // `RegAlloc`'s `N=32` slots per kind exist to accommodate a future
+        // APX target (16 extra GPRs, R16-R31), which this backend's encoder
+        // (`reg_to_iced`/`reg_to_iced32`/`xmm_to_iced`) does not implement —
+        // they only ever emit RAX..R15/XMM0..XMM15. Without reserving 16..32,
+        // the allocator hands out these non-existent indices under register
+        // pressure, which the encoder then silently maps past R15 into
+        // whatever discriminant happens to follow it in `iced_x86::Register`
+        // (e.g. EIP), producing an "encoding error (backend bug)" panic
+        // instead of a clean spill. Reserve both kinds' upper half until real
+        // APX support (or AVX-512 for the float kind) lands end-to-end.
+        for reg in 16u8..32 {
+            frames.0[0][reg as usize] = portal_solutions_asm_regalloc::RegAllocFrame::Reserved;
+            frames.0[1][reg as usize] = portal_solutions_asm_regalloc::RegAllocFrame::Reserved;
+        }
         portal_solutions_asm_regalloc::RegAlloc { frames, tos: r.tos }
     }
 
