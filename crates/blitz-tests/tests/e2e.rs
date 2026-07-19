@@ -1476,6 +1476,69 @@ fn make_module_with_data(
     module.finish()
 }
 
+/// Build a WASM module with one memory, a passive data segment, and a
+/// function body of `memory.init 0 0; data.drop 0`, exercising the native
+/// backends' `Instruction::MemoryInit`/`Instruction::DataDrop` lowering.
+fn make_module_with_passive_data_memory_init(seg_bytes: &[u8]) -> Vec<u8> {
+    let mut module = Module::new();
+
+    let mut types = TypeSection::new();
+    types.ty().function([ValType::I32, ValType::I32, ValType::I32], []);
+    module.section(&types);
+
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+
+    let mut memories = MemorySection::new();
+    memories.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    module.section(&memories);
+
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+
+    let mut code = CodeSection::new();
+    let mut func = Function::new([]);
+    func.instruction(&Instruction::LocalGet(0));
+    func.instruction(&Instruction::LocalGet(1));
+    func.instruction(&Instruction::LocalGet(2));
+    func.instruction(&Instruction::MemoryInit { mem: 0, data_index: 0 });
+    func.instruction(&Instruction::DataDrop(0));
+    func.instruction(&Instruction::Return);
+    func.instruction(&Instruction::End);
+    code.function(&func);
+    module.section(&code);
+
+    let mut ds = DataSection::new();
+    ds.passive(seg_bytes.iter().copied());
+    module.section(&ds);
+
+    module.finish()
+}
+
+/// `Instruction::MemoryInit`/`DataDrop` must lower to a real call marshaling
+/// (dest, seg_base, src_offset, len) into the SysV/AAPCS64 argument
+/// registers and referencing the per-segment/helper symbols by name — see
+/// `blitz-x86-64`/`blitz-aarch64` `naive.rs`'s doc comments on those arms.
+/// `data.drop` is a documented compile-time no-op in this AOT backend, so it
+/// must not appear as a call/trap in the output.
+#[test]
+fn native_x86_64_naive_memory_init_lowering() {
+    let wasm = make_module_with_passive_data_memory_init(b"hi\n");
+    let asm = compile_native_asm(&wasm, NativeArch::X86_64, NativeAbi::Naive);
+    assert!(asm.contains("__wasm_data_seg_0"), "asm:\n{asm}");
+    assert!(asm.contains("__wasm_memory_init_copy"), "asm:\n{asm}");
+}
+
+#[test]
+fn native_aarch64_naive_memory_init_lowering() {
+    let wasm = make_module_with_passive_data_memory_init(b"hi\n");
+    let asm = compile_native_asm(&wasm, NativeArch::AArch64, NativeAbi::Naive);
+    assert!(asm.contains("__wasm_data_seg_0"), "asm:\n{asm}");
+    assert!(asm.contains("__wasm_memory_init_copy"), "asm:\n{asm}");
+}
+
 /// Compile a WASM module (with memory and possibly data) to JS.
 /// Data segments are NOT emitted here; call `apply_segments_to_mem` to
 /// pre-initialise the memory buffer before passing it to `run_js_with_mem`.

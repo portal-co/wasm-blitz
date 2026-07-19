@@ -1455,6 +1455,38 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: "__wasm_memory_grow".into() })?;
                 self.call(ctx, arch, &Reg(0))?;
             }
+            // ---- memory.init ------------------------------------------------
+            // Pop (dest, src_offset, len) off the WASM stack (len on top) and
+            // call a plain-C-ABI helper the runtime shim provides:
+            // `void __wasm_memory_init_copy(uint32_t dest_off, const void
+            // *seg_base, uint32_t src_off, uint32_t len)`. Each data segment's
+            // bytes are embedded by the shim as a separate symbol
+            // `__wasm_data_seg_{data_index}` — `data_index` is a compile-time
+            // instruction operand, so the symbol name (and therefore which
+            // segment gets copied) is resolved at this call site, not at
+            // runtime. This is a real SysV C call (unlike `MemoryGrow` above,
+            // which reuses this backend's WASM-internal calling convention) —
+            // marshal args into RDI/RSI/RDX/RCX explicitly rather than
+            // relying on whatever's already on the native stack.
+            Instruction::MemoryInit { data_index, .. } => {
+                self.pop(ctx, arch, &Reg(1))?; // RCX ← len (4th SysV arg)
+                self.pop(ctx, arch, &Reg(2))?; // RDX ← src_offset (3rd SysV arg)
+                self.pop(ctx, arch, &Reg(7))?; // RDI ← dest_offset (1st SysV arg)
+                self.lea_label(ctx, arch, &Reg(6), X64Label::External {
+                    name: alloc::format!("__wasm_data_seg_{data_index}"),
+                })?; // RSI ← segment base (2nd SysV arg)
+                self.lea_label(ctx, arch, &Reg(0), X64Label::External {
+                    name: "__wasm_memory_init_copy".into(),
+                })?;
+                self.call(ctx, arch, &Reg(0))?;
+            }
+            // `data.drop` is a compile-time no-op here: this AOT backend
+            // never re-runs a `memory.init` for the same `data_index` after a
+            // `data.drop` (each generated data-init function initializes
+            // every segment exactly once, by construction — see
+            // `speet-recompile`'s data-init function generator), so there is
+            // no runtime segment-liveness state to actually drop.
+            Instruction::DataDrop(_) => {}
             // `unreachable` traps. Emit HLT — privileged in user mode, so it
             // faults deterministically rather than executing past the trap.
             Instruction::Unreachable => {

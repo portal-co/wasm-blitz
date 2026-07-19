@@ -901,6 +901,38 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 self.adr_label(ctx, arch, &reg(T0), AArch64Label::External { name: "__wasm_memory_grow".into() })?;
                 self.bl(ctx, arch, &reg(T0))
             }
+            // ---- memory.init ------------------------------------------------
+            // Pop (dest, src_offset, len) off the WASM stack (len on top) and
+            // call a plain-C-ABI (AAPCS64) helper the runtime shim provides:
+            // `void __wasm_memory_init_copy(uint32_t dest_off, const void
+            // *seg_base, uint32_t src_off, uint32_t len)`. Each data segment's
+            // bytes are embedded by the shim as a separate symbol
+            // `__wasm_data_seg_{data_index}` — `data_index` is a compile-time
+            // instruction operand, so the symbol name is resolved at this
+            // call site, not at runtime. This is a real AAPCS64 call (unlike
+            // `MemoryGrow` above, which reuses this backend's WASM-internal
+            // calling convention) — marshal args into X0-X3 explicitly.
+            // X0-X2 are safe scratch here (the `FD0`-`FD2` FP-scratch aliases
+            // above only hold values transiently inside a single FP op, per
+            // their own doc comment).
+            Instruction::MemoryInit { data_index, .. } => {
+                self.wasm_pop(ctx, arch, Reg(3))?; // X3 ← len (4th AAPCS64 arg)
+                self.wasm_pop(ctx, arch, Reg(2))?; // X2 ← src_offset (3rd arg)
+                self.wasm_pop(ctx, arch, Reg(0))?; // X0 ← dest_offset (1st arg)
+                self.adr_label(ctx, arch, &reg(Reg(1)), AArch64Label::External {
+                    name: alloc::format!("__wasm_data_seg_{data_index}"),
+                })?; // X1 ← segment base (2nd arg)
+                self.adr_label(ctx, arch, &reg(T0), AArch64Label::External {
+                    name: "__wasm_memory_init_copy".into(),
+                })?;
+                self.bl(ctx, arch, &reg(T0))
+            }
+            // `data.drop` is a compile-time no-op here: this AOT backend
+            // never re-runs a `memory.init` for the same `data_index` after a
+            // `data.drop` (each generated data-init function initializes
+            // every segment exactly once, by construction), so there is no
+            // runtime segment-liveness state to actually drop.
+            Instruction::DataDrop(_) => Ok(()),
 
             // ---- control flow ----
             Instruction::Block(_) => {
