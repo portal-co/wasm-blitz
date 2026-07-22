@@ -7,7 +7,7 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use wasm_encoder::{Instruction, reencode};
+use wasm_encoder::{reencode, Instruction};
 
 use crate::*;
 
@@ -173,8 +173,7 @@ pub fn mach_operators<'a, 'b, Annot: FromWasmInfo, E: From<BinaryReaderError>>(
     imports: u32,
     // mut func_rewriter: Option<&'b mut (dyn FuncRewriter<E> + '_)>,
 ) -> impl Iterator<Item = Result<MachOperator<'a, Annot>, E>> {
-    return code
-        .iter()
+    code.iter()
         .zip(
             sigs_per
                 .iter()
@@ -183,59 +182,70 @@ pub fn mach_operators<'a, 'b, Annot: FromWasmInfo, E: From<BinaryReaderError>>(
                 .map(|a| &sigs[a as usize]),
         )
         .enumerate()
-        .flat_map(move |(i, (a, sig))| {
-            // let mut func_rewriter = match &mut func_rewriter {
-            //     None => None,
-            //     Some(a) => Some(match &mut **a {
-            //         b => unsafe { transmute::<_, &'b mut (dyn FuncRewriter<E> + '_)>(b) },
-            //     }),
-            // };
-            let v = a.get_operators_reader()?;
-            let l = a.get_locals_reader()?;
-            Ok::<_, E>(
-                [MachOperator::StartFn {
-                    id: i as u32,
-                    data: FnData {
-                        num_params: sig.params().len(),
-                        num_returns: sig.results().len(),
-                        control_depth: control_depth(a),
-                        probes: None,
-                        probe_plan: None,
-                    },
-                }]
-                .into_iter()
-                .map(Ok)
-                .chain(l.into_iter().map(|a| {
-                    a.map(|(a, b)| MachOperator::Local { count: a, ty: b })
-                        .map_err(E::from)
-                }))
-                .chain([MachOperator::StartBody].map(Ok))
-                .chain(v.into_iter_with_offsets().flat_map(
-                    move |v: Result<(Operator<'_>, usize), BinaryReaderError>| {
-                        [v.map(|(op, offset)| MachOperator::Operator {
+        .flat_map(move |(i, (body, sig))| {
+            mach_operators_for_function::<Annot, E>(body, sig, i as u32)
+        })
+}
+
+/// Convert exactly one WASM function body into machine operators.
+///
+/// This is the demand-driven entry point for backends: callers select a
+/// requested/reachable function and invoke this function for that body only.
+/// [`mach_operators`] remains the compatibility materializer for callers that
+/// intentionally compile every supplied body.
+pub fn mach_operators_for_function<'a, Annot: FromWasmInfo, E: From<BinaryReaderError>>(
+    body: &FunctionBody<'a>,
+    sig: &FuncType,
+    function_id: u32,
+) -> impl Iterator<Item = Result<MachOperator<'a, Annot>, E>> {
+    (|| -> Result<_, E> {
+        let operators = body.get_operators_reader()?;
+        let locals = body.get_locals_reader()?;
+        Ok::<_, E>(
+            [MachOperator::StartFn {
+                id: function_id,
+                data: FnData {
+                    num_params: sig.params().len(),
+                    num_returns: sig.results().len(),
+                    control_depth: control_depth(body),
+                    probes: None,
+                    probe_plan: None,
+                },
+            }]
+            .into_iter()
+            .map(Ok)
+            .chain(locals.into_iter().map(|local| {
+                local
+                    .map(|(count, ty)| MachOperator::Local { count, ty })
+                    .map_err(E::from)
+            }))
+            .chain([MachOperator::StartBody].map(Ok))
+            .chain(operators.into_iter_with_offsets().map(
+                |operator: Result<(Operator<'_>, usize), BinaryReaderError>| {
+                    operator
+                        .map(|(op, offset)| MachOperator::Operator {
                             op: Some(op),
                             annot: Annot::from_wasm_info(WasmInfo { offset }),
                         })
-                        .map_err(E::from)]
-                        .into_iter()
-                        .collect::<Vec<_>>()
+                        .map_err(E::from)
+                },
+            ))
+            .chain(
+                [
+                    MachOperator::Operator {
+                        op: Some(Operator::Return),
+                        annot: Annot::from_wasm_info(WasmInfo {
+                            offset: body.range().end,
+                        }),
                     },
-                ))
-                .chain(
-                    [
-                        MachOperator::Operator {
-                            op: Some(Operator::Return),
-                            annot: Annot::from_wasm_info(WasmInfo {
-                                offset: a.range().end,
-                            }),
-                        },
-                        MachOperator::EndBody,
-                    ]
-                    .map(Ok),
-                ),
-            )
-        })
-        .flatten();
+                    MachOperator::EndBody,
+                ]
+                .map(Ok),
+            ),
+        )
+    })()
+    .into_iter()
+    .flatten()
 }
 
 /// One entry in the runtime-owned *probe table*.
@@ -354,7 +364,11 @@ pub struct ProbePlan {
 impl ProbePlan {
     /// Probes at `idx` with the given placement, if any.
     pub fn at(&self, idx: usize, placement: ProbePlacement) -> impl Iterator<Item = &ProbeSpec> {
-        self.by_index.get(&idx).into_iter().flatten().filter(move |s| s.placement == placement)
+        self.by_index
+            .get(&idx)
+            .into_iter()
+            .flatten()
+            .filter(move |s| s.placement == placement)
     }
 
     /// Reproduces today's auto-identified control-flow probe set as data: a
@@ -372,10 +386,22 @@ impl ProbePlan {
             mode: ProbeMode::Active,
             placement: ProbePlacement::Before,
         };
-        let mut plan = ProbePlan { entry: alloc::vec![site(0)], by_index: BTreeMap::new() };
+        let mut plan = ProbePlan {
+            entry: alloc::vec![site(0)],
+            by_index: BTreeMap::new(),
+        };
         let mut next_probe = 1u32;
-        for (idx, op) in body.get_operators_reader().into_iter().flatten().flatten().enumerate() {
-            if matches!(op, wasmparser::Operator::Block { .. } | wasmparser::Operator::Loop { .. }) {
+        for (idx, op) in body
+            .get_operators_reader()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .enumerate()
+        {
+            if matches!(
+                op,
+                wasmparser::Operator::Block { .. } | wasmparser::Operator::Loop { .. }
+            ) {
                 plan.by_index.entry(idx).or_default().push(site(next_probe));
                 next_probe += 1;
             }
@@ -634,14 +660,14 @@ pub struct ScanMach<T, F, D> {
 //     }
 // }
 impl<
-    'a,
-    A,
-    E,
-    I: Iterator<Item = Result<MachOperator<'a, A>, E>>,
-    T,
-    F: FnMut(&mut FnData, u32, MachOperator<'a, A>, &mut D) -> T,
-    D,
-> Iterator for ScanMach<I, F, D>
+        'a,
+        A,
+        E,
+        I: Iterator<Item = Result<MachOperator<'a, A>, E>>,
+        T,
+        F: FnMut(&mut FnData, u32, MachOperator<'a, A>, &mut D) -> T,
+        D,
+    > Iterator for ScanMach<I, F, D>
 {
     type Item = Result<T, E>;
     fn next(&mut self) -> Option<Self::Item> {
