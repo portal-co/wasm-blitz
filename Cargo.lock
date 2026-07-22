@@ -730,83 +730,83 @@ name = "portal-solutions-asm-x86-64-shim"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "ephemera"
+name = "dex-bytecode"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "vaffle"
+name = "osctx"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-c-backend"
+name = "speet-dex"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-common"
+name = "speet-link-core"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-compiler"
+name = "speet-linker"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-compiler-common"
+name = "speet-memory"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-compiler-passes"
+name = "speet-mips"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-dyn"
+name = "speet-module-builder"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-ir"
+name = "speet-module-target"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-ir-common"
+name = "speet-object"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-ir-lir-target"
+name = "speet-ordering"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-ir-passes"
+name = "speet-powerpc"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-lir"
+name = "speet-reach"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-lir-codegen"
+name = "speet-riscv"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-primitives"
+name = "speet-schedule"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-provenance"
+name = "speet-traps"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-spec"
+name = "speet-wasm-helpers"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-spec-dyn"
+name = "speet-x86_64"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-vaffle-target"
+name = "wasm-layout"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-weaver"
+name = "yecta"
 version = "0.1.0"
 
 [[patch.unused]]
@@ -894,120 +894,44 @@ name = "os-transform-core"
 version = "0.1.0"
 
 [[patch.unused]]
+name = "portal-jsc-common"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-generator"
+version = "0.8.0-pre.10"
+
+[[patch.unused]]
+name = "portal-jsc-simpl-js"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-cfg"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-ll-common"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-opt-ssa"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-ssa"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-tac"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-util"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
 name = "portal-solutions-sdk"
 version = "0.0.2"
-
-[[patch.unused]]
-name = "pit-gen"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "pit-lang-generic"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "pit-rust-generic"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "pit-core"
-version = "0.5.0-alpha.1"
-
-[[patch.unused]]
-name = "embedded-llm"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "embedded-llm-tools"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "px-wsdom"
-version = "0.0.6"
-
-[[patch.unused]]
-name = "px-wsdom-axum"
-version = "0.0.6"
-
-[[patch.unused]]
-name = "px-wsdom-core"
-version = "0.0.6"
-
-[[patch.unused]]
-name = "px-wsdom-dom"
-version = "0.0.6"
-
-[[patch.unused]]
-name = "px-wsdom-javascript"
-version = "0.0.6"
-
-[[patch.unused]]
-name = "px-wsdom-macros"
-version = "0.0.6"
-
-[[patch.unused]]
-name = "px-wsdom-macros-decl"
-version = "0.0.6"
-
-[[patch.unused]]
-name = "dreamcomp-ir-plugin-host"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcomp-plugin-common"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-arena"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-codegen"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-core"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-cps"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-cps-c-backend"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-e2e-tests"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-edu"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-fast-ir"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-lower"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-mini-target"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-minibc"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-minibc-c-interp"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-minibc-interp"
-version = "0.1.0"
 
 [[patch.unused]]
 name = "ast-traits"
@@ -1078,123 +1002,131 @@ name = "type-onion"
 version = "0.2.3"
 
 [[patch.unused]]
-name = "portal-jsc-common"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-generator"
-version = "0.8.0-pre.10"
-
-[[patch.unused]]
-name = "portal-jsc-simpl-js"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-cfg"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-ll-common"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-opt-ssa"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-ssa"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-tac"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-util"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-solutions-swibb"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "dex-bytecode"
+name = "pit-gen"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "osctx"
+name = "pit-lang-generic"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "speet-dex"
+name = "pit-rust-generic"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "speet-link-core"
+name = "embedded-llm"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "speet-linker"
+name = "embedded-llm-tools"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "speet-memory"
+name = "px-wsdom"
+version = "0.0.6"
+
+[[patch.unused]]
+name = "px-wsdom-axum"
+version = "0.0.6"
+
+[[patch.unused]]
+name = "px-wsdom-core"
+version = "0.0.6"
+
+[[patch.unused]]
+name = "px-wsdom-dom"
+version = "0.0.6"
+
+[[patch.unused]]
+name = "px-wsdom-javascript"
+version = "0.0.6"
+
+[[patch.unused]]
+name = "px-wsdom-macros"
+version = "0.0.6"
+
+[[patch.unused]]
+name = "px-wsdom-macros-decl"
+version = "0.0.6"
+
+[[patch.unused]]
+name = "ephemera"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "speet-mips"
+name = "vaffle"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "speet-module-builder"
+name = "volar-c-backend"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "speet-module-target"
+name = "volar-common"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "speet-object"
+name = "volar-compiler"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "speet-ordering"
+name = "volar-compiler-common"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "speet-powerpc"
+name = "volar-compiler-passes"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "speet-reach"
+name = "volar-dyn"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "speet-riscv"
+name = "volar-ir"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "speet-schedule"
+name = "volar-ir-common"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "speet-traps"
+name = "volar-ir-lir-target"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "speet-wasm-helpers"
+name = "volar-ir-passes"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "speet-x86_64"
+name = "volar-lir"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "wasm-layout"
+name = "volar-lir-codegen"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "yecta"
+name = "volar-primitives"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "volar-provenance"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "volar-spec"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "volar-spec-dyn"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "volar-vaffle-target"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "volar-weaver"
 version = "0.1.0"
 
 [[patch.unused]]
@@ -1246,5 +1178,73 @@ name = "portal-pc-waffle-passes-shared"
 version = "0.6.0-alpha.1"
 
 [[patch.unused]]
+name = "dreamcomp-ir-plugin-host"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcomp-plugin-common"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-arena"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-codegen"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-core"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-cps"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-cps-c-backend"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-e2e-tests"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-edu"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-fast-ir"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-lower"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-mini-target"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-minibc"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-minibc-c-interp"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-minibc-interp"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "pit-core"
+version = "0.5.0-alpha.1"
+
+[[patch.unused]]
 name = "wax-tags"
 version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-swibb"
+version = "0.6.0-alpha.1"
