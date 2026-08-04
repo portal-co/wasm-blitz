@@ -883,7 +883,10 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             // ---- memory.size / memory.grow ----
             Instruction::MemorySize(_) => {
                 // Load address of __wasm_mem_pages, load 32-bit page count.
-                self.adr_label(ctx, arch, &reg(T0), AArch64Label::External { name: "__wasm_mem_pages".into() })?;
+                crate::load_label_addr(
+                    self, ctx, arch, &reg(T0),
+                    AArch64Label::External { name: "__wasm_mem_pages".into() },
+                )?;
                 let mem = MemArgKind::Mem {
                     base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
                     offset: None,
@@ -898,7 +901,10 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             }
             Instruction::MemoryGrow(_) => {
                 // delta is on WASM stack; call via blitz WASM convention.
-                self.adr_label(ctx, arch, &reg(T0), AArch64Label::External { name: "__wasm_memory_grow".into() })?;
+                crate::load_label_addr(
+                    self, ctx, arch, &reg(T0),
+                    AArch64Label::External { name: "__wasm_memory_grow".into() },
+                )?;
                 self.bl(ctx, arch, &reg(T0))
             }
             // ---- memory.init ------------------------------------------------
@@ -919,10 +925,13 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 self.wasm_pop(ctx, arch, Reg(3))?; // X3 ← len (4th AAPCS64 arg)
                 self.wasm_pop(ctx, arch, Reg(2))?; // X2 ← src_offset (3rd arg)
                 self.wasm_pop(ctx, arch, Reg(0))?; // X0 ← dest_offset (1st arg)
-                self.adr_label(ctx, arch, &reg(Reg(1)), AArch64Label::External {
+                // External symbols must use ADRP+ADD (`load_label_addr`): plain
+                // `ADR` cannot be relocated on AArch64 Mach-O (ld rejects
+                // `ARM64_RELOC_PAGE21` on a non-ADRP instruction).
+                crate::load_label_addr(self, ctx, arch, &reg(Reg(1)), AArch64Label::External {
                     name: alloc::format!("__wasm_data_seg_{data_index}"),
                 })?; // X1 ← segment base (2nd arg)
-                self.adr_label(ctx, arch, &reg(T0), AArch64Label::External {
+                crate::load_label_addr(self, ctx, arch, &reg(T0), AArch64Label::External {
                     name: "__wasm_memory_init_copy".into(),
                 })?;
                 self.bl(ctx, arch, &reg(T0))
@@ -1026,7 +1035,10 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                                     Catch::OneRef { .. } | Catch::AllRef { .. } => {}
                                 }
                             }
-                            self.adr_label(ctx, arch, &reg(T0), AArch64Label::External { name: "__wasm_exn_propagate".into() })?;
+                            crate::load_label_addr(
+                                self, ctx, arch, &reg(T0),
+                                AArch64Label::External { name: "__wasm_exn_propagate".into() },
+                            )?;
                             self.bl(ctx, arch, &reg(T0))?;
                             self.set_label(ctx, arch, after_lbl)?;
                             self.set_label(ctx, arch, end_lbl)?;
@@ -1050,7 +1062,10 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 }) {
                     self.b_label(ctx, arch, dispatch_lbl)
                 } else {
-                    self.adr_label(ctx, arch, &reg(T1), AArch64Label::External { name: "__wasm_exn_propagate".into() })?;
+                    crate::load_label_addr(
+                        self, ctx, arch, &reg(T1),
+                        AArch64Label::External { name: "__wasm_exn_propagate".into() },
+                    )?;
                     self.bl(ctx, arch, &reg(T1))
                 }
             }
@@ -1110,7 +1125,10 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                         match func_imports.get(fn_idx_val as usize) {
                             Some((module, name)) => {
                                 let sym = alloc::format!("{module}__{name}");
-                                self.adr_label(ctx, arch, &reg(T0), AArch64Label::External { name: sym })?;
+                                crate::load_label_addr(
+                                    self, ctx, arch, &reg(T0),
+                                    AArch64Label::External { name: sym },
+                                )?;
                                 self.bl(ctx, arch, &reg(T0))?;
                             }
                             None => {
