@@ -6932,3 +6932,487 @@ fn shard_asm_cross_scr_load_aarch64_naive() {
 fn shard_asm_cross_scr_load_aarch64_sysv() {
     assert_shard_cross_asm_contains_scr_load(NativeArch::AArch64, NativeAbi::Sysv, "[x27");
 }
+
+// ---------------------------------------------------------------------------
+// Phase 1 C/JS parity: bulk memory, call_indirect/return_call, multi-memory.
+// ---------------------------------------------------------------------------
+
+use portal_solutions_blitz_c::{c_emit_funcref_table, c_emit_passive_data_segment};
+use portal_solutions_blitz_js::{js_emit_funcref_table, js_emit_passive_data_segment};
+use wasm_encoder::MemArg;
+
+fn make_module_2fn(
+    ty: (&[ValType], &[ValType]),
+    fn0: &[Instruction<'_>],
+    fn1: &[Instruction<'_>],
+    with_mem: bool,
+) -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function(ty.0.iter().cloned(), ty.1.iter().cloned());
+    module.section(&types);
+
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    functions.function(0);
+    module.section(&functions);
+
+    if with_mem {
+        let mut memories = MemorySection::new();
+        memories.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+        module.section(&memories);
+    }
+
+    let mut code = CodeSection::new();
+    for instrs in [fn0, fn1] {
+        let mut func = Function::new([]);
+        for instr in instrs {
+            func.instruction(instr);
+        }
+        func.instruction(&Instruction::End);
+        code.function(&func);
+    }
+    module.section(&code);
+    module.finish()
+}
+
+#[test]
+fn test_call_indirect_c() {
+    let wasm = make_module_2fn(
+        (&[ValType::I64], &[ValType::I64]),
+        &[Instruction::LocalGet(0), Instruction::I64Const(1), Instruction::I64Add, Instruction::Return],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::I32Const(0),
+            Instruction::CallIndirect { type_index: 0, table_index: 0 },
+            Instruction::Return,
+        ],
+        false,
+    );
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(&wasm);
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(&wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut out = String::new();
+    c_module_preamble(&mut out).unwrap();
+    // `c_emit_funcref_table` forward-declares `fn_0` itself, so it can run
+    // before the function bodies that reference `__wasm_table_0` are emitted.
+    c_emit_funcref_table(&mut out, 0, &[0]).unwrap();
+    let mut state = CState::default();
+    let mut reencoder = RoundtripReencoder;
+    for op in ops {
+        let op = op.unwrap();
+        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+    }
+    eprintln!("=== call_indirect C ===\n{out}");
+    // fn_1(41) -> call_indirect through table[0] = fn_0 -> 41+1 = 42
+    assert_eq!(run_c(&out, 1, &[41], 1), vec![42]);
+}
+
+#[test]
+fn test_return_call_c() {
+    let wasm = make_module_2fn(
+        (&[ValType::I64], &[ValType::I64]),
+        &[Instruction::LocalGet(0), Instruction::I64Const(1), Instruction::I64Add, Instruction::Return],
+        &[Instruction::LocalGet(0), Instruction::ReturnCall(0)],
+        false,
+    );
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(&wasm);
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(&wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut out = String::new();
+    c_module_preamble(&mut out).unwrap();
+    let mut state = CState::default();
+    let mut reencoder = RoundtripReencoder;
+    for op in ops {
+        let op = op.unwrap();
+        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+    }
+    eprintln!("=== return_call C ===\n{out}");
+    assert_eq!(run_c(&out, 1, &[41], 1), vec![42]);
+}
+
+#[test]
+fn test_return_call_indirect_c() {
+    let wasm = make_module_2fn(
+        (&[ValType::I64], &[ValType::I64]),
+        &[Instruction::LocalGet(0), Instruction::I64Const(1), Instruction::I64Add, Instruction::Return],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::I32Const(0),
+            Instruction::ReturnCallIndirect { type_index: 0, table_index: 0 },
+        ],
+        false,
+    );
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(&wasm);
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(&wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut out = String::new();
+    c_module_preamble(&mut out).unwrap();
+    c_emit_funcref_table(&mut out, 0, &[0]).unwrap();
+    let mut state = CState::default();
+    let mut reencoder = RoundtripReencoder;
+    for op in ops {
+        let op = op.unwrap();
+        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+    }
+    eprintln!("=== return_call_indirect C ===\n{out}");
+    assert_eq!(run_c(&out, 1, &[41], 1), vec![42]);
+}
+
+#[test]
+fn test_call_indirect_js() {
+    let wasm = make_module_2fn(
+        (&[ValType::I64], &[ValType::I64]),
+        &[Instruction::LocalGet(0), Instruction::I64Const(1), Instruction::I64Add, Instruction::Return],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::I32Const(0),
+            Instruction::CallIndirect { type_index: 0, table_index: 0 },
+            Instruction::Return,
+        ],
+        false,
+    );
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(&wasm);
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(&wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut out = String::new();
+    js_module_preamble(&mut out).unwrap();
+    js_emit_funcref_table(&mut out, 0, &[0]).unwrap();
+    let mut state = JsState::default();
+    let mut reencoder = RoundtripReencoder;
+    for op in ops {
+        let op = op.unwrap();
+        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+    }
+    eprintln!("=== call_indirect JS ===\n{out}");
+    assert_eq!(run_js(&out, &[41]), vec![42]);
+}
+
+#[test]
+fn test_return_call_js() {
+    let wasm = make_module_2fn(
+        (&[ValType::I64], &[ValType::I64]),
+        &[Instruction::LocalGet(0), Instruction::I64Const(1), Instruction::I64Add, Instruction::Return],
+        &[Instruction::LocalGet(0), Instruction::ReturnCall(0)],
+        false,
+    );
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(&wasm);
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(&wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut out = String::new();
+    js_module_preamble(&mut out).unwrap();
+    let mut state = JsState::default();
+    let mut reencoder = RoundtripReencoder;
+    for op in ops {
+        let op = op.unwrap();
+        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+    }
+    eprintln!("=== return_call JS ===\n{out}");
+    assert_eq!(run_js(&out, &[41]), vec![42]);
+}
+
+#[test]
+fn test_bulk_memory_c() {
+    // fn0: fill mem[0..10]=0xAB; copy mem[0..10]->mem[20..30]; load i32 @20.
+    let fn0: &[Instruction<'_>] = &[
+        Instruction::I32Const(0), Instruction::I32Const(0xAB), Instruction::I32Const(10),
+        Instruction::MemoryFill(0),
+        Instruction::I32Const(20), Instruction::I32Const(0), Instruction::I32Const(10),
+        Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 },
+        Instruction::I32Const(20),
+        Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }),
+        Instruction::Return,
+    ];
+    // fn1: memory.init(seg0, src=0, dest=100, len=4); data.drop(0); load i32 @100.
+    let fn1: &[Instruction<'_>] = &[
+        Instruction::I32Const(100), Instruction::I32Const(0), Instruction::I32Const(4),
+        Instruction::MemoryInit { mem: 0, data_index: 0 },
+        Instruction::DataDrop(0),
+        Instruction::I32Const(100),
+        Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }),
+        Instruction::Return,
+    ];
+    let wasm = make_module_2fn((&[], &[ValType::I32]), fn0, fn1, true);
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(&wasm);
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(&wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut out = String::new();
+    c_module_preamble(&mut out).unwrap();
+    c_emit_passive_data_segment(&mut out, 0, &[1, 2, 3, 4]).unwrap();
+    let mut state = CState::default();
+    let mut reencoder = RoundtripReencoder;
+    for op in ops {
+        let op = op.unwrap();
+        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+    }
+    eprintln!("=== bulk memory C ===\n{out}");
+    assert_eq!(run_c_with_grow(&out, 1, 0, &[], 1), vec![0xABABABAB]);
+    assert_eq!(run_c_with_grow(&out, 1, 1, &[], 1), vec![0x04030201]);
+}
+
+#[test]
+fn test_bulk_memory_js() {
+    let fn0: &[Instruction<'_>] = &[
+        Instruction::I32Const(0), Instruction::I32Const(0xAB), Instruction::I32Const(10),
+        Instruction::MemoryFill(0),
+        Instruction::I32Const(20), Instruction::I32Const(0), Instruction::I32Const(10),
+        Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 },
+        Instruction::I32Const(20),
+        Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }),
+        Instruction::Return,
+    ];
+    let fn1: &[Instruction<'_>] = &[
+        Instruction::I32Const(100), Instruction::I32Const(0), Instruction::I32Const(4),
+        Instruction::MemoryInit { mem: 0, data_index: 0 },
+        Instruction::DataDrop(0),
+        Instruction::I32Const(100),
+        Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }),
+        Instruction::Return,
+    ];
+    let wasm = make_module_2fn((&[], &[ValType::I32]), fn0, fn1, true);
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(&wasm);
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(&wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut out = String::new();
+    js_module_preamble(&mut out).unwrap();
+    js_emit_passive_data_segment(&mut out, 0, &[1, 2, 3, 4]).unwrap();
+    let mut state = JsState::default();
+    let mut reencoder = RoundtripReencoder;
+    for op in ops {
+        let op = op.unwrap();
+        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+    }
+    eprintln!("=== bulk memory JS ===\n{out}");
+    let mem = vec![0u8; 65536];
+    assert_eq!(run_js_with_mem(&out, &mem, &[]).iter().map(|v| *v as u32).collect::<Vec<_>>(), vec![0xABABABAB]);
+    // second call needs its own harness invocation ($1)
+    let harness = "\n$mem=new Uint8Array(65536);$mem_dv=new DataView($mem.buffer);\nconst __r=$1();console.log(String(__r));";
+    let code = format!("{out}{harness}");
+    let out2 = std::process::Command::new("node").arg("-e").arg(&code).output().expect("node");
+    assert!(out2.status.success(), "node failed: {}", String::from_utf8_lossy(&out2.stderr));
+    let v: i64 = String::from_utf8(out2.stdout).unwrap().trim().parse().unwrap();
+    assert_eq!(v as u32, 0x04030201);
+}
+
+#[test]
+fn test_multi_memory_c() {
+    use wasm_encoder::MemArg;
+    // fn0 (param i64 val): store val at mem[1][0], load it back from mem[1].
+    let wasm = make_module_2fn(
+        (&[ValType::I64], &[ValType::I64]),
+        &[
+            Instruction::I32Const(0),
+            Instruction::LocalGet(0),
+            Instruction::I64Store(MemArg { offset: 0, align: 3, memory_index: 1 }),
+            Instruction::I32Const(0),
+            Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 1 }),
+            Instruction::Return,
+        ],
+        &[Instruction::LocalGet(0), Instruction::Return],
+        false,
+    );
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(&wasm);
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(&wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut out = String::new();
+    c_module_preamble(&mut out).unwrap();
+    let mut state = CState::default();
+    let mut reencoder = RoundtripReencoder;
+    for op in ops {
+        let op = op.unwrap();
+        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+    }
+    eprintln!("=== multi memory C ===\n{out}");
+
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let dir = std::env::temp_dir();
+    let src_path = dir.join(format!("blitz_mm_{pid}_{seq}.c"));
+    let bin_path = dir.join(format!("blitz_mm_{pid}_{seq}"));
+    let full_src = format!(
+        "#include<stdint.h>\n#include<string.h>\n#include<stdlib.h>\n#include<stdio.h>\n#define WASM_STACK_SIZE 512\n\
+         {out}\n\
+         int main(){{\
+             uint8_t*_m1=(uint8_t*)calloc(65536,1);__wasm_mems[1]=_m1;__wasm_mem_pages_arr[1]=1;\
+             uint64_t _args[1]={{99ull}};uint64_t*_r=fn_0(_args);\
+             printf(\"%llu\\n\",_r[0]);return 0;}}\n"
+    );
+    std::fs::write(&src_path, &full_src).unwrap();
+    let compile = std::process::Command::new("cc").arg(&src_path).arg("-Wno-unsequenced").arg("-o").arg(&bin_path).output().expect("cc");
+    assert!(compile.status.success(), "compile failed: {}\n{}", String::from_utf8_lossy(&compile.stderr), full_src);
+    let run = std::process::Command::new(&bin_path).output().expect("run");
+    assert!(run.status.success());
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&bin_path);
+    let v: u64 = String::from_utf8(run.stdout).unwrap().trim().parse().unwrap();
+    assert_eq!(v, 99);
+}
+
+/// Promise-bail mode: sync import stays sync; Promise import suspends via `.then`.
+#[test]
+fn test_promise_calls_sync_and_async_import() {
+    // (i64) -> i64: call import $0 then return
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([ValType::I64], [ValType::I64]);
+    module.section(&types);
+    let mut imports = wasm_encoder::ImportSection::new();
+    imports.import("env", "add_one", wasm_encoder::EntityType::Function(0));
+    module.section(&imports);
+    let mut funcs = FunctionSection::new();
+    funcs.function(0);
+    module.section(&funcs);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 1);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    let mut func = Function::new([]);
+    func.instruction(&Instruction::LocalGet(0));
+    func.instruction(&Instruction::Call(0));
+    func.instruction(&Instruction::Return);
+    func.instruction(&Instruction::End);
+    code.function(&func);
+    module.section(&code);
+    let wasm = module.finish();
+
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(&wasm);
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(&wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 1);
+    let ops = dce_pass!(raw_ops);
+    let mut out = String::new();
+    js_module_preamble(&mut out).unwrap();
+    js_emit_imports(&mut out, &[("env", "add_one")]).unwrap();
+    let mut state = JsState::default();
+    state.enable_promise_calls();
+    let mut reencoder = RoundtripReencoder;
+    for op in ops {
+        let op = op.unwrap();
+        JsWrite::on_mach(
+            &mut out, &sigs_enc, &fsigs, &[], &[("env", "add_one")], &mut state, &op, &mut reencoder,
+        )
+        .unwrap();
+    }
+    assert!(out.contains("instanceof Promise"), "expected Promise bail:\n{out}");
+    assert!(out.contains("$cont_"), "expected continuation:\n{out}");
+
+    // Sync import: export returns a plain array (not a Promise).
+    let sync_harness = format!(
+        "{out}\n\
+         $0=function(x){{return [x+1n];}};\n\
+         Object.defineProperty($0,'__sig',{{value:{{params:1,rets:1}}}});\n\
+         const __r=$1(41n);\n\
+         if(__r instanceof Promise) throw new Error('expected sync');\n\
+         console.log(String(Array.isArray(__r)?__r[0]:__r));"
+    );
+    let o = std::process::Command::new("node").arg("-e").arg(&sync_harness).output().expect("node");
+    assert!(o.status.success(), "sync: {}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(String::from_utf8(o.stdout).unwrap().trim(), "42");
+
+    // Promise import: export returns a Promise that resolves after a microtask.
+    let async_harness = format!(
+        "{out}\n\
+         $0=function(x){{return Promise.resolve([x+1n]);}};\n\
+         Object.defineProperty($0,'__sig',{{value:{{params:1,rets:1}}}});\n\
+         (async()=>{{const __r=$1(41n);\n\
+         if(!(__r instanceof Promise)) throw new Error('expected Promise');\n\
+         const v=await __r;console.log(String(Array.isArray(v)?v[0]:v));}})().catch(e=>{{console.error(e);process.exit(1);}});"
+    );
+    let o = std::process::Command::new("node").arg("-e").arg(&async_harness).output().expect("node");
+    assert!(o.status.success(), "async: {}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(String::from_utf8(o.stdout).unwrap().trim(), "42");
+}
+
+#[test]
+fn test_multi_memory_js() {
+    use wasm_encoder::MemArg;
+    let wasm = make_module_2fn(
+        (&[ValType::I64], &[ValType::I64]),
+        &[
+            Instruction::I32Const(0),
+            Instruction::LocalGet(0),
+            Instruction::I64Store(MemArg { offset: 0, align: 3, memory_index: 1 }),
+            Instruction::I32Const(0),
+            Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 1 }),
+            Instruction::Return,
+        ],
+        &[Instruction::LocalGet(0), Instruction::Return],
+        false,
+    );
+    let (sigs_wp, sigs_enc, fsigs) = parse_sigs(&wasm);
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(&wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut out = String::new();
+    js_module_preamble(&mut out).unwrap();
+    let mut state = JsState::default();
+    let mut reencoder = RoundtripReencoder;
+    for op in ops {
+        let op = op.unwrap();
+        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+    }
+    eprintln!("=== multi memory JS ===\n{out}");
+    let harness = "\n$mems[1]=new Uint8Array(65536);$mem_dvs[1]=new DataView($mems[1].buffer);\nconst __r=$0(99n);console.log(String(__r));";
+    let code = format!("{out}{harness}");
+    let o = std::process::Command::new("node").arg("-e").arg(&code).output().expect("node");
+    assert!(o.status.success(), "node failed: {}", String::from_utf8_lossy(&o.stderr));
+    let v: i64 = String::from_utf8(o.stdout).unwrap().trim().parse().unwrap();
+    assert_eq!(v, 99);
+}

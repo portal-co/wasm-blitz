@@ -251,6 +251,134 @@ pub trait CWrite: Write {
     }
 
     // ------------------------------------------------------------------
+    // call_indirect()
+    // ------------------------------------------------------------------
+
+    /// Emit a C `call_indirect` through a `__wasm_table_{table_index}` funcref
+    /// table, including a runtime bounds check against
+    /// `__wasm_table_{table_index}_count`.
+    ///
+    /// WASM stack order for `call_indirect` is `args..., idx` (the table index
+    /// is on top). The index is popped first — in opt mode this correctly
+    /// shifts `depth` down by one before the argument-placement arithmetic
+    /// below runs (same math as [`CWrite::call`], just starting one slot lower).
+    ///
+    /// Per-element dynamic type verification (WASM spec: trap if the table
+    /// entry's *actual* function type differs from `type_index`) is not
+    /// implemented — a bare `uint64_t*(*)(uint64_t*)` function pointer carries
+    /// no type of its own to check against, and tagging every table slot with
+    /// one would require giving every `__sig_N` a *shared* (tagged) struct
+    /// type across the whole translation unit, a wider change than this
+    /// call site. Argument/result marshalling below still uses the
+    /// statically-known `sig` (from `type_index`), which is what WASM
+    /// validation already guarantees is correct for a well-formed module.
+    fn call_indirect(
+        &mut self,
+        state: &mut State,
+        sig: &FuncType,
+        table_index: u32,
+    ) -> core::fmt::Result
+    where
+        Self: Sized,
+    {
+        write!(self, "tmp=(uint64_t)(uint32_t){};", pop!(state))?;
+        write!(
+            self,
+            "if((uint32_t)tmp>=(uint32_t)__wasm_table_{table_index}_count)abort();"
+        )?;
+
+        if let Some(opt) = state.opt() {
+            let mut o = opt.lock();
+            let s = o.depth - sig.params().len();
+            o.depth -= sig.params().len();
+            let s2 = o.depth;
+            o.depth += sig.results().len();
+
+            write!(self, "tmp_locals=__wasm_table_{table_index}[(uint32_t)tmp](stack+{});", s + 1)?;
+            for i in 0..sig.results().len() {
+                write!(self, "stack[{}]=tmp_locals[{i}];", s2 + i + 1)?;
+            }
+        } else {
+            let n = sig.params().len();
+            let m = sig.results().len();
+            write!(
+                self,
+                "{{uint64_t*_ca=stack+sp-{n};sp-={n};tmp_locals=__wasm_table_{table_index}[(uint32_t)tmp](_ca);memcpy(stack+sp,tmp_locals,{m}*sizeof(uint64_t));sp+={m};}}"
+            )?;
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // return_call() / return_call_indirect()
+    // ------------------------------------------------------------------
+
+    /// Emit a true-tail `return_call`: instead of copying the callee's
+    /// results back onto this function's stack and continuing, directly
+    /// `return` the callee's result pointer (which has the exact same shape
+    /// `__rets_N`/blitz-C-ABI callers expect from this function too).
+    fn return_call(
+        &mut self,
+        state: &mut State,
+        sig: &FuncType,
+        function_index: u32,
+    ) -> core::fmt::Result
+    where
+        Self: Sized,
+    {
+        write!(
+            self,
+            "if(__sig_{function_index}.params!={0}||__sig_{function_index}.rets!={1})abort();",
+            sig.params().len(),
+            sig.results().len()
+        )?;
+
+        if let Some(opt) = state.opt() {
+            let mut o = opt.lock();
+            let s = o.depth - sig.params().len();
+            o.depth -= sig.params().len();
+            write!(self, "return fn_{function_index}(stack+{});", s + 1)
+        } else {
+            let n = sig.params().len();
+            write!(
+                self,
+                "{{uint64_t*_ca=stack+sp-{n};sp-={n};return fn_{function_index}(_ca);}}"
+            )
+        }
+    }
+
+    /// Like [`CWrite::return_call`] but through a funcref table, mirroring
+    /// [`CWrite::call_indirect`]'s bounds check.
+    fn return_call_indirect(
+        &mut self,
+        state: &mut State,
+        sig: &FuncType,
+        table_index: u32,
+    ) -> core::fmt::Result
+    where
+        Self: Sized,
+    {
+        write!(self, "tmp=(uint64_t)(uint32_t){};", pop!(state))?;
+        write!(
+            self,
+            "if((uint32_t)tmp>=(uint32_t)__wasm_table_{table_index}_count)abort();"
+        )?;
+
+        if let Some(opt) = state.opt() {
+            let mut o = opt.lock();
+            let s = o.depth - sig.params().len();
+            o.depth -= sig.params().len();
+            write!(self, "return __wasm_table_{table_index}[(uint32_t)tmp](stack+{});", s + 1)
+        } else {
+            let n = sig.params().len();
+            write!(
+                self,
+                "{{uint64_t*_ca=stack+sp-{n};sp-={n};return __wasm_table_{table_index}[(uint32_t)tmp](_ca);}}"
+            )
+        }
+    }
+
+    // ------------------------------------------------------------------
     // br()
     // ------------------------------------------------------------------
 
@@ -544,6 +672,20 @@ pub trait CWrite: Write {
                 *function_index,
             ),
 
+            Instruction::CallIndirect { type_index, table_index } => {
+                self.call_indirect(state, &sigs[*type_index as usize], *table_index)
+            }
+
+            Instruction::ReturnCall(function_index) => self.return_call(
+                state,
+                &sigs[fsigs[*function_index as usize] as usize],
+                *function_index,
+            ),
+
+            Instruction::ReturnCallIndirect { type_index, table_index } => {
+                self.return_call_indirect(state, &sigs[*type_index as usize], *table_index)
+            }
+
             Instruction::LocalGet(local_index) => {
                 push(state, self, &format_args!("locals[{local_index}]"))
             }
@@ -720,97 +862,134 @@ pub trait CWrite: Write {
             // ---- memory loads -----------------------------------------------
             Instruction::I64Load(memarg) => {
                 let off = memarg.offset;
+                let mem = memarg.memory_index;
                 write!(self, "tmp={};", pop!(state))?;
                 push(state, self, &format_args!(
-                    "*(uint64_t*)(__wasm_mem+(uint32_t)tmp+{off}ull)"
+                    "*(uint64_t*)(__wasm_mb({mem}u)+(uint32_t)tmp+{off}ull)"
                 ))
             }
             Instruction::I32Load(memarg) => {
                 let off = memarg.offset;
+                let mem = memarg.memory_index;
                 write!(self, "tmp={};", pop!(state))?;
                 push(state, self, &format_args!(
-                    "(uint64_t)*(uint32_t*)(__wasm_mem+(uint32_t)tmp+{off}ull)"
+                    "(uint64_t)*(uint32_t*)(__wasm_mb({mem}u)+(uint32_t)tmp+{off}ull)"
                 ))
             }
             Instruction::I64Load8U(memarg) | Instruction::I32Load8U(memarg) => {
                 let off = memarg.offset;
+                let mem = memarg.memory_index;
                 write!(self, "tmp={};", pop!(state))?;
                 push(state, self, &format_args!(
-                    "(uint64_t)*(__wasm_mem+(uint32_t)tmp+{off}ull)"
+                    "(uint64_t)*(__wasm_mb({mem}u)+(uint32_t)tmp+{off}ull)"
                 ))
             }
             Instruction::I64Load8S(memarg) | Instruction::I32Load8S(memarg) => {
                 let off = memarg.offset;
+                let mem = memarg.memory_index;
                 write!(self, "tmp={};", pop!(state))?;
                 push(state, self, &format_args!(
-                    "(uint64_t)(int64_t)*(int8_t*)(__wasm_mem+(uint32_t)tmp+{off}ull)"
+                    "(uint64_t)(int64_t)*(int8_t*)(__wasm_mb({mem}u)+(uint32_t)tmp+{off}ull)"
                 ))
             }
             Instruction::I64Load16U(memarg) | Instruction::I32Load16U(memarg) => {
                 let off = memarg.offset;
+                let mem = memarg.memory_index;
                 write!(self, "tmp={};", pop!(state))?;
                 push(state, self, &format_args!(
-                    "(uint64_t)*(uint16_t*)(__wasm_mem+(uint32_t)tmp+{off}ull)"
+                    "(uint64_t)*(uint16_t*)(__wasm_mb({mem}u)+(uint32_t)tmp+{off}ull)"
                 ))
             }
             Instruction::I64Load16S(memarg) | Instruction::I32Load16S(memarg) => {
                 let off = memarg.offset;
+                let mem = memarg.memory_index;
                 write!(self, "tmp={};", pop!(state))?;
                 push(state, self, &format_args!(
-                    "(uint64_t)(int64_t)*(int16_t*)(__wasm_mem+(uint32_t)tmp+{off}ull)"
+                    "(uint64_t)(int64_t)*(int16_t*)(__wasm_mb({mem}u)+(uint32_t)tmp+{off}ull)"
                 ))
             }
             Instruction::I64Load32U(memarg) => {
                 let off = memarg.offset;
+                let mem = memarg.memory_index;
                 write!(self, "tmp={};", pop!(state))?;
                 push(state, self, &format_args!(
-                    "(uint64_t)*(uint32_t*)(__wasm_mem+(uint32_t)tmp+{off}ull)"
+                    "(uint64_t)*(uint32_t*)(__wasm_mb({mem}u)+(uint32_t)tmp+{off}ull)"
                 ))
             }
             Instruction::I64Load32S(memarg) => {
                 let off = memarg.offset;
+                let mem = memarg.memory_index;
                 write!(self, "tmp={};", pop!(state))?;
                 push(state, self, &format_args!(
-                    "(uint64_t)(int64_t)*(int32_t*)(__wasm_mem+(uint32_t)tmp+{off}ull)"
+                    "(uint64_t)(int64_t)*(int32_t*)(__wasm_mb({mem}u)+(uint32_t)tmp+{off}ull)"
                 ))
             }
             // ---- memory stores ----------------------------------------------
             // Pop order: value first (top of stack), then address.
             Instruction::I64Store(memarg) => {
                 let off = memarg.offset;
-                write!(self, "tmp={};tmp2={};*(uint64_t*)(__wasm_mem+(uint32_t)tmp2+{off}ull)=tmp",
+                let mem = memarg.memory_index;
+                write!(self, "tmp={};tmp2={};*(uint64_t*)(__wasm_mb({mem}u)+(uint32_t)tmp2+{off}ull)=tmp",
                     pop!(state), pop!(state))
             }
             Instruction::I32Store(memarg) => {
                 let off = memarg.offset;
-                write!(self, "tmp={};tmp2={};*(uint32_t*)(__wasm_mem+(uint32_t)tmp2+{off}ull)=(uint32_t)tmp",
+                let mem = memarg.memory_index;
+                write!(self, "tmp={};tmp2={};*(uint32_t*)(__wasm_mb({mem}u)+(uint32_t)tmp2+{off}ull)=(uint32_t)tmp",
                     pop!(state), pop!(state))
             }
             Instruction::I64Store8(memarg) | Instruction::I32Store8(memarg) => {
                 let off = memarg.offset;
-                write!(self, "tmp={};tmp2={};*(__wasm_mem+(uint32_t)tmp2+{off}ull)=(uint8_t)tmp",
+                let mem = memarg.memory_index;
+                write!(self, "tmp={};tmp2={};*(__wasm_mb({mem}u)+(uint32_t)tmp2+{off}ull)=(uint8_t)tmp",
                     pop!(state), pop!(state))
             }
             Instruction::I64Store16(memarg) | Instruction::I32Store16(memarg) => {
                 let off = memarg.offset;
-                write!(self, "tmp={};tmp2={};*(uint16_t*)(__wasm_mem+(uint32_t)tmp2+{off}ull)=(uint16_t)tmp",
+                let mem = memarg.memory_index;
+                write!(self, "tmp={};tmp2={};*(uint16_t*)(__wasm_mb({mem}u)+(uint32_t)tmp2+{off}ull)=(uint16_t)tmp",
                     pop!(state), pop!(state))
             }
             Instruction::I64Store32(memarg) => {
                 let off = memarg.offset;
-                write!(self, "tmp={};tmp2={};*(uint32_t*)(__wasm_mem+(uint32_t)tmp2+{off}ull)=(uint32_t)tmp",
+                let mem = memarg.memory_index;
+                write!(self, "tmp={};tmp2={};*(uint32_t*)(__wasm_mb({mem}u)+(uint32_t)tmp2+{off}ull)=(uint32_t)tmp",
                     pop!(state), pop!(state))
             }
             // ---- memory.size / memory.grow ----------------------------------
-            Instruction::MemorySize(_) => {
-                push(state, self, &format_args!("(uint64_t)__wasm_mem_pages"))
+            Instruction::MemorySize(mem) => {
+                push(state, self, &format_args!("(uint64_t)*__wasm_mp({mem}u)"))
             }
-            Instruction::MemoryGrow(_) => {
+            Instruction::MemoryGrow(mem) => {
                 write!(self, "tmp=(uint32_t){};", pop!(state))?;
                 push(state, self, &format_args!(
-                    "(uint64_t)__wasm_memory_grow((uint32_t)tmp,&__wasm_mem,&__wasm_mem_pages)"
+                    "(uint64_t)__wasm_memory_grow((uint32_t)tmp,&__wasm_mems[{mem}u],__wasm_mp({mem}u))"
                 ))
             }
+            // ---- bulk memory --------------------------------------------------
+            // Pop order for memory.copy/fill/init is len (top), then the middle
+            // operand, then the bottom operand — mirrors native calling
+            // conventions (e.g. x86 `rep movsb`: pop RDX=len, RSI=src, RDI=dest).
+            // Wrapped in its own `{}` block so the scratch locals don't collide
+            // across multiple bulk-memory ops in the same function.
+            Instruction::MemoryCopy { src_mem, dst_mem } => write!(
+                self,
+                "{{uint64_t _cl={},_cs={},_cd={};memmove(__wasm_mb({dst_mem}u)+(uint32_t)_cd,__wasm_mb({src_mem}u)+(uint32_t)_cs,(size_t)_cl);}}",
+                pop!(state), pop!(state), pop!(state)
+            ),
+            Instruction::MemoryFill(mem) => write!(
+                self,
+                "{{uint64_t _fl={},_fv={},_fd={};memset(__wasm_mb({mem}u)+(uint32_t)_fd,(int)(uint8_t)_fv,(size_t)_fl);}}",
+                pop!(state), pop!(state), pop!(state)
+            ),
+            Instruction::MemoryInit { mem, data_index } => write!(
+                self,
+                "{{uint64_t _il={},_is={},_id={};memcpy(__wasm_mb({mem}u)+(uint32_t)_id,__wasm_data_seg_{data_index}+(uint32_t)_is,(size_t)_il);}}",
+                pop!(state), pop!(state), pop!(state)
+            ),
+            // No stack effect; segment liveness tracking is not modeled (no
+            // subsequent `memory.init` on a dropped segment is expected/checked).
+            Instruction::DataDrop(_) => write!(self, "(void)0"),
             // ---- exception handling -----------------------------------------
             Instruction::Throw(tag_index) => {
                 let arity = if (*tag_index as usize) < tags.len() {
@@ -843,7 +1022,7 @@ pub trait CWrite: Write {
                 write!(self, "{{__wasm_exn_d++;if(!setjmp(__wasm_exn_jmp[__wasm_exn_d])){{")
             }
             Instruction::ThrowRef => todo!("exnref deferred"),
-            _ => todo!(),
+            other => todo!("unimplemented WASM instruction in blitz-c: {other:?}"),
         }?;
         Ok(())
     }
@@ -951,8 +1130,13 @@ impl<T: Write + ?Sized> CWrite for T {}
 /// Emit module-level globals and extern declarations for linear memory access.
 ///
 /// Call once before the first `on_mach` loop. Declares:
-/// - `__wasm_mem`       – pointer to the byte buffer (set by the caller)
-/// - `__wasm_mem_pages` – current page count (set/updated by the caller)
+/// - `__wasm_mems[8]` / `__wasm_mem_pages_arr[8]` – per-memory-index byte buffer
+///   and page count backing arrays (set by the caller). Up to 8 memories.
+/// - `__wasm_mem` / `__wasm_mem_pages` – macro aliases for `__wasm_mems[0]` /
+///   `__wasm_mem_pages_arr[0]`, kept so single-memory callers/tests are unaffected.
+/// - `__wasm_mb(i)` / `__wasm_mp(i)` – multi-memory accessors used by every
+///   load/store/bulk-memory arm; `__wasm_mb` returns the byte pointer for memory
+///   `i`, `__wasm_mp` returns a pointer to its page count.
 /// - `__wasm_memory_grow` – extern function that the caller must provide to
 ///   implement `memory.grow`; signature:
 ///   `uint32_t __wasm_memory_grow(uint32_t delta, uint8_t** mem, uint32_t* pages)`
@@ -962,12 +1146,17 @@ pub fn c_module_preamble(w: &mut (dyn core::fmt::Write + '_)) -> core::fmt::Resu
     write!(
         w,
         "#include <setjmp.h>\n\
+         #include <string.h>\n\
          typedef struct{{uint32_t tag;uint64_t vals[64];int nvals;}}__wasm_exn_t;\
          static __wasm_exn_t __wasm_exn;\
          static jmp_buf __wasm_exn_jmp[64];\
          static int __wasm_exn_d=-1;\
-         static uint8_t*__wasm_mem=0;\
-         static uint32_t __wasm_mem_pages=0;\
+         static uint8_t*__wasm_mems[8]={{0}};\
+         static uint32_t __wasm_mem_pages_arr[8]={{0}};\n\
+         #define __wasm_mem (__wasm_mems[0])\n\
+         #define __wasm_mem_pages (__wasm_mem_pages_arr[0])\n\
+         static inline uint8_t*__wasm_mb(uint32_t i){{return __wasm_mems[i];}}\
+         static inline uint32_t*__wasm_mp(uint32_t i){{return &__wasm_mem_pages_arr[i];}}\
          extern uint32_t __wasm_memory_grow(uint32_t delta,uint8_t**mem,uint32_t*pages);"
     )
 }
@@ -994,6 +1183,78 @@ pub fn c_emit_data_segments(
         write!(w, "}};memcpy(__wasm_mem+{offset},__data_{i},sizeof __data_{i});")?;
     }
     write!(w, "}}")
+}
+
+/// Emit one passive data segment, referenced by `memory.init { data_index, .. }`.
+///
+/// Unlike active segments (see [`c_emit_data_segments`]), passive segments are
+/// not copied anywhere automatically — they just sit as a static `const`
+/// array under a name the `MemoryInit` codegen arm references directly
+/// (`__wasm_data_seg_{data_index}`). Call once per passive segment, in any
+/// order, before compiling a function that references it via `memory.init`.
+pub fn c_emit_passive_data_segment(
+    w: &mut (dyn core::fmt::Write + '_),
+    data_index: u32,
+    bytes: &[u8],
+) -> core::fmt::Result {
+    write!(w, "static const uint8_t __wasm_data_seg_{data_index}[]={{")?;
+    let mut first = true;
+    for b in bytes {
+        if !first { write!(w, ",")?; }
+        write!(w, "{b}")?;
+        first = false;
+    }
+    if bytes.is_empty() { write!(w, "0")?; }
+    write!(w, "}};")
+}
+
+/// Emit a funcref table backing array for `call_indirect` / `return_call_indirect`.
+///
+/// Can be called at any point relative to the referenced functions' own
+/// definitions (before, after, or interleaved) — this emits a forward
+/// declaration for each `fn_N`, so unlike [`c_emit_exports`] there is no
+/// ordering requirement on the caller. `func_indices[i]` is the WASM function
+/// index stored at table slot `i`; it need not be unique. Emits:
+///
+/// ```c
+/// static uint64_t*fn_a(uint64_t*restrict);
+/// static uint64_t*fn_b(uint64_t*restrict);
+/// static uint64_t*(*__wasm_table_N[])(uint64_t*)={fn_a,fn_b,...};
+/// static const int __wasm_table_N_count=K;
+/// ```
+///
+/// [`CWrite::call_indirect`] / [`CWrite::return_call_indirect`] only check
+/// `idx < __wasm_table_N_count`; there is no per-element dynamic type tag (see
+/// the doc comment on [`CWrite::call_indirect`] for why).
+///
+/// [`CWrite::call_indirect`]/[`CWrite::return_call_indirect`] reference all
+/// three symbols by `table_index`, regardless of whether this helper was
+/// used to define them. If a table is *not* emitted via this helper (e.g. the
+/// host fills it externally), the embedder must instead provide `extern`
+/// declarations for `__wasm_table_N` / `__wasm_table_N_sig` / `__wasm_table_N_count`
+/// with these exact names and shapes.
+pub fn c_emit_funcref_table(
+    w: &mut (dyn core::fmt::Write + '_),
+    table_index: u32,
+    func_indices: &[u32],
+) -> core::fmt::Result {
+    let mut seen = Vec::new();
+    for f in func_indices {
+        if !seen.contains(f) {
+            seen.push(*f);
+            write!(w, "static uint64_t*fn_{f}(uint64_t*restrict);")?;
+        }
+    }
+
+    write!(w, "static uint64_t*(*__wasm_table_{table_index}[])(uint64_t*)={{")?;
+    for (i, f) in func_indices.iter().enumerate() {
+        if i > 0 { write!(w, ",")?; }
+        write!(w, "fn_{f}")?;
+    }
+    if func_indices.is_empty() { write!(w, "0")?; }
+    write!(w, "}};")?;
+
+    write!(w, "static const int __wasm_table_{table_index}_count={};", func_indices.len())
 }
 
 // ---------------------------------------------------------------------------

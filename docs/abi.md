@@ -147,13 +147,29 @@ static uint64_t* fn_N(uint64_t* restrict locals_in);
 - `locals_in[0..params]` — parameter values
 - Returns pointer to `__rets_N` (module-scope static buffer), `__rets_N[0..rets]`
 
-### Memory globals
+### Memory globals (multi-memory)
 ```c
-static uint8_t  *__wasm_mem       = 0;    /* pointer to linear memory bytes */
-static uint32_t  __wasm_mem_pages = 0;    /* current page count (1 page = 64 KiB) */
-/* Grow hook — caller must provide this symbol: */
+static uint8_t *__wasm_mems[8];
+static uint32_t __wasm_mem_pages_arr[8];
+#define __wasm_mem (__wasm_mems[0])
+#define __wasm_mem_pages (__wasm_mem_pages_arr[0])
+/* __wasm_mb(i) / __wasm_mp(i) select base / pages by memory index */
 extern uint32_t __wasm_memory_grow(uint32_t delta, uint8_t** mem, uint32_t* pages);
 ```
+Loads/stores/grow/copy/fill use `__wasm_mb(memory_index)`. Index 0 keeps the
+historical `__wasm_mem` / `__wasm_mem_pages` names as aliases.
+
+### Bulk memory / tail calls / tables
+- `memory.copy` → `memmove`; `memory.fill` → `memset`; `memory.init` → `memcpy` from `__wasm_data_seg_N` (see `c_emit_passive_data_segment`)
+- `data.drop` → no-op (AOT segments are static)
+- `return_call` / `return_call_indirect` → `return fn_X(...)` / table entry (clang TCO best-effort)
+- `call_indirect` → `__wasm_table_N[idx](...)` (`c_emit_funcref_table`)
+
+### Exception handling
+Language-native: nested `setjmp`/`longjmp` frames (`__wasm_exn_*`). Cross-function
+throws unwind the C call stack — **not** the native software EH stack
+(`__wasm_eh_push` / `__wasm_exn_propagate`). Both are valid for same-module
+`CallEscape::Exception`; mixed native↔C EH is unsupported.
 
 ### Data initialisation
 `c_emit_data_segments()` emits `__wasm_init_data()` which uses `memcpy` to apply
@@ -182,16 +198,41 @@ active data segments.  Caller must invoke it after allocating `__wasm_mem`.
 function $N(...locals)   // individual BigInt arguments
 ```
 - Takes BigInt values for each WASM parameter
-- Returns a single BigInt (1-return function) or an Array of BigInt (multi-return)
+- Returns an Array of BigInt (multi-return and single-return use the same shape in the emitter)
 - Already System V compatible in spirit — no separate SysV mode
 
-### Memory globals
+### Memory globals (multi-memory)
 ```js
-var $mem    = new Uint8Array(0);      // linear memory byte buffer
-var $mem_dv = new DataView($mem.buffer);  // DataView for typed access
+var $mem = new Uint8Array(0);
+var $mem_dv = new DataView($mem.buffer);
+var $mems = [], $mem_dvs = [];
+function __wasm_mb(i){ return i===0 ? $mem : $mems[i]; }
+function __wasm_dv(i){ return i===0 ? $mem_dv : $mem_dvs[i]; }
 ```
-`memory.grow` resizes `$mem` and reassigns `$mem_dv` in-place.
-`js_apply_data_segments()` emits `$mem.set(bytes, offset)` calls.
+Index 0 keeps `$mem`/`$mem_dv` for harness compatibility; indices `≥1` use `$mems`/`$mem_dvs`.
+`memory.grow` goes through `__wasm_grow`. Bulk ops: overlap-safe copy / `TypedArray.fill` /
+`__wasm_data_seg_N` for `memory.init`. `call_indirect` uses `$table_N`; `return_call` is
+`return $N(...args)`.
+
+### Exception handling
+Language-native JS `try`/`catch`/`throw` of `{__wasm_tag, __wasm_vals}` objects.
+Same split vs native software EH as the C backend (above).
+
+### Promise calls (“JSPI-style”, opt-in)
+`State::enable_promise_calls()` keeps functions **sync**. At each `call` /
+`call_indirect`, if the callee returns a `Promise`, the emitter bails with:
+
+```js
+let $call_K = $N(...args);
+const $cont_K = (val) => { /* weave val; …remainder of function… */ };
+if ($call_K instanceof Promise) return $call_K.then($cont_K);
+return $cont_K($call_K);
+```
+
+Sync callees stay on the sync path (no microtask). `return_call` just
+`return $call` (forwards a Promise with no post-call wrapper). Hosts should use
+`Promise.resolve(run(...))` so both sync arrays and Promises work. This is
+**compile-to-JS async at call edges**, not `WebAssembly.Suspending` / engine JSPI.
 
 ---
 

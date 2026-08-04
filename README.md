@@ -37,14 +37,20 @@ This project is organized as a Cargo workspace with the following crates:
 
 - **`blitz-js`**: JavaScript code generation backend
   - Compiles WASM bytecode to JavaScript
-  - Optimized stack management
+  - Bulk memory, `call_indirect` / `return_call`, multi-memory
+  - Opt-in Promise-bail call mode (`State::enable_promise_calls`)
   - Runtime type checking
 
+- **`blitz-c`**: C source code generation backend
+  - Compiles WASM to portable C (`fn_N` + `__wasm_mems[]`)
+  - Bulk memory, `call_indirect` / `return_call`, multi-memory
+  - Exception handling via `setjmp`/`longjmp`
+
 - **`blitz-x86-64`**: x86-64 native code generator
-  - Naive code generation strategy
+  - Naive / SysV code generation strategies
   - Direct machine code emission
 
-- **`blitz-aarch64`**: ARM AArch64 (ARM64) code generator *(Work in Progress)*
+- **`blitz-aarch64`**: ARM AArch64 (ARM64) code generator
   - Support for 64-bit ARM architecture
   - ARMv8-A and later architectures
 
