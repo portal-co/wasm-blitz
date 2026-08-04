@@ -2795,7 +2795,27 @@ fn compile_allstack_binary(wasm: &[u8], arch: NativeArch) -> (Vec<u8>, u64) {
             // AArch64 SysV entry label is `Indexed { id + 0x8000_0000 }`.
             (bytes, labels[&AArch64Label::Indexed { idx: 0x8000_0000 }] as u64)
         }
-        NativeArch::Riscv64 => panic!("many-arg test covers x86-64 and aarch64 only"),
+        NativeArch::Riscv64 => {
+            use portal_solutions_blitz_riscv64::{sysv, RiscV64Arch, RiscvLabel};
+            use portal_solutions_asm_riscv64::out::rv_asm_backend::RvAsmWriter;
+            let mut out = RvAsmWriter::<RiscvLabel>::new();
+            let mut state = sysv::SysVState::default();
+            state.call_abi = sysv::CallAbi::AllStack;
+            state.n_imports = 0;
+            state.call_params = call_params;
+            state.call_results = call_results;
+            state.sig_params = sigs_wp.iter().map(|s| s.params().len() as u32).collect();
+            state.sig_results = sigs_wp.iter().map(|s| s.results().len() as u32).collect();
+            for op in ops {
+                sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, RiscV64Arch::default(), &mut state, &[], &op.unwrap(),
+                    &mut reencoder, 0,
+                )
+                .unwrap();
+            }
+            let (bytes, labels) = out.into_parts();
+            (bytes, labels[&RiscvLabel::Indexed { idx: 1 << 28 }] as u64)
+        }
     }
 }
 
@@ -2834,23 +2854,17 @@ fn run_allstack_entry(arch: NativeArch, code: &[u8], entry_off: u64, args: &[u64
         }
         NativeArch::AArch64 => {
             use unicorn_engine::RegisterARM64;
-            let argregs = [
-                RegisterARM64::X0, RegisterARM64::X1, RegisterARM64::X2, RegisterARM64::X3,
-                RegisterARM64::X4, RegisterARM64::X5, RegisterARM64::X6, RegisterARM64::X7,
-            ];
             let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
             uc.mem_map(CODE, 0x40000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
-            // AllStack (aarch64) is true AAPCS64: params 0..7 in X0..X7, rest on stack.
-            let stack_args = n.saturating_sub(8) as u64;
-            let frame = (stack_args * 8 + 15) & !15;
+            // AllStack (aarch64): every param is on the incoming stack, matching
+            // x86 — [sp + i*8] = param i after the prologue's FP/LR push. Leave
+            // LR = ret so the function returns to the emu stop address.
+            let frame = ((n as u64 + 2) * 8 + 15) & !15;
             let sp = (STACK + STACK_SIZE - frame - 16) & !15;
-            for i in 8..n {
-                uc.mem_write(sp + ((i - 8) as u64) * 8, &args[i].to_le_bytes()).unwrap();
-            }
-            for i in 0..n.min(8) {
-                uc.reg_write(argregs[i], args[i]).unwrap();
+            for (i, &a) in args.iter().enumerate() {
+                uc.mem_write(sp + (i as u64) * 8, &a.to_le_bytes()).unwrap();
             }
             uc.reg_write(RegisterARM64::SP, sp).unwrap();
             uc.reg_write(RegisterARM64::LR, ret).unwrap();
@@ -2858,7 +2872,25 @@ fn run_allstack_entry(arch: NativeArch, code: &[u8], entry_off: u64, args: &[u64
             uc.emu_start(CODE + entry_off, ret, 0, count as usize).unwrap();
             uc.reg_read(RegisterARM64::X0).unwrap()
         }
-        NativeArch::Riscv64 => panic!("many-arg test covers x86-64 and aarch64 only"),
+        NativeArch::Riscv64 => {
+            use unicorn_engine::RegisterRISCV;
+            let mut uc = Unicorn::new(Arch::RISCV, Mode::RISCV64).unwrap();
+            uc.mem_map(CODE, 0x40000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            // RISC-V AllStack: the callee's FP is the caller's SP after its
+            // prologue, so parameter i is at [sp + i*8].
+            let frame = ((n as u64 + 2) * 8 + 15) & !15;
+            let sp = (STACK + STACK_SIZE - frame - 16) & !15;
+            for (i, &a) in args.iter().enumerate() {
+                uc.mem_write(sp + (i as u64) * 8, &a.to_le_bytes()).unwrap();
+            }
+            uc.reg_write(RegisterRISCV::SP, sp).unwrap();
+            uc.reg_write(RegisterRISCV::RA, ret).unwrap();
+            attach_trace_hook(&mut uc, arch, CODE, code.len());
+            uc.emu_start(CODE + entry_off, ret, 0, count as usize).unwrap();
+            uc.reg_read(RegisterRISCV::A0).unwrap()
+        }
     }
 }
 
@@ -2879,6 +2911,11 @@ fn test_unicorn_x86_64_manyarg_tailcall() {
 #[test]
 fn test_unicorn_aarch64_manyarg_tailcall() {
     assert_manyarg_sum(NativeArch::AArch64);
+}
+
+#[test]
+fn test_unicorn_riscv64_manyarg_tailcall() {
+    assert_manyarg_sum(NativeArch::Riscv64);
 }
 
 /// Self-recursive `(i64 n, i64 acc) -> i64`: `if n==0 { acc } else { f(n-1, acc+n) }`
@@ -2974,6 +3011,11 @@ fn test_unicorn_x86_64_deep_tailchain_small() {
 #[test]
 fn test_unicorn_aarch64_deep_tailchain_small() {
     assert_eq!(run_deep_tailchain(NativeArch::AArch64, 5, 100_000), 15);
+}
+
+#[test]
+fn test_unicorn_riscv64_deep_tailchain_small() {
+    assert_eq!(run_deep_tailchain(NativeArch::Riscv64, 5, 100_000), 15);
 }
 
 #[test]

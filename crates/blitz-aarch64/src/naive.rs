@@ -186,10 +186,10 @@ pub enum CallAbi {
     /// no stack spill). Used by direct-invocation tests.
     #[default]
     RegSysv,
-    /// Recompiler mode: marshal *all* arguments per AAPCS64 (the first 8 in
-    /// X0–X7, the rest on the outgoing stack), matching the SysV prologue which
-    /// reads `param i` (i≥8) at `[FP + 16 + i_stack*8]`. Import calls use the
-    /// same AAPCS64 convention (they are ordinary C functions).
+    /// Recompiler mode: internal guest calls pass **all** params on the stack
+    /// (`param i` at `[FP + 16 + scr_extra + i*8]`), matching large speet
+    /// register-file arities. Host import calls keep AAPCS64 (X0–X7 + stack
+    /// overflow), same split as x86-64 `CallAbi::AllStack`.
     AllStack,
 }
 
@@ -501,11 +501,42 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         Ok(())
     }
 
+    /// Materialize `addr + offset` into `addr` for a full `u64` memarg offset.
+    /// Small offsets that fit AArch64 unscaled 9-bit signed disp stay as `disp`;
+    /// larger values use `mov_imm` + `add` (mirrors x86 `mov64`+`lea`).
+    fn mem_add_offset(
+        &mut self,
+        ctx: &mut Context,
+        arch: AArch64Arch,
+        addr: Reg,
+        scratch: Reg,
+        offset: u64,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        if offset == 0 {
+            return Ok(());
+        }
+        // Unscaled LDR/STR signed 9-bit immediate: [-256, 255].
+        if offset <= 255 {
+            return Ok(()); // caller keeps `disp = offset as i32`
+        }
+        self.mov_imm(ctx, arch, &reg(scratch), offset)?;
+        self.add(ctx, arch, &reg(addr), &reg(addr), &reg(scratch))?;
+        Ok(())
+    }
+
+    /// `disp` to use after [`mem_add_offset`]: the raw offset when it fits the
+    /// addressing mode, else 0 (offset already folded into `addr`).
+    fn mem_disp_for_offset(offset: u64) -> i32 {
+        if offset <= 255 { offset as i32 } else { 0 }
+    }
+
     /// Apply the [`MemBase::WasmMemSymbol`] transform to a load/store address in
     /// `addr`: wrap it to 32 bits and add the `__wasm_mem` base, leaving the host
-    /// address in `addr`. `scratch` is clobbered. No-op for [`MemBase::Raw`]. The
-    /// static `memarg.offset` is still added afterwards by the load/store's
-    /// addressing-mode displacement, matching `__wasm_mem + (uint32_t)addr + off`.
+    /// address in `addr`. `scratch` is clobbered. No-op for [`MemBase::Raw`].
+    /// Callers add `memarg.offset` via [`mem_add_offset`] afterwards.
     fn apply_mem_base(
         &mut self,
         ctx: &mut Context,
@@ -546,7 +577,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         ctx: &mut Context,
         arch: AArch64Arch,
         state: &State<'_>,
-        offset: i32,
+        offset: u64,
         memory_index: u32,
         access: MemorySize,
         signed: bool,
@@ -557,10 +588,11 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
     {
         self.wasm_pop(ctx, arch, T0)?; // address
         self.apply_mem_base(ctx, arch, state, T0, T2, memory_index)?;
+        self.mem_add_offset(ctx, arch, T0, T2, offset)?;
         let mem = MemArgKind::Mem {
             base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
             offset: None,
-            disp: offset,
+            disp: Self::mem_disp_for_offset(offset),
             size: access,
             reg_class: RegisterClass::Gpr,
             mode: AddressingMode::Offset,
@@ -588,7 +620,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         ctx: &mut Context,
         arch: AArch64Arch,
         state: &State<'_>,
-        offset: i32,
+        offset: u64,
         memory_index: u32,
         access: MemorySize,
     ) -> Result<(), Self::Error>
@@ -598,10 +630,11 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         self.wasm_pop(ctx, arch, T1)?; // value
         self.wasm_pop(ctx, arch, T0)?; // address
         self.apply_mem_base(ctx, arch, state, T0, T2, memory_index)?;
+        self.mem_add_offset(ctx, arch, T0, T2, offset)?;
         let mem = MemArgKind::Mem {
             base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
             offset: None,
-            disp: offset,
+            disp: Self::mem_disp_for_offset(offset),
             size: access,
             reg_class: RegisterClass::Gpr,
             mode: AddressingMode::Offset,
@@ -831,83 +864,38 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             // F64 load/store reuse the i64 paths (FP values ride as raw bits);
             // F32 load/store reuse the i32 (low-32, zero-extended) paths.
             Instruction::I64Load(m) | Instruction::F64Load(m) => {
-                self.wasm_pop(ctx, arch, T0)?; // address
-                self.apply_mem_base(ctx, arch, state, T0, T2, m.memory_index)?;
-                let mem = MemArgKind::Mem {
-                    base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
-                    offset: None,
-                    disp: m.offset as i32,
-                    size: MemorySize::_64,
-                    reg_class: RegisterClass::Gpr,
-                    mode: AddressingMode::Offset,
-                };
-                self.ldr(ctx, arch, &reg(T1), &mem)?;
-                self.wasm_push(ctx, arch, T1)
+                self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_64, false, true)
             }
             Instruction::I32Load(m) | Instruction::F32Load(m) => {
-                self.wasm_pop(ctx, arch, T0)?;
-                self.apply_mem_base(ctx, arch, state, T0, T2, m.memory_index)?;
-                let mem = MemArgKind::Mem {
-                    base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
-                    offset: None,
-                    disp: m.offset as i32,
-                    size: MemorySize::_32,
-                    reg_class: RegisterClass::Gpr,
-                    mode: AddressingMode::Offset,
-                };
-                self.ldr(ctx, arch, &reg32(T1), &mem)?;
-                self.uxt(ctx, arch, &reg(T1), &reg32(T1))?;
-                self.wasm_push(ctx, arch, T1)
+                self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_32, false, false)
             }
 
             // ---- memory stores ----
             Instruction::I64Store(m) | Instruction::F64Store(m) => {
-                self.wasm_pop(ctx, arch, T1)?; // value
-                self.wasm_pop(ctx, arch, T0)?; // address
-                self.apply_mem_base(ctx, arch, state, T0, T2, m.memory_index)?;
-                let mem = MemArgKind::Mem {
-                    base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
-                    offset: None,
-                    disp: m.offset as i32,
-                    size: MemorySize::_64,
-                    reg_class: RegisterClass::Gpr,
-                    mode: AddressingMode::Offset,
-                };
-                self.str(ctx, arch, &reg(T1), &mem)
+                self.mem_store(ctx, arch, state, m.offset, m.memory_index, MemorySize::_64)
             }
             // i32.store, i64.store32 and f32.store all write the low 32 bits.
             Instruction::I32Store(m) | Instruction::I64Store32(m) | Instruction::F32Store(m) => {
-                self.wasm_pop(ctx, arch, T1)?; // value
-                self.wasm_pop(ctx, arch, T0)?; // address
-                self.apply_mem_base(ctx, arch, state, T0, T2, m.memory_index)?;
-                let mem = MemArgKind::Mem {
-                    base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
-                    offset: None,
-                    disp: m.offset as i32,
-                    size: MemorySize::_32,
-                    reg_class: RegisterClass::Gpr,
-                    mode: AddressingMode::Offset,
-                };
-                self.str(ctx, arch, &reg32(T1), &mem)
+                self.mem_store(ctx, arch, state, m.offset, m.memory_index, MemorySize::_32)
             }
 
             // ---- sub-word loads (zero/sign-extended) ----
-            Instruction::I32Load8U(m)  => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_8,  false, false),
-            Instruction::I32Load8S(m)  => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_8,  true,  false),
-            Instruction::I32Load16U(m) => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_16, false, false),
-            Instruction::I32Load16S(m) => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_16, true,  false),
-            Instruction::I64Load8U(m)  => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_8,  false, true),
-            Instruction::I64Load8S(m)  => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_8,  true,  true),
-            Instruction::I64Load16U(m) => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_16, false, true),
-            Instruction::I64Load16S(m) => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_16, true,  true),
-            Instruction::I64Load32U(m) => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_32, false, true),
-            Instruction::I64Load32S(m) => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_32, true,  true),
+            Instruction::I32Load8U(m)  => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_8,  false, false),
+            Instruction::I32Load8S(m)  => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_8,  true,  false),
+            Instruction::I32Load16U(m) => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_16, false, false),
+            Instruction::I32Load16S(m) => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_16, true,  false),
+            Instruction::I64Load8U(m)  => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_8,  false, true),
+            Instruction::I64Load8S(m)  => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_8,  true,  true),
+            Instruction::I64Load16U(m) => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_16, false, true),
+            Instruction::I64Load16S(m) => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_16, true,  true),
+            Instruction::I64Load32U(m) => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_32, false, true),
+            Instruction::I64Load32S(m) => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_32, true,  true),
 
             // ---- sub-word stores ----
-            Instruction::I32Store8(m)  => self.mem_store(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_8),
-            Instruction::I32Store16(m) => self.mem_store(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_16),
-            Instruction::I64Store8(m)  => self.mem_store(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_8),
-            Instruction::I64Store16(m) => self.mem_store(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_16),
+            Instruction::I32Store8(m)  => self.mem_store(ctx, arch, state, m.offset, m.memory_index, MemorySize::_8),
+            Instruction::I32Store16(m) => self.mem_store(ctx, arch, state, m.offset, m.memory_index, MemorySize::_16),
+            Instruction::I64Store8(m)  => self.mem_store(ctx, arch, state, m.offset, m.memory_index, MemorySize::_8),
+            Instruction::I64Store16(m) => self.mem_store(ctx, arch, state, m.offset, m.memory_index, MemorySize::_16),
 
             // ---- memory.size / memory.grow ----
             Instruction::MemorySize(_) => {
@@ -1180,6 +1168,59 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                     self.ldp(ctx, arch, &reg(SCR), &reg(T0), &mem_post(SP, 16))?;
                 }
                 self.ret(ctx, arch)
+            }
+
+            // True-tail `return_call`: reuse the current frame (epilogue + `b`/`br`),
+            // never `bl`+`ret`. NaiveAbi does not marshal WASM operand-stack args
+            // (same as `Call` above); AllStack marshalling lives in `sysv.rs`.
+            Instruction::ReturnCall(fn_idx) => {
+                let fn_idx_val = *fn_idx;
+                let target = state.shard.as_ref().map(|s| s.call_target(fn_idx_val));
+                // Tear down our frame so LR is the original caller's return address.
+                self.mov(ctx, arch, &reg(SP), &reg(FP))?;
+                self.ldp(ctx, arch, &reg(FP), &reg(LR), &mem_post(SP, 16))?;
+                if state.shard.is_some() {
+                    self.ldp(ctx, arch, &reg(SCR), &reg(T0), &mem_post(SP, 16))?;
+                }
+                match target {
+                    Some(CallTarget::CrossShard { table_slot }) => {
+                        self.ldr(ctx, arch, &reg(T0), &mem_base_disp(SCR, table_slot as i32 * 8))?;
+                        self.br(ctx, arch, &reg(T0))
+                    }
+                    _ => match func_imports.get(fn_idx_val as usize) {
+                        Some((module, name)) => {
+                            let sym = alloc::format!("{module}__{name}");
+                            crate::load_label_addr(
+                                self, ctx, arch, &reg(T0),
+                                AArch64Label::External { name: sym },
+                            )?;
+                            self.br(ctx, arch, &reg(T0))
+                        }
+                        None => {
+                            let idx = fn_idx_val - func_imports.len() as u32;
+                            self.b_label(ctx, arch, AArch64Label::Func { r#fn: idx })
+                        }
+                    },
+                }
+            }
+            Instruction::ReturnCallIndirect { .. } => {
+                // Table index is on the operand stack; load fn ptr then true-tail.
+                self.wasm_pop(ctx, arch, T0)?; // table index
+                crate::load_label_addr(
+                    self, ctx, arch, &reg(T1),
+                    AArch64Label::External { name: "__wasm_table".into() },
+                )?;
+                self.ldr(ctx, arch, &reg(T1), &mem_base_disp(T1, 0))?;
+                let lit = |v: u64| MemArgKind::NoMem(ArgKind::Lit(v));
+                self.lsl(ctx, arch, &reg(T0), &reg(T0), &lit(3))?;
+                self.add(ctx, arch, &reg(T1), &reg(T1), &reg(T0))?;
+                self.ldr(ctx, arch, &reg(T0), &mem_base_disp(T1, 0))?;
+                self.mov(ctx, arch, &reg(SP), &reg(FP))?;
+                self.ldp(ctx, arch, &reg(FP), &reg(LR), &mem_post(SP, 16))?;
+                if state.shard.is_some() {
+                    self.ldp(ctx, arch, &reg(SCR), &reg(T1), &mem_post(SP, 16))?;
+                }
+                self.br(ctx, arch, &reg(T0))
             }
 
             Instruction::Unreachable => {
@@ -1473,5 +1514,51 @@ mod membase_tests {
             })
             .collect();
         assert!(!externs.iter().any(|n| n.starts_with("__wasm_mem")));
+    }
+
+    #[test]
+    fn wasm_mem_symbol_mode_uses_per_index_base() {
+        let externs = load_externals_indexed(MemBase::WasmMemSymbol, 1);
+        assert!(
+            externs.iter().any(|n| n == "__wasm_mem_1"),
+            "expected __wasm_mem_1 reloc, got {externs:?}"
+        );
+    }
+
+    fn load_externals_indexed(mem_base: MemBase, memory_index: u32) -> Vec<String> {
+        let mut out = AArch64Writer::<AArch64Label>::new();
+        let mut ctx = ();
+        let mut state = State { mem_base, ..State::default() };
+        let op = Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index });
+        WriterExt::handle_insn(&mut out, &mut ctx, AArch64Arch::default(), &mut state, &[], &[], &[], &op, 0)
+            .unwrap();
+        let (_bytes, _labels, relocs) = out.into_parts_with_relocs();
+        relocs
+            .into_iter()
+            .filter_map(|r| match r.label {
+                AArch64Label::External { name } => Some(name),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn large_offset_materializes_more_code_than_small() {
+        let mut small = AArch64Writer::<AArch64Label>::new();
+        let mut large = AArch64Writer::<AArch64Label>::new();
+        let mut ctx = ();
+        let mut s1 = State { mem_base: MemBase::Raw, ..State::default() };
+        let mut s2 = State { mem_base: MemBase::Raw, ..State::default() };
+        let op_small = Instruction::I64Load(MemArg { offset: 8, align: 3, memory_index: 0 });
+        let op_large = Instruction::I64Load(MemArg {
+            offset: 1u64 << 32,
+            align: 3,
+            memory_index: 0,
+        });
+        WriterExt::handle_insn(&mut small, &mut ctx, AArch64Arch::default(), &mut s1, &[], &[], &[], &op_small, 0)
+            .unwrap();
+        WriterExt::handle_insn(&mut large, &mut ctx, AArch64Arch::default(), &mut s2, &[], &[], &[], &op_large, 0)
+            .unwrap();
+        assert!(large.into_bytes().len() > small.into_bytes().len());
     }
 }

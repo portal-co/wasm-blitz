@@ -153,6 +153,12 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         self.ldr(ctx, arch, &reg(idx), &mem_base_disp(tbl, 0))
     }
 
+    /// Marshal `arity` operand-stack args and call `target`.
+    ///
+    /// - `is_import`: AAPCS64 host import — first ≤8 params in X0–X7, rest on stack.
+    /// - otherwise (`CallAbi::AllStack` internal): write *all* params to
+    ///   `[SP_call + i*8]` so the callee prologue reads `param i` at
+    ///   `[FP + 16 + scr_extra + i*8]` (mirrors x86-64 AllStack).
     fn sysv_emit_marshalled_call(
         &mut self,
         ctx: &mut Context,
@@ -161,6 +167,7 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         target_reg: Option<Reg>,
         arity: u32,
         results: u32,
+        is_import: bool,
     ) -> Result<(), Self::Error>
     where
         Self: Sized,
@@ -170,63 +177,69 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         let s10 = Reg(10);
         let lit = |v: u64| MemArgKind::NoMem(ArgKind::Lit(v));
 
-        // base = operand stack pointer. Operand values are WASM_SLOT (16) bytes
-        // apart; outgoing AAPCS64 stack args are the standard 8 bytes apart.
         self.mov(ctx, arch, &reg(base), &reg(SP))?;
-        // First min(arity, 8) args -> X0..X7.
-        for i in 0..arity.min(8) {
-            let disp = (arity - 1 - i) as i32 * WASM_SLOT;
-            self.ldr(ctx, arch, &reg(ARG_REGS[i as usize]), &mem_base_disp(base, disp))?;
-        }
-        // Reserve a 16-byte-aligned outgoing region: stack overflow args (i>=8)
-        // plus one slot to preserve `base` across the call.
-        let stack_args = arity.saturating_sub(8);
-        let needed = (stack_args as u64) * 8 + 8;
-        self.sub(ctx, arch, &reg(s9), &reg(base), &lit(needed))?;
-        // Align the call SP down to 16 bytes (AArch64 requires it for sp-relative
-        // accesses and at the callee's frame setup). The binary `and` only encodes
-        // the register form, so materialize the mask in x10 first.
-        self.mov_imm(ctx, arch, &reg(s10), (-16i64) as u64)?;
-        self.and(ctx, arch, &reg(s9), &reg(s9), &reg(s10))?;
-        self.mov(ctx, arch, &reg(SP), &reg(s9))?;
-        // Spill args 8.. : read from the operand stack (16-byte slots), write to
-        // the outgoing AAPCS64 stack at [sp + (i-8)*8].
-        for i in 8..arity {
-            let src = (arity - 1 - i) as i32 * WASM_SLOT;
-            self.ldr(ctx, arch, &reg(s10), &mem_base_disp(base, src))?;
-            let dst = ((i - 8) * 8) as i32;
-            self.str(ctx, arch, &reg(s10), &mem_base_disp(SP, dst))?;
-        }
-        // Save the operand base above the stack args, then call.
-        let base_slot = (stack_args * 8) as i32;
-        self.str(ctx, arch, &reg(base), &mem_base_disp(SP, base_slot))?;
-        // Internal targets resolve in-buffer (ADR); external/import targets need
-        // an ADRP+ADD pair (Mach-O can't relocate a plain ADR). A register target
-        // (call_indirect) is branched to directly.
-        if let Some(r) = target_reg {
-            self.bl(ctx, arch, &reg(r))?;
+        if is_import {
+            // AAPCS64: first 8 integer args in registers; args 9+ on the stack.
+            for i in 0..arity.min(8) {
+                let disp = (arity - 1 - i) as i32 * WASM_SLOT;
+                self.ldr(ctx, arch, &reg(ARG_REGS[i as usize]), &mem_base_disp(base, disp))?;
+            }
+            let stack_args = arity.saturating_sub(8);
+            let needed = (stack_args as u64) * 8 + 8;
+            self.sub(ctx, arch, &reg(s9), &reg(base), &lit(needed))?;
+            self.mov_imm(ctx, arch, &reg(s10), (-16i64) as u64)?;
+            self.and(ctx, arch, &reg(s9), &reg(s9), &reg(s10))?;
+            self.mov(ctx, arch, &reg(SP), &reg(s9))?;
+            for i in 8..arity {
+                let src = (arity - 1 - i) as i32 * WASM_SLOT;
+                self.ldr(ctx, arch, &reg(s10), &mem_base_disp(base, src))?;
+                let dst = ((i - 8) * 8) as i32;
+                self.str(ctx, arch, &reg(s10), &mem_base_disp(SP, dst))?;
+            }
+            let base_slot = (stack_args * 8) as i32;
+            self.str(ctx, arch, &reg(base), &mem_base_disp(SP, base_slot))?;
+            if let Some(r) = target_reg {
+                self.bl(ctx, arch, &reg(r))?;
+            } else {
+                crate::load_label_addr(self, ctx, arch, &reg(s9), target.unwrap())?;
+                self.bl(ctx, arch, &reg(s9))?;
+            }
+            self.ldr(ctx, arch, &reg(base), &mem_base_disp(SP, base_slot))?;
+            self.add(ctx, arch, &reg(SP), &reg(base), &lit(arity as u64 * WASM_SLOT as u64))?;
         } else {
-            crate::load_label_addr(self, ctx, arch, &reg(s9), target.unwrap())?;
-            self.bl(ctx, arch, &reg(s9))?;
+            // Internal AllStack: every param on the outgoing stack.
+            let needed = (arity as u64 + 1) * 8;
+            self.sub(ctx, arch, &reg(s9), &reg(base), &lit(needed))?;
+            self.mov_imm(ctx, arch, &reg(s10), (-16i64) as u64)?;
+            self.and(ctx, arch, &reg(s9), &reg(s9), &reg(s10))?;
+            self.mov(ctx, arch, &reg(SP), &reg(s9))?;
+            for i in 0..arity {
+                let src = (arity - 1 - i) as i32 * WASM_SLOT;
+                self.ldr(ctx, arch, &reg(s10), &mem_base_disp(base, src))?;
+                self.str(ctx, arch, &reg(s10), &mem_base_disp(SP, (i * 8) as i32))?;
+            }
+            let base_slot = (arity * 8) as i32;
+            self.str(ctx, arch, &reg(base), &mem_base_disp(SP, base_slot))?;
+            if let Some(r) = target_reg {
+                self.bl(ctx, arch, &reg(r))?;
+            } else {
+                crate::load_label_addr(self, ctx, arch, &reg(s9), target.unwrap())?;
+                self.bl(ctx, arch, &reg(s9))?;
+            }
+            self.ldr(ctx, arch, &reg(base), &mem_base_disp(SP, base_slot))?;
+            self.add(ctx, arch, &reg(SP), &reg(base), &lit(arity as u64 * WASM_SLOT as u64))?;
         }
-        // Restore base, pop all args (operand sp = base + arity*WASM_SLOT).
-        self.ldr(ctx, arch, &reg(base), &mem_base_disp(SP, base_slot))?;
-        self.add(ctx, arch, &reg(SP), &reg(base), &lit(arity as u64 * WASM_SLOT as u64))?;
-        // Push results from X0/X1.
         if results > 1 { self.wasm_push(ctx, arch, Reg(1))?; }
         if results > 0 { self.wasm_push(ctx, arch, Reg(0))?; }
         Ok(())
     }
 
-    /// Emit a **true tail call** to an internal `target` with `arity` args.
+    /// Emit a **true tail call** to an internal AllStack `target` with `arity` args.
     ///
-    /// The `arity` operand-stack args are loaded into X0–X7 and (for arity>8)
-    /// overwrite our own incoming stack-arg slots (`[FP + 16 + scr_extra +
-    /// (i-8)*8]`); the AAPCS64 epilogue restores the caller's frame (SP, FP, LR)
-    /// and a `b` transfers control so the callee returns straight to our caller.
-    /// The machine stack stays O(1) across a `return_call` chain. Requires
-    /// `arity <= param_count` (checked by the caller) so the overwrite of the
-    /// stack args stays within our incoming-arg region.
+    /// Overwrites our own incoming AllStack arg slots (`[FP + 16 + scr_extra +
+    /// i*8]` for every `i`), restores the caller's frame, and `b`/`br`s so the
+    /// callee returns straight to our caller. O(1) machine stack across
+    /// `return_call` chains. Requires `arity <= param_count`.
     fn sysv_emit_tail_call(
         &mut self,
         ctx: &mut Context,
@@ -241,30 +254,19 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
     {
         let base = Reg(15);
         let s9 = Reg(9);
-        // base = operand stack pointer (operand values are 16-byte slots).
         self.mov(ctx, arch, &reg(base), &reg(SP))?;
-        // First min(arity,8) args -> X0..X7.
-        for i in 0..arity.min(8) {
-            let disp = (arity - 1 - i) as i32 * WASM_SLOT;
-            self.ldr(ctx, arch, &reg(ARG_REGS[i as usize]), &mem_base_disp(base, disp))?;
-        }
-        // Overwrite our incoming stack-arg slots with args 8.. : read from the
-        // operand stack (16-byte slots), write to the incoming AAPCS64 slots
-        // (8-byte) where the callee will read them after we restore SP.
         let scr_extra: i32 = if shard { 16 } else { 0 };
-        for i in 8..arity {
+        for i in 0..arity {
             let src = (arity - 1 - i) as i32 * WASM_SLOT;
             self.ldr(ctx, arch, &reg(s9), &mem_base_disp(base, src))?;
-            let dst = 16 + scr_extra + ((i as i32 - 8) * 8);
+            let dst = 16 + scr_extra + (i as i32 * 8);
             self.str(ctx, arch, &reg(s9), &mem_base_disp(FP, dst))?;
         }
-        // Restore the caller frame (no `ret`): SP, FP, LR.
         self.mov(ctx, arch, &reg(SP), &reg(FP))?;
         self.ldp(ctx, arch, &reg(FP), &reg(LR), &mem_post(SP, 16))?;
         if shard {
             self.ldp(ctx, arch, &reg(SCR), &reg(Reg(9)), &mem_post(SP, 16))?;
         }
-        // Tail-branch (no link); the callee returns directly to our caller.
         if let Some(r) = target_reg {
             self.br(ctx, arch, &reg(r))
         } else {
@@ -364,12 +366,12 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 self.store_local(ctx, arch, Reg(9), *idx as usize)
             }
 
-            // ---- Calls: marshal operand-stack args per AAPCS64 (AllStack mode) ----
+            // ---- Calls: marshal operand-stack args (AllStack mode) ----
             Instruction::Call(idx) if state.call_abi == CallAbi::AllStack => {
                 self.sysv_flush_regalloc(ctx, arch, state)?;
-                let (label, arity, results, _is_import) =
+                let (label, arity, results, is_import) =
                     Self::sysv_call_target(state, func_imports, *idx);
-                self.sysv_emit_marshalled_call(ctx, arch, Some(label), None, arity, results)
+                self.sysv_emit_marshalled_call(ctx, arch, Some(label), None, arity, results, is_import)
             }
             Instruction::ReturnCall(idx) if state.call_abi == CallAbi::AllStack => {
                 self.sysv_flush_regalloc(ctx, arch, state)?;
@@ -379,7 +381,9 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                     // Fake tail: a real call then the AAPCS64 epilogue. Required for
                     // C-ABI imports and a safe fallback when the callee wants more
                     // args than our incoming-arg frame holds.
-                    self.sysv_emit_marshalled_call(ctx, arch, Some(label), None, arity, results)?;
+                    self.sysv_emit_marshalled_call(
+                        ctx, arch, Some(label), None, arity, results, is_import,
+                    )?;
                     self.sysv_emit_epilogue(ctx, arch, state)
                 } else {
                     // True tail call to an internal function: O(1) machine stack for
@@ -395,7 +399,8 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 let arity = state.sig_params.get(ty).copied().unwrap_or(0);
                 let results = state.sig_results.get(ty).copied().unwrap_or(0);
                 self.sysv_load_indirect_target(ctx, arch)?; // index → x14 (fn ptr)
-                self.sysv_emit_marshalled_call(ctx, arch, None, Some(Reg(14)), arity, results)
+                // Indirect targets are always internal guest functions (AllStack).
+                self.sysv_emit_marshalled_call(ctx, arch, None, Some(Reg(14)), arity, results, false)
             }
             Instruction::ReturnCallIndirect { type_index, .. } if state.call_abi == CallAbi::AllStack => {
                 self.sysv_flush_regalloc(ctx, arch, state)?;
@@ -404,7 +409,9 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 let results = state.sig_results.get(ty).copied().unwrap_or(0);
                 self.sysv_load_indirect_target(ctx, arch)?; // index → x14 (fn ptr)
                 if arity as usize > state.param_count {
-                    self.sysv_emit_marshalled_call(ctx, arch, None, Some(Reg(14)), arity, results)?;
+                    self.sysv_emit_marshalled_call(
+                        ctx, arch, None, Some(Reg(14)), arity, results, false,
+                    )?;
                     self.sysv_emit_epilogue(ctx, arch, state)
                 } else {
                     self.sysv_emit_tail_call(ctx, arch, None, Some(Reg(14)), arity, state.shard.is_some())
@@ -491,22 +498,32 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                         .map_err(Err::from)?;
                 }
 
-                for i in 0..data.num_params.min(8) {
-                    let disp = -((i as i32 + 1) * 8);
-                    self.str(ctx, arch, &reg(ARG_REGS[i]), &mem_base_disp(FP, disp))
-                        .map_err(Err::from)?;
-                }
-                // Params 9+ (index >= 8) are passed by the caller on the stack,
-                // above the saved FP/LR pair (and saved SCR/x9 pair if sharding).
-                // With `mov FP, SP` taken after those stores, incoming arg `i` is
-                // at [FP + 16 + scr_extra + (i-8)*8]. Copy each into its local
-                // slot so functions with >8 params receive all their arguments.
                 let scr_extra: i32 = if state.shard.is_some() { 16 } else { 0 };
-                for i in 8..data.num_params {
-                    let src_disp = 16 + scr_extra + ((i as i32 - 8) * 8);
-                    self.ldr(ctx, arch, &reg(Reg(9)), &mem_base_disp(FP, src_disp))
-                        .map_err(Err::from)?;
-                    self.store_local(ctx, arch, Reg(9), i).map_err(Err::from)?;
+                match state.call_abi {
+                    CallAbi::RegSysv => {
+                        for i in 0..data.num_params.min(8) {
+                            let disp = -((i as i32 + 1) * 8);
+                            self.str(ctx, arch, &reg(ARG_REGS[i]), &mem_base_disp(FP, disp))
+                                .map_err(Err::from)?;
+                        }
+                        // Params 9+ arrive on the stack above saved FP/LR (+ SCR).
+                        for i in 8..data.num_params {
+                            let src_disp = 16 + scr_extra + ((i as i32 - 8) * 8);
+                            self.ldr(ctx, arch, &reg(Reg(9)), &mem_base_disp(FP, src_disp))
+                                .map_err(Err::from)?;
+                            self.store_local(ctx, arch, Reg(9), i).map_err(Err::from)?;
+                        }
+                    }
+                    CallAbi::AllStack => {
+                        // All params arrive on the stack; param `i` at
+                        // [FP + 16 + scr_extra + i*8].
+                        for i in 0..data.num_params {
+                            let src_disp = 16 + scr_extra + (i as i32 * 8);
+                            self.ldr(ctx, arch, &reg(Reg(9)), &mem_base_disp(FP, src_disp))
+                                .map_err(Err::from)?;
+                            self.store_local(ctx, arch, Reg(9), i).map_err(Err::from)?;
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -591,11 +608,16 @@ mod sysv_manyarg_tests {
     use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
 
     /// Drive `sysv_emit_marshalled_call` and return (code bytes, target relocs).
-    fn marshal(arity: u32, results: u32, target: AArch64Label) -> (Vec<u8>, Vec<AArch64Label>) {
+    fn marshal(
+        arity: u32,
+        results: u32,
+        target: AArch64Label,
+        is_import: bool,
+    ) -> (Vec<u8>, Vec<AArch64Label>) {
         let mut w = AArch64Writer::<AArch64Label>::new();
         let mut ctx = ();
         SysVWriterExt::sysv_emit_marshalled_call(
-            &mut w, &mut ctx, AArch64Arch::default(), Some(target), None, arity, results,
+            &mut w, &mut ctx, AArch64Arch::default(), Some(target), None, arity, results, is_import,
         )
         .unwrap();
         let (bytes, _labels, relocs) = w.into_parts_with_relocs();
@@ -604,26 +626,26 @@ mod sysv_manyarg_tests {
 
     #[test]
     fn marshalled_call_targets_label_and_grows_with_arity() {
-        let (small, rel) = marshal(4, 1, AArch64Label::Indexed { idx: 0x8000_0000 });
-        let (big, _) = marshal(20, 1, AArch64Label::Indexed { idx: 0x8000_0000 });
+        let (small, rel) = marshal(4, 1, AArch64Label::Indexed { idx: 0x8000_0000 }, false);
+        let (big, _) = marshal(20, 1, AArch64Label::Indexed { idx: 0x8000_0000 }, false);
         // Exactly one relocation — the call branch — pointing at the requested target.
         assert_eq!(rel.len(), 1);
         assert!(matches!(&rel[0], AArch64Label::Indexed { idx } if *idx == 0x8000_0000));
-        // >8 args spill to the stack, so more code is emitted than for 4 args.
+        // AllStack internals put every arg on the stack — more arity → more code.
         assert!(big.len() > small.len());
     }
 
     #[test]
-    fn no_stack_spill_within_eight_args() {
-        // 8 args fit entirely in X0..X7; 12 args spill 4 → strictly more code.
-        let (eight, _) = marshal(8, 0, AArch64Label::External { name: "libc__f".into() });
-        let (twelve, _) = marshal(12, 0, AArch64Label::External { name: "libc__f".into() });
+    fn import_spill_grows_past_eight_args() {
+        // Import AAPCS64: 8 args fit in X0..X7; 12 args spill 4 → strictly more code.
+        let (eight, _) = marshal(8, 0, AArch64Label::External { name: "libc__f".into() }, true);
+        let (twelve, _) = marshal(12, 0, AArch64Label::External { name: "libc__f".into() }, true);
         assert!(twelve.len() > eight.len());
     }
 
     #[test]
     fn import_target_emits_external_reloc() {
-        let (_b, rel) = marshal(3, 1, AArch64Label::External { name: "env__write".into() });
+        let (_b, rel) = marshal(3, 1, AArch64Label::External { name: "env__write".into() }, true);
         assert!(rel
             .iter()
             .any(|l| matches!(l, AArch64Label::External { name } if name.as_str() == "env__write")));

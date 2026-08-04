@@ -1470,15 +1470,63 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
             Instruction::Unreachable => {
                 self.hlt(ctx, arch)?;
             }
-            // `return_call $f` ≡ `call $f; return`: identical observable behavior
-            // (same args in, $f's results returned to our caller). This is a
-            // correct lowering that uses native stack per call; true tail-call
-            // optimization (no stack growth) is a follow-up. speet's per-instruction
-            // chains rely on this, so without it no recompiled guest can run.
+            // True-tail `return_call`: tear down the NaiveAbi CTX frame then
+            // `jmp` to the callee (never `call`+`ret`, which nests a frame per
+            // hop — speet emits long `return_call` chains that must stay O(1)).
+            // Arg marshalling matches `Call` above (none on the NaiveAbi path;
+            // AllStack marshalling lives in `sysv.rs`).
             Instruction::ReturnCall(function_index) => {
-                let call = Instruction::Call(*function_index);
-                self._handle_op(ctx, arch, state, func_imports, sigs, tags, &call, target)?;
-                self._handle_op(ctx, arch, state, func_imports, sigs, tags, &Instruction::Return, target)?;
+                let fn_idx = *function_index;
+                // Resolve callee into Reg(3) (Return teardown clobbers 0/1/2).
+                let call_target = state.shard.as_ref().map(|s| s.call_target(fn_idx));
+                match call_target {
+                    Some(CallTarget::CrossShard { table_slot }) => {
+                        self.mov(ctx, arch, &Reg(3), &MemArgKind::Mem {
+                            base: SCR,
+                            offset: None,
+                            disp: table_slot.wrapping_mul(8),
+                            size: MemorySize::_64,
+                            reg_class: RegisterClass::Gpr,
+                            segment: Default::default(),
+                        })?;
+                    }
+                    _ => match func_imports.get(fn_idx as usize) {
+                        Some((module, name)) => {
+                            let sym = alloc::format!("{module}__{name}");
+                            self.lea_label(ctx, arch, &Reg(3), X64Label::External { name: sym })?;
+                        }
+                        None => {
+                            let idx = fn_idx - func_imports.len() as u32;
+                            self.lea_label(ctx, arch, &Reg(3), X64Label::Func { r#fn: idx })?;
+                        }
+                    },
+                }
+                // Frame teardown (same shape as `Return`, without result shuffle).
+                self.mov(ctx, arch, &Reg(1), &RSP)?;
+                self.mov(ctx, arch, &Reg(0), &Reg::CTX)?;
+                self.lea(
+                    ctx,
+                    arch,
+                    &Reg(0),
+                    &MemArgKind::Mem {
+                        base: Reg(0),
+                        offset: None,
+                        disp: 0u32.wrapping_sub(8),
+                        size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
+                    },
+                )?;
+                self.mov(ctx, arch, &RSP, &Reg(0))?;
+                self.pop(ctx, arch, &Reg(0))?;
+                self.xchg(ctx, arch, &Reg(0), &Reg::CTX)?;
+                self.pop(ctx, arch, &Reg(0))?;
+                self.xchg(ctx, arch, &Reg(0), &Reg::CTX)?;
+                self.pop(ctx, arch, &Reg(0))?;
+                // Reg(0) holds the original return address; leave it for the
+                // callee's `ret`, then jump (no link).
+                self.push(ctx, arch, &Reg(0))?;
+                self.jmp(ctx, arch, &Reg(3))?;
             }
             // ---- F64 arithmetic (XMM0 op= XMM1) ----
             Instruction::F64Add => self.fp_binop(ctx, arch, false, |w, c, a, d, s| w.fadd(c, a, &d, &s))?,

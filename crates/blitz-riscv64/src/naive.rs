@@ -13,7 +13,7 @@ macro_rules! trace {
 }
 
 use crate::RiscvLabel;
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, vec::Vec};
 use portal_solutions_asm_riscv64::ConditionCode;
 use portal_solutions_asm_riscv64::RiscV64Arch;
 use portal_solutions_asm_riscv64::out::Writer;
@@ -37,6 +37,28 @@ use portal_solutions_asm_riscv64::regalloc as riscv_regalloc;
 /// Callee-saved; holds the cross-shard function-pointer table pointer when
 /// sharding is active. See `docs/second-context-register.md`.
 pub const SCR: Reg = Reg(26);
+
+/// Host address calculation for WASM linear-memory accesses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MemBase {
+    #[default]
+    Raw,
+    WasmMemSymbol,
+}
+
+impl MemBase {
+    pub fn is_zero(self) -> bool {
+        matches!(self, Self::Raw)
+    }
+}
+
+/// Inter-function convention for the SysV entry path.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CallAbi {
+    #[default]
+    RegSysv,
+    AllStack,
+}
 
 /// Sharding state for RISC-V 64 functions — same design as x86-64/AArch64.
 #[derive(Clone, Copy)]
@@ -74,6 +96,8 @@ impl<'a> NaiveShardState<'a> {
 pub struct State<'a> {
     pub label_index: usize,
     pub local_count: usize,
+    /// Number of incoming parameters, used to bound true tail-call overwrites.
+    pub param_count: usize,
     pub num_returns: usize,
     pub control_depth: usize,
     pub if_stack: Vec<Endable>,
@@ -104,6 +128,29 @@ pub struct State<'a> {
     /// Ordinal index of the next dispatched instruction (0 = the first real
     /// WASM operator after locals), used to look up `probe_plan` entries.
     pub op_index: usize,
+    /// Default linear-memory host base policy.
+    pub mem_base: MemBase,
+    /// Per-memory-index overrides.
+    pub mem_base_by_index: BTreeMap<u32, MemBase>,
+    /// SysV internal-call convention.
+    pub call_abi: CallAbi,
+    /// Number of imported functions in the WASM index space.
+    pub n_imports: u32,
+    /// Function parameter/result arities, imports first.
+    pub call_params: Vec<u32>,
+    pub call_results: Vec<u32>,
+    /// Type parameter/result arities for indirect calls.
+    pub sig_params: Vec<u32>,
+    pub sig_results: Vec<u32>,
+}
+
+impl State<'_> {
+    pub fn mem_base_for(&self, memory_index: u32) -> MemBase {
+        self.mem_base_by_index
+            .get(&memory_index)
+            .copied()
+            .unwrap_or(self.mem_base)
+    }
 }
 
 /// Register frames for the RISC-V regalloc, sized for 32 int/32 float regs.
@@ -153,6 +200,61 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
             )?;
         }
         Ok(())
+    }
+
+    /// Apply a linear-memory base and a full-width WASM memarg offset to `addr`.
+    /// RISC-V load/store displacements are signed 12-bit, so larger offsets are
+    /// materialized in the address register instead of truncating the u64 offset.
+    fn apply_mem_base(
+        &mut self,
+        ctx: &mut Context,
+        arch: RiscV64Arch,
+        base: MemBase,
+        addr: Reg,
+        scratch: Reg,
+        memory_index: u32,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        if base.is_zero() {
+            return Ok(());
+        }
+        // addr := (uint32_t)addr.  RV64 has no dedicated zext.w in WriterCore,
+        // so use the canonical pair of variable shifts.
+        self.li(ctx, arch, &scratch, 32)?;
+        self.sll(ctx, arch, &addr, &addr, &scratch)?;
+        self.srl(ctx, arch, &addr, &addr, &scratch)?;
+        let sym = if memory_index == 0 {
+            "__wasm_mem".into()
+        } else {
+            alloc::format!("__wasm_mem_{memory_index}")
+        };
+        self.la_label(ctx, arch, &scratch, RiscvLabel::External { name: sym })?;
+        self.ld(ctx, arch, &scratch, &MemArgKind::Mem {
+            base: ArgKind::Reg { reg: scratch, size: MemorySize::_64 },
+            offset: None, disp: 0, size: MemorySize::_64, reg_class: RegisterClass::Gpr,
+        })?;
+        self.add(ctx, arch, &addr, &addr, &scratch)
+    }
+
+    fn mem_add_offset(
+        &mut self,
+        ctx: &mut Context,
+        arch: RiscV64Arch,
+        addr: Reg,
+        scratch: Reg,
+        offset: u64,
+    ) -> Result<i32, Self::Error>
+    where
+        Self: Sized,
+    {
+        if offset <= 2047 {
+            return Ok(offset as i32);
+        }
+        self.li(ctx, arch, &scratch, offset)?;
+        self.add(ctx, arch, &addr, &addr, &scratch)?;
+        Ok(0)
     }
 
     fn br(
@@ -326,12 +428,14 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 };
                 self.sd(ctx, arch, &tmp, &spmem2)?;
             }
-            Instruction::I64Load(memarg) => {
-                let disp = memarg.offset as i32;
+            Instruction::I64Load(memarg) | Instruction::F64Load(memarg) => {
+                let base = state.mem_base_for(memarg.memory_index);
                 let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
                 portal_solutions_blitz_codegen::regalloc_frontend::load(
                     &mut rw, riscv_regalloc::RegKind::Int,
                     |rw, dest, addr| {
+                        rw.writer.apply_mem_base(rw.ctx, rw.arch, base, Reg(addr), Reg(dest), memarg.memory_index)?;
+                        let disp = rw.writer.mem_add_offset(rw.ctx, rw.arch, Reg(addr), Reg(dest), memarg.offset)?;
                         let mem = MemArgKind::Mem {
                             base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 },
                             offset: None, disp, size: MemorySize::_64, reg_class: RegisterClass::Gpr,
@@ -340,12 +444,14 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     },
                 )?;
             }
-            Instruction::I32Load(memarg) => {
-                let disp = memarg.offset as i32;
+            Instruction::I32Load(memarg) | Instruction::F32Load(memarg) => {
+                let base = state.mem_base_for(memarg.memory_index);
                 let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
                 portal_solutions_blitz_codegen::regalloc_frontend::load(
                     &mut rw, riscv_regalloc::RegKind::Int,
                     |rw, dest, addr| {
+                        rw.writer.apply_mem_base(rw.ctx, rw.arch, base, Reg(addr), Reg(dest), memarg.memory_index)?;
+                        let disp = rw.writer.mem_add_offset(rw.ctx, rw.arch, Reg(addr), Reg(dest), memarg.offset)?;
                         let mem = MemArgKind::Mem {
                             base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 },
                             offset: None, disp, size: MemorySize::_32, reg_class: RegisterClass::Gpr,
@@ -354,12 +460,14 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     },
                 )?;
             }
-            Instruction::I32Store(memarg) => {
-                let disp = memarg.offset as i32;
+            Instruction::I32Store(memarg) | Instruction::I64Store32(memarg) | Instruction::F32Store(memarg) => {
+                let base = state.mem_base_for(memarg.memory_index);
                 let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
                 portal_solutions_blitz_codegen::regalloc_frontend::store(
                     &mut rw, riscv_regalloc::RegKind::Int,
                     |rw, val, addr| {
+                        rw.writer.apply_mem_base(rw.ctx, rw.arch, base, Reg(addr), Reg(5), memarg.memory_index)?;
+                        let disp = rw.writer.mem_add_offset(rw.ctx, rw.arch, Reg(addr), Reg(5), memarg.offset)?;
                         let mem = MemArgKind::Mem {
                             base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 },
                             offset: None, disp, size: MemorySize::_32, reg_class: RegisterClass::Gpr,
@@ -368,12 +476,14 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     },
                 )?;
             }
-            Instruction::I64Store(memarg) => {
-                let disp = memarg.offset as i32;
+            Instruction::I64Store(memarg) | Instruction::F64Store(memarg) => {
+                let base = state.mem_base_for(memarg.memory_index);
                 let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
                 portal_solutions_blitz_codegen::regalloc_frontend::store(
                     &mut rw, riscv_regalloc::RegKind::Int,
                     |rw, val, addr| {
+                        rw.writer.apply_mem_base(rw.ctx, rw.arch, base, Reg(addr), Reg(5), memarg.memory_index)?;
+                        let disp = rw.writer.mem_add_offset(rw.ctx, rw.arch, Reg(addr), Reg(5), memarg.offset)?;
                         let mem = MemArgKind::Mem {
                             base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 },
                             offset: None, disp, size: MemorySize::_64, reg_class: RegisterClass::Gpr,
@@ -381,6 +491,64 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         rw.writer.sd(rw.ctx, rw.arch, &Reg(val), &mem)
                     },
                 )?;
+            }
+            Instruction::I32Load8S(m) | Instruction::I64Load8S(m) => {
+                let base = state.mem_base_for(m.memory_index);
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::load(&mut rw, riscv_regalloc::RegKind::Int, |rw, dst, addr| {
+                    rw.writer.apply_mem_base(rw.ctx, rw.arch, base, Reg(addr), Reg(dst), m.memory_index)?;
+                    let disp = rw.writer.mem_add_offset(rw.ctx, rw.arch, Reg(addr), Reg(dst), m.offset)?;
+                    rw.writer.lb(rw.ctx, rw.arch, &Reg(dst), &MemArgKind::Mem { base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 }, offset: None, disp, size: MemorySize::_8, reg_class: RegisterClass::Gpr })
+                })?;
+            }
+            Instruction::I32Load16S(m) | Instruction::I64Load16S(m) => {
+                let base = state.mem_base_for(m.memory_index);
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::load(&mut rw, riscv_regalloc::RegKind::Int, |rw, dst, addr| {
+                    rw.writer.apply_mem_base(rw.ctx, rw.arch, base, Reg(addr), Reg(dst), m.memory_index)?;
+                    let disp = rw.writer.mem_add_offset(rw.ctx, rw.arch, Reg(addr), Reg(dst), m.offset)?;
+                    rw.writer.lh(rw.ctx, rw.arch, &Reg(dst), &MemArgKind::Mem { base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 }, offset: None, disp, size: MemorySize::_16, reg_class: RegisterClass::Gpr })
+                })?;
+            }
+            Instruction::I32Load8U(m) | Instruction::I64Load8U(m) | Instruction::I32Load16U(m) | Instruction::I64Load16U(m) | Instruction::I64Load32U(m) => {
+                let (width, shift) = match op {
+                    Instruction::I32Load8U(_) | Instruction::I64Load8U(_) => (MemorySize::_8, 56),
+                    Instruction::I32Load16U(_) | Instruction::I64Load16U(_) => (MemorySize::_16, 48),
+                    _ => (MemorySize::_32, 32),
+                };
+                let base = state.mem_base_for(m.memory_index);
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::load(&mut rw, riscv_regalloc::RegKind::Int, |rw, dst, addr| {
+                    rw.writer.apply_mem_base(rw.ctx, rw.arch, base, Reg(addr), Reg(dst), m.memory_index)?;
+                    let disp = rw.writer.mem_add_offset(rw.ctx, rw.arch, Reg(addr), Reg(dst), m.offset)?;
+                    let mem = MemArgKind::Mem { base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 }, offset: None, disp, size: width, reg_class: RegisterClass::Gpr };
+                    if width == MemorySize::_8 { rw.writer.lb(rw.ctx, rw.arch, &Reg(dst), &mem)?; }
+                    else if width == MemorySize::_16 { rw.writer.lh(rw.ctx, rw.arch, &Reg(dst), &mem)?; }
+                    else { rw.writer.lw(rw.ctx, rw.arch, &Reg(dst), &mem)?; }
+                    rw.writer.li(rw.ctx, rw.arch, &Reg(5), shift)?;
+                    rw.writer.sll(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(5))?;
+                    rw.writer.srl(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(5))
+                })?;
+            }
+            Instruction::I64Load32S(m) => {
+                let base = state.mem_base_for(m.memory_index);
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::load(&mut rw, riscv_regalloc::RegKind::Int, |rw, dst, addr| {
+                    rw.writer.apply_mem_base(rw.ctx, rw.arch, base, Reg(addr), Reg(dst), m.memory_index)?;
+                    let disp = rw.writer.mem_add_offset(rw.ctx, rw.arch, Reg(addr), Reg(dst), m.offset)?;
+                    rw.writer.lw(rw.ctx, rw.arch, &Reg(dst), &MemArgKind::Mem { base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 }, offset: None, disp, size: MemorySize::_32, reg_class: RegisterClass::Gpr })
+                })?;
+            }
+            Instruction::I32Store8(m) | Instruction::I64Store8(m) | Instruction::I32Store16(m) | Instruction::I64Store16(m) => {
+                let width = match op { Instruction::I32Store8(_) | Instruction::I64Store8(_) => MemorySize::_8, _ => MemorySize::_16 };
+                let base = state.mem_base_for(m.memory_index);
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::store(&mut rw, riscv_regalloc::RegKind::Int, |rw, val, addr| {
+                    rw.writer.apply_mem_base(rw.ctx, rw.arch, base, Reg(addr), Reg(5), m.memory_index)?;
+                    let disp = rw.writer.mem_add_offset(rw.ctx, rw.arch, Reg(addr), Reg(5), m.offset)?;
+                    let mem = MemArgKind::Mem { base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 }, offset: None, disp, size: width, reg_class: RegisterClass::Gpr };
+                    if width == MemorySize::_8 { rw.writer.sb(rw.ctx, rw.arch, &Reg(val), &mem) } else { rw.writer.sh(rw.ctx, rw.arch, &Reg(val), &mem) }
+                })?;
             }
             // I32Add is the same as I64Add at the regalloc/register level — RISC-V add
             // operates on 64-bit registers; the lower 32 bits give the correct i32 result.
@@ -655,20 +823,22 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 let (ta, cmds_a) = state.regalloc.as_mut().unwrap().pop(riscv_regalloc::RegKind::Int);
                 emit_cmds(self, ctx, arch, cmds_a)?;
                 let ra = Reg(ta.reg);
-                // seqz rd, rs = sltiu rd, rs, 1
-                self.li(ctx, arch, &ra, 0)?; // placeholder: seqz via sub trick
-                // Actually emit: sub ra, ra, ra... no. Use: sltiu ra, ra, 1
-                // We need a different approach: use dedicated Eqz implementation
-                // For now, we cannot emit seqz directly — use available ops:
-                // seqz = (val == 0) → sltiu ra, val, 1 (not available as method)
-                // Fallback: use branching
-                // Actually just emit: xori ra, ra, -1 is wrong too
-                // Use: li tmp, 0; seq rd, ra, tmp
-                // ... using available eq check
+                // `seqz` is the RISC-V pseudo-op `sltiu rd, rs, 1`; WriterCore
+                // has no immediate SLT form, so emit its equivalent branch form
+                // without destroying the input before the comparison.
+                let i = state.label_index;
+                state.label_index += 2;
+                let yes = RiscvLabel::Indexed { idx: i };
+                let done = RiscvLabel::Indexed { idx: i + 1 };
+                self.bcond_label(ctx, arch, ConditionCode::EQ, &ra, &Reg(0), yes.clone())?;
+                self.li(ctx, arch, &ra, 0)?;
+                self.jal_label(ctx, arch, &Reg(0), done.clone())?;
+                self.set_label(ctx, arch, yes)?;
+                self.li(ctx, arch, &ra, 1)?;
+                self.set_label(ctx, arch, done)?;
                 let it = state.regalloc.as_mut().unwrap()
                     .push_existing(regalloc::Target { reg: ta.reg, kind: ta.kind });
                 emit_cmds(self, ctx, arch, it)?;
-                // TODO: proper seqz encoding
             }
             Instruction::I32WrapI64 => {
                 // No-op at the register level; lower 32 bits are already the i32 value.
@@ -942,6 +1112,27 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 let ra = Reg(1);
                 self.jal_label(ctx, arch, &ra, RiscvLabel::External { name: "__wasm_memory_grow".into() })?;
             }
+            // `__wasm_memory_init_copy(dest_offset, seg_base, src_offset, len)`
+            // uses the normal RISC-V psABI, unlike the internal WASM grow helper.
+            Instruction::MemoryInit { data_index, .. } => {
+                if let Some(ralloc) = state.regalloc.as_mut() {
+                    let it = ralloc.flush();
+                    emit_cmds(self, ctx, arch, it)?;
+                }
+                pop(self, ctx, arch, &Reg(13))?; // a3 = len
+                pop(self, ctx, arch, &Reg(12))?; // a2 = source offset
+                pop(self, ctx, arch, &Reg(10))?; // a0 = destination offset
+                self.la_label(ctx, arch, &Reg(11), RiscvLabel::External {
+                    name: alloc::format!("__wasm_data_seg_{data_index}"),
+                })?;
+                self.la_label(ctx, arch, &Reg(5), RiscvLabel::External {
+                    name: "__wasm_memory_init_copy".into(),
+                })?;
+                self.jalr(ctx, arch, &Reg(1), &Reg(5), 0)?;
+            }
+            // AOT data segments are immutable symbols; dropping their runtime
+            // liveness is intentionally a no-op, like the other backends.
+            Instruction::DataDrop(_) => {}
             // ---- exception handling -----------------------------------------
             Instruction::Throw(tag_index) => {
                 let arity = if (*tag_index as usize) < tags.len() {
@@ -1026,6 +1217,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 state.local_count = data.num_params;
                 state.num_returns = data.num_returns;
                 state.control_depth = data.control_depth;
+                state.regalloc = None;
                 state.probes = data.probes;
                 state.next_probe_id = 1;
 

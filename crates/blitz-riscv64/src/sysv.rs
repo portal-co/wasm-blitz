@@ -33,6 +33,9 @@ use crate::RiscvLabel;
 use crate::codegen::ProbeBase;
 use crate::naive::{State, WriterExt as NaiveExt, flush_regalloc, push, pop, pop_regalloc_to, SCR};
 
+/// Public SysV-facing state and policy names, matching the other native backends.
+pub use crate::naive::{CallAbi, MemBase, State as SysVState};
+
 /// Blitz register number of the RISC-V psABI **probe-base virtual parameter**
 /// (`t2` / x7).
 ///
@@ -55,6 +58,10 @@ const FP: Reg = Reg(8);   // s0
 const SP: Reg = Reg(2);
 // Return address
 const RA: Reg = Reg(1);
+const T0: Reg = Reg(5);
+const T1: Reg = Reg(6);
+const T2: Reg = Reg(7);
+const T3: Reg = Reg(28);
 
 fn mem64(base: Reg, disp: i32) -> MemArgKind {
     MemArgKind::Mem {
@@ -68,6 +75,103 @@ fn mem64(base: Reg, disp: i32) -> MemArgKind {
 
 /// Extension trait for generating RISC-V psABI-compatible functions.
 pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context> {
+
+    fn sysv_call_target(
+        state: &State<'_>,
+        func_imports: &[(&str, &str)],
+        idx: u32,
+    ) -> (RiscvLabel, u32, u32, bool) {
+        let wi = idx as usize;
+        let is_import = idx < state.n_imports;
+        let arity = state.call_params.get(wi).copied().unwrap_or(0);
+        let results = state.call_results.get(wi).copied().unwrap_or(0);
+        let label = if is_import {
+            let (m, n) = func_imports[wi];
+            RiscvLabel::External { name: alloc::format!("{m}__{n}") }
+        } else {
+            RiscvLabel::Indexed { idx: (idx - state.n_imports) as usize | (1 << 28) }
+        };
+        (label, arity, results, is_import)
+    }
+
+    /// Pop the table index and resolve `__wasm_table[index]` into t0.
+    fn sysv_load_indirect_target(&mut self, ctx: &mut Context, arch: RiscV64Arch) -> Result<(), Self::Error>
+    where Self: Sized {
+        pop(self, ctx, arch, &T0)?;
+        self.la_label(ctx, arch, &T1, RiscvLabel::External { name: "__wasm_table".into() })?;
+        self.li(ctx, arch, &T2, 3)?;
+        self.sll(ctx, arch, &T0, &T0, &T2)?;
+        self.add(ctx, arch, &T1, &T1, &T0)?;
+        self.ld(ctx, arch, &T0, &mem64(T1, 0))
+    }
+
+    /// Marshal a normal call. Internal targets receive every parameter in an
+    /// AllStack outgoing area; imports retain the RISC-V psABI register split.
+    fn sysv_emit_marshalled_call(
+        &mut self, ctx: &mut Context, arch: RiscV64Arch,
+        target: Option<RiscvLabel>, target_reg: Option<Reg>,
+        arity: u32, results: u32, is_import: bool,
+    ) -> Result<(), Self::Error>
+    where Self: Sized {
+        self.mv(ctx, arch, &T3, &SP)?;
+        let stack_args = if is_import { arity.saturating_sub(8) } else { arity };
+        // One additional slot preserves the operand base across the call. Round
+        // to 16 bytes so host imports retain psABI stack alignment.
+        let bytes = (((stack_args + 1) * 8 + 15) & !15) as i32;
+        if is_import {
+            for i in 0..arity.min(8) {
+                self.ld(ctx, arch, &ARG_REGS[i as usize], &mem64(T3, ((arity - 1 - i) * 8) as i32))?;
+            }
+        }
+        self.addi(ctx, arch, &SP, &SP, -bytes)?;
+        for i in (if is_import { 8 } else { 0 })..arity {
+            self.ld(ctx, arch, &T1, &mem64(T3, ((arity - 1 - i) * 8) as i32))?;
+            let dst = if is_import { (i - 8) * 8 } else { i * 8 };
+            self.sd(ctx, arch, &T1, &mem64(SP, dst as i32))?;
+        }
+        self.sd(ctx, arch, &T3, &mem64(SP, (stack_args * 8) as i32))?;
+        if let Some(reg) = target_reg {
+            self.jalr(ctx, arch, &RA, &reg, 0)?;
+        } else {
+            self.jal_label(ctx, arch, &RA, target.unwrap())?;
+        }
+        self.ld(ctx, arch, &T3, &mem64(SP, (stack_args * 8) as i32))?;
+        // Discard exactly the consumed operand args; padding is discarded too.
+        self.addi(ctx, arch, &SP, &T3, (arity * 8) as i32)?;
+        if results > 1 { push(self, ctx, arch, A1)?; }
+        if results > 0 { push(self, ctx, arch, A0)?; }
+        Ok(())
+    }
+
+    /// Emit a genuine internal AllStack tail call. The current prologue sets FP
+    /// to the incoming caller SP, therefore incoming parameters start at FP+0.
+    fn sysv_emit_tail_call(
+        &mut self, ctx: &mut Context, arch: RiscV64Arch,
+        target: Option<RiscvLabel>, target_reg: Option<Reg>, arity: u32,
+        frame_sz: i32, shard: bool,
+    ) -> Result<(), Self::Error>
+    where Self: Sized {
+        self.mv(ctx, arch, &T3, &SP)?;
+        for i in 0..arity {
+            self.ld(ctx, arch, &T1, &mem64(T3, ((arity - 1 - i) * 8) as i32))?;
+            self.sd(ctx, arch, &T1, &mem64(FP, (i * 8) as i32))?;
+        }
+        // Preserve the incoming SP (our FP) so the callee's prologue sees args
+        // at [SP+i*8]. Restore RA/old-FP from our frame, then SP := incoming.
+        self.mv(ctx, arch, &T2, &FP)?;
+        self.addi(ctx, arch, &SP, &FP, -frame_sz)?;
+        self.ld(ctx, arch, &RA, &mem64(SP, 0))?;
+        self.ld(ctx, arch, &FP, &mem64(SP, 8))?;
+        if shard {
+            self.ld(ctx, arch, &SCR, &mem64(SP, 24))?;
+        }
+        self.mv(ctx, arch, &SP, &T2)?;
+        if let Some(reg) = target_reg {
+            self.jalr(ctx, arch, &Reg(0), &reg, 0)
+        } else {
+            self.jal_label(ctx, arch, &Reg(0), target.unwrap())
+        }
+    }
 
     /// Load local N from the FP-relative frame into `dest`.
     fn sysv_load_local(&mut self, ctx: &mut Context, arch: RiscV64Arch, dest: Reg, n: usize)
@@ -106,6 +210,49 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
         Self: Sized,
     {
         match op {
+            Instruction::Call(idx) if state.call_abi == CallAbi::AllStack => {
+                flush_regalloc(self, ctx, arch, state)?;
+                let (label, arity, results, is_import) =
+                    Self::sysv_call_target(state, func_imports, *idx);
+                self.sysv_emit_marshalled_call(ctx, arch, Some(label), None, arity, results, is_import)
+            }
+            Instruction::ReturnCall(idx) if state.call_abi == CallAbi::AllStack => {
+                flush_regalloc(self, ctx, arch, state)?;
+                let (label, arity, results, is_import) =
+                    Self::sysv_call_target(state, func_imports, *idx);
+                if is_import || arity as usize > state.param_count {
+                    // Host-ABI import / oversized arity: marshalled call then
+                    // epilogue (not nested return_call→call→return for internals).
+                    self.sysv_emit_marshalled_call(
+                        ctx, arch, Some(label), None, arity, results, is_import,
+                    )?;
+                    self.sysv_handle_insn(
+                        ctx, arch, state, func_imports, &Instruction::Return, rewriter, target,
+                    )
+                } else {
+                    self.sysv_emit_tail_call(
+                        ctx, arch, Some(label), None, arity, state.sysv_frame_sz, state.shard.is_some(),
+                    )
+                }
+            }
+            Instruction::CallIndirect { type_index, .. } if state.call_abi == CallAbi::AllStack => {
+                flush_regalloc(self, ctx, arch, state)?;
+                let ty = *type_index as usize;
+                let arity = state.sig_params.get(ty).copied().unwrap_or(0);
+                let results = state.sig_results.get(ty).copied().unwrap_or(0);
+                self.sysv_load_indirect_target(ctx, arch)?;
+                self.sysv_emit_marshalled_call(ctx, arch, None, Some(T0), arity, results, false)
+            }
+            Instruction::ReturnCallIndirect { type_index, .. } if state.call_abi == CallAbi::AllStack => {
+                flush_regalloc(self, ctx, arch, state)?;
+                let ty = *type_index as usize;
+                let arity = state.sig_params.get(ty).copied().unwrap_or(0);
+                assert!(arity as usize <= state.param_count, "tail callee arity exceeds incoming AllStack area");
+                self.sysv_load_indirect_target(ctx, arch)?;
+                self.sysv_emit_tail_call(
+                    ctx, arch, None, Some(T0), arity, state.sysv_frame_sz, state.shard.is_some(),
+                )
+            }
             // Local access: delegate to naive which uses regalloc with [FP-(n+1)*8] offsets.
             // SysV frame places locals at the same offsets, so this is correct.
             Instruction::LocalGet(_) | Instruction::LocalSet(_) | Instruction::LocalTee(_) => {
@@ -146,13 +293,15 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                     pop_regalloc_to(self, ctx, arch, state, A0)?;
                 }
                 flush_regalloc(self, ctx, arch, state)?;
-                // Restore: RA at [FP - frame_sz + 0], old-FP at [FP - frame_sz + 8]
+                // Restore RA/old-FP from the frame, then SP := incoming SP (FP).
+                self.mv(ctx, arch, &T2, &FP)?;
                 self.addi(ctx, arch, &SP, &FP, -state.sysv_frame_sz)?;
                 self.ld(ctx, arch, &RA, &mem64(SP, 0))?;
                 self.ld(ctx, arch, &FP, &mem64(SP, 8))?;
                 if state.shard.is_some() {
                     self.ld(ctx, arch, &SCR, &mem64(SP, 24))?;
                 }
+                self.mv(ctx, arch, &SP, &T2)?;
                 self.jalr(ctx, arch, &Reg(0), &RA, 0)
             }
             // Function-level End (empty if_stack) acts as implicit return.
@@ -169,12 +318,14 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                 if state.num_returns > 0 {
                     pop(self, ctx, arch, &A0)?;
                 }
+                self.mv(ctx, arch, &T2, &FP)?;
                 self.addi(ctx, arch, &SP, &FP, -state.sysv_frame_sz)?;
                 self.ld(ctx, arch, &RA, &mem64(SP, 0))?;
                 self.ld(ctx, arch, &FP, &mem64(SP, 8))?;
                 if state.shard.is_some() {
                     self.ld(ctx, arch, &SCR, &mem64(SP, 24))?;
                 }
+                self.mv(ctx, arch, &SP, &T2)?;
                 self.jalr(ctx, arch, &Reg(0), &RA, 0)
             }
 
@@ -201,8 +352,12 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
         match op {
             MachOperator::StartFn { id, data } => {
                 state.local_count = data.num_params;
+                state.param_count = data.num_params;
                 state.num_returns = data.num_returns;
                 state.control_depth = data.control_depth;
+                // Allocation state is per-function. Keeping a prior function's
+                // local/register mapping corrupts the next AllStack callee.
+                state.regalloc = None;
                 state.probes = data.probes;
                 state.next_probe_id = 1; // probe 0 is the function entry below
                 state.probe_plan = data.probe_plan.clone();
@@ -254,8 +409,24 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                     self.sd(ctx, arch, &Reg(PROBE_BASE_REG), &mem64(FP, disp)).map_err(Err::from)?;
                 }
 
-                for i in 0..data.num_params.min(8) {
-                    self.sysv_store_local(ctx, arch, ARG_REGS[i], i).map_err(Err::from)?;
+                match state.call_abi {
+                    CallAbi::RegSysv => {
+                        for i in 0..data.num_params.min(8) {
+                            self.sysv_store_local(ctx, arch, ARG_REGS[i], i).map_err(Err::from)?;
+                        }
+                        // psABI overflow arguments begin at caller SP, which is FP
+                        // after this backend's prologue.
+                        for i in 8..data.num_params {
+                            self.ld(ctx, arch, &T0, &mem64(FP, ((i - 8) * 8) as i32)).map_err(Err::from)?;
+                            self.sysv_store_local(ctx, arch, T0, i).map_err(Err::from)?;
+                        }
+                    }
+                    CallAbi::AllStack => {
+                        for i in 0..data.num_params {
+                            self.ld(ctx, arch, &T0, &mem64(FP, (i * 8) as i32)).map_err(Err::from)?;
+                            self.sysv_store_local(ctx, arch, T0, i).map_err(Err::from)?;
+                        }
+                    }
                 }
                 Ok(())
             }
