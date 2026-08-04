@@ -143,6 +143,8 @@ pub struct SysVState<'a> {
     /// How linear-memory load/store addresses are translated. Propagated to the
     /// naive backend that lowers memory ops. Defaults to [`crate::naive::MemBase::Raw`].
     pub mem_base: crate::naive::MemBase,
+    /// Per-memory-index base overrides (see [`crate::naive::State::mem_base_by_index`]).
+    pub mem_base_by_index: alloc::collections::BTreeMap<u32, crate::naive::MemBase>,
     /// Calling convention for inter-function calls and the function prologue.
     /// Defaults to [`CallAbi::RegSysv`] (the legacy behavior, used by tests where
     /// each function is invoked directly with register arguments).
@@ -701,6 +703,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                         next_probe_id: 0,
                         shard: state.shard,
                         mem_base: state.mem_base,
+                        mem_base_by_index: state.mem_base_by_index.clone(),
                     };
                     let result = self._handle_op(ctx, arch, &mut naive_state, func_imports, &[], &[], &other, target);
                     state.label_index = naive_state.label_index;
@@ -822,6 +825,7 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                     // Propagate shard state so cross-shard Call dispatch works.
                     shard: state.shard,
                     mem_base: state.mem_base,
+                    mem_base_by_index: state.mem_base_by_index.clone(),
                 };
                 let result = self._handle_op(ctx, arch, &mut naive_state, func_imports, &[], &[], other, target);
                 state.label_index = naive_state.label_index;

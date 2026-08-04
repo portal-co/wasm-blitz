@@ -31,10 +31,18 @@ pub const SCR: Reg = Reg(14);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MemBase {
     /// WASM address used directly as a host pointer (default; legacy behavior).
+    /// Equivalent to a numeric memory base of zero — no `__wasm_mem` add.
     #[default]
     Raw,
     /// Address as `__wasm_mem + (uint32_t)addr`, matching the C backend.
     WasmMemSymbol,
+}
+
+impl MemBase {
+    /// True when the memory's host base is zero (identity / [`Self::Raw`]).
+    pub fn is_zero(self) -> bool {
+        matches!(self, Self::Raw)
+    }
 }
 
 use crate::{
@@ -108,9 +116,22 @@ pub struct State<'a> {
     /// Present when sharding is active. Used to classify `Call` instructions
     /// as intra-shard (direct label) or cross-shard (SCR-relative indirect).
     pub shard: Option<NaiveShardState<'a>>,
-    /// How linear-memory load/store addresses are translated. Defaults to
-    /// [`MemBase::Raw`] (legacy raw-pointer behavior).
+    /// Default how linear-memory load/store addresses are translated for every
+    /// memory index. Defaults to [`MemBase::Raw`] (legacy raw-pointer behavior).
     pub mem_base: MemBase,
+    /// Per-`memory_index` overrides of [`Self::mem_base`]. A [`MemBase::Raw`]
+    /// (zero-base) entry skips the `__wasm_mem` add for that memory only.
+    pub mem_base_by_index: BTreeMap<u32, MemBase>,
+}
+
+impl State<'_> {
+    /// Resolve the memory base for `memory_index` (override or default).
+    pub fn mem_base_for(&self, memory_index: u32) -> MemBase {
+        self.mem_base_by_index
+            .get(&memory_index)
+            .copied()
+            .unwrap_or(self.mem_base)
+    }
 }
 
 /// Magic sentinel pushed onto the CTX stack to mark a TryTable frame.
@@ -375,7 +396,8 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
     where
         Self: Sized,
     {
-        if state.mem_base != MemBase::WasmMemSymbol {
+        // Zero-base / Raw: guest address is already the host pointer.
+        if state.mem_base_for(memory_index).is_zero() {
             return Ok(());
         }
         // addr := (uint32_t)addr — writing the 32-bit subregister zero-extends.
@@ -410,6 +432,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
 
     /// Compute the effective address `[popped_addr + offset]` into RAX, applying
     /// the memory base. Leaves the address in RAX (Reg(0)); clobbers Reg(1).
+    /// When `offset == 0`, skips the `mov64`+`lea` materialization.
     fn mem_effective_addr(
         &mut self,
         ctx: &mut Context,
@@ -421,11 +444,13 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
     where
         Self: Sized,
     {
-        self.mov64(ctx, arch, &Reg(1), offset)?;
-        self.lea(ctx, arch, &Reg(0), &MemArgKind::Mem {
-            base: Reg(0), offset: Some((Reg(1), 1)), disp: 0,
-            size: MemorySize::_64, reg_class: RegisterClass::Gpr, segment: Default::default(),
-        })?;
+        if offset != 0 {
+            self.mov64(ctx, arch, &Reg(1), offset)?;
+            self.lea(ctx, arch, &Reg(0), &MemArgKind::Mem {
+                base: Reg(0), offset: Some((Reg(1), 1)), disp: 0,
+                size: MemorySize::_64, reg_class: RegisterClass::Gpr, segment: Default::default(),
+            })?;
+        }
         self.apply_mem_base(ctx, arch, state, Reg(0), Reg(1), memory_index)
     }
 
@@ -899,21 +924,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
             }
             Instruction::I64Load(memarg) | Instruction::F64Load(memarg) => {
                 self.pop(ctx, arch, &Reg(0))?;
-                self.mov64(ctx, arch, &Reg(1), memarg.offset)?;
-                self.lea(
-                    ctx,
-                    arch,
-                    &Reg(0),
-                    &MemArgKind::Mem {
-                        base: Reg(0),
-                        offset: Some((Reg(1), 1)),
-                        disp: 0,
-                        size: MemorySize::_64,
-                        reg_class: RegisterClass::Gpr,
-                        segment: Default::default(),
-                    },
-                )?;
-                self.apply_mem_base(ctx, arch, state, Reg(0), Reg(1), memarg.memory_index)?;
+                self.mem_effective_addr(ctx, arch, state, memarg.offset, memarg.memory_index)?;
                 // Dereference: load 64-bit value from [rax] into rax.
                 self.mov(ctx, arch, &Reg(0), &MemArgKind::Mem {
                     base: Reg(0),
@@ -928,21 +939,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
             Instruction::I64Store(memarg) | Instruction::F64Store(memarg) => {
                 self.pop(ctx, arch, &Reg(2))?;  // value → RDX
                 self.pop(ctx, arch, &Reg(0))?;  // addr → RAX
-                self.mov64(ctx, arch, &Reg(1), memarg.offset)?;
-                self.lea(
-                    ctx,
-                    arch,
-                    &Reg(0),
-                    &MemArgKind::Mem {
-                        base: Reg(0),
-                        offset: Some((Reg(1), 1)),
-                        disp: 0,
-                        size: MemorySize::_64,
-                        reg_class: RegisterClass::Gpr,
-                        segment: Default::default(),
-                    },
-                )?;
-                self.apply_mem_base(ctx, arch, state, Reg(0), Reg(1), memarg.memory_index)?;
+                self.mem_effective_addr(ctx, arch, state, memarg.offset, memarg.memory_index)?;
                 // Store 64-bit value from RDX to [RAX].
                 self.mov(ctx, arch, &MemArgKind::Mem {
                     base: Reg(0),
@@ -955,21 +952,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
             }
             Instruction::I32Load(memarg) | Instruction::F32Load(memarg) => {
                 self.pop(ctx, arch, &Reg(0))?;
-                self.mov64(ctx, arch, &Reg(1), memarg.offset)?;
-                self.lea(
-                    ctx,
-                    arch,
-                    &Reg(0),
-                    &MemArgKind::Mem {
-                        base: Reg(0),
-                        offset: Some((Reg(1), 1)),
-                        disp: 0,
-                        size: MemorySize::_32,
-                        reg_class: RegisterClass::Gpr,
-                        segment: Default::default(),
-                    },
-                )?;
-                self.apply_mem_base(ctx, arch, state, Reg(0), Reg(1), memarg.memory_index)?;
+                self.mem_effective_addr(ctx, arch, state, memarg.offset, memarg.memory_index)?;
                 // Dereference: load 32-bit value into eax (zero-extends to rax).
                 // Previously this was `mov rax, rax`, a register-to-register
                 // no-op that left the *address* in rax instead of loading the
@@ -994,21 +977,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
             Instruction::I32Store(memarg) | Instruction::I64Store32(memarg) | Instruction::F32Store(memarg) => {
                 self.pop(ctx, arch, &Reg(2))?;  // value → RDX
                 self.pop(ctx, arch, &Reg(0))?;  // addr → RAX
-                self.mov64(ctx, arch, &Reg(1), memarg.offset)?;
-                self.lea(
-                    ctx,
-                    arch,
-                    &Reg(0),
-                    &MemArgKind::Mem {
-                        base: Reg(0),
-                        offset: Some((Reg(1), 1)),
-                        disp: 0,
-                        size: MemorySize::_64,
-                        reg_class: RegisterClass::Gpr,
-                        segment: Default::default(),
-                    },
-                )?;
-                self.apply_mem_base(ctx, arch, state, Reg(0), Reg(1), memarg.memory_index)?;
+                self.mem_effective_addr(ctx, arch, state, memarg.offset, memarg.memory_index)?;
                 // Store 32-bit value from EDX to [RAX].
                 let edx = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(2), size: MemorySize::_32 });
                 self.mov(ctx, arch, &MemArgKind::Mem {
@@ -1648,6 +1617,47 @@ mod membase_tests {
     fn wasm_mem_symbol_mode_uses_per_index_base() {
         let externs = load_externals(MemBase::WasmMemSymbol, 1);
         assert_eq!(externs.iter().filter(|n| *n == "__wasm_mem_1").count(), 1);
+    }
+
+    #[test]
+    fn per_index_raw_skips_wasm_mem_even_when_default_is_symbol() {
+        let mut out = IcedWriter::<X64Label>::new(0x1000);
+        let mut ctx = ();
+        let mut by_index = BTreeMap::new();
+        by_index.insert(1, MemBase::Raw);
+        let mut state = State {
+            mem_base: MemBase::WasmMemSymbol,
+            mem_base_by_index: by_index,
+            ..State::default()
+        };
+        let op = Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 1 });
+        WriterExt::_handle_op(&mut out, &mut ctx, X64Arch::default(), &mut state, &[], &[], &[], &op, 0)
+            .unwrap();
+        let (_bytes, _labels, relocs) = out.into_parts_with_relocs();
+        let externs: Vec<_> = relocs
+            .into_iter()
+            .filter_map(|r| match r.label {
+                X64Label::External { name } => Some(name),
+                _ => None,
+            })
+            .collect();
+        assert!(!externs.iter().any(|n| n.starts_with("__wasm_mem")));
+    }
+
+    #[test]
+    fn offset_zero_skips_lea_materialization() {
+        let mut with_off = IcedWriter::<X64Label>::new(0x1000);
+        let mut zero_off = IcedWriter::<X64Label>::new(0x1000);
+        let mut ctx = ();
+        let mut s1 = State { mem_base: MemBase::Raw, ..State::default() };
+        let mut s2 = State { mem_base: MemBase::Raw, ..State::default() };
+        let op_off = Instruction::I64Load(MemArg { offset: 8, align: 3, memory_index: 0 });
+        let op_zero = Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 });
+        WriterExt::_handle_op(&mut with_off, &mut ctx, X64Arch::default(), &mut s1, &[], &[], &[], &op_off, 0)
+            .unwrap();
+        WriterExt::_handle_op(&mut zero_off, &mut ctx, X64Arch::default(), &mut s2, &[], &[], &[], &op_zero, 0)
+            .unwrap();
+        assert!(with_off.into_bytes().len() > zero_off.into_bytes().len());
     }
 
     #[test]

@@ -80,10 +80,18 @@ impl<'a> NaiveShardState<'a> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MemBase {
     /// WASM address used directly as a host pointer (default; legacy behavior).
+    /// Equivalent to a numeric memory base of zero — no `__wasm_mem` add.
     #[default]
     Raw,
     /// Address as `__wasm_mem + (uint32_t)addr`, matching the C backend.
     WasmMemSymbol,
+}
+
+impl MemBase {
+    /// True when the memory's host base is zero (identity / [`Self::Raw`]).
+    pub fn is_zero(self) -> bool {
+        matches!(self, Self::Raw)
+    }
 }
 
 #[derive(Default)]
@@ -120,9 +128,11 @@ pub struct State<'a> {
     /// Present when sharding is active. SCR (X27) is pushed in the prologue
     /// and popped before return.
     pub shard: Option<NaiveShardState<'a>>,
-    /// How linear-memory load/store addresses are translated. Defaults to
-    /// [`MemBase::Raw`] (legacy raw-pointer behavior).
+    /// Default how linear-memory load/store addresses are translated.
+    /// Defaults to [`MemBase::Raw`] (legacy raw-pointer behavior).
     pub mem_base: MemBase,
+    /// Per-`memory_index` overrides of [`Self::mem_base`].
+    pub mem_base_by_index: BTreeMap<u32, MemBase>,
     /// Inter-function calling convention for the AAPCS64 (SysV) path. Defaults
     /// to [`CallAbi::RegSysv`] (legacy; calls delegate to the naive path). Set
     /// to [`CallAbi::AllStack`] by the recompiler to marshal *all* arguments per
@@ -156,6 +166,16 @@ pub struct State<'a> {
             >,
         >,
     >,
+}
+
+impl State<'_> {
+    /// Resolve the memory base for `memory_index` (override or default).
+    pub fn mem_base_for(&self, memory_index: u32) -> MemBase {
+        self.mem_base_by_index
+            .get(&memory_index)
+            .copied()
+            .unwrap_or(self.mem_base)
+    }
 }
 
 /// Inter-function calling convention selected by the recompiler for the AAPCS64
@@ -493,18 +513,25 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         state: &State<'_>,
         addr: Reg,
         scratch: Reg,
+        memory_index: u32,
     ) -> Result<(), Self::Error>
     where
         Self: Sized,
     {
-        if state.mem_base != MemBase::WasmMemSymbol {
+        // Zero-base / Raw: guest address is already the host pointer.
+        if state.mem_base_for(memory_index).is_zero() {
             return Ok(());
         }
         // addr := (uint32_t)addr — zero-extend the low 32 bits.
         self.uxt(ctx, arch, &reg(addr), &reg32(addr))?;
-        // scratch := __wasm_mem (load the base pointer value). External symbol →
+        // scratch := __wasm_mem[_N] (load the base pointer value). External symbol →
         // ADRP+ADD (Mach-O can't relocate a plain ADR).
-        crate::load_label_addr(self, ctx, arch, &reg(scratch), AArch64Label::External { name: "__wasm_mem".into() })?;
+        let sym = if memory_index == 0 {
+            "__wasm_mem".into()
+        } else {
+            alloc::format!("__wasm_mem_{memory_index}")
+        };
+        crate::load_label_addr(self, ctx, arch, &reg(scratch), AArch64Label::External { name: sym })?;
         self.ldr(ctx, arch, &reg(scratch), &mem_base_disp(scratch, 0))?;
         // addr := addr + scratch.
         self.add(ctx, arch, &reg(addr), &reg(addr), &reg(scratch))?;
@@ -520,6 +547,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         arch: AArch64Arch,
         state: &State<'_>,
         offset: i32,
+        memory_index: u32,
         access: MemorySize,
         signed: bool,
         to64: bool,
@@ -528,7 +556,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         Self: Sized,
     {
         self.wasm_pop(ctx, arch, T0)?; // address
-        self.apply_mem_base(ctx, arch, state, T0, T2)?;
+        self.apply_mem_base(ctx, arch, state, T0, T2, memory_index)?;
         let mem = MemArgKind::Mem {
             base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
             offset: None,
@@ -561,6 +589,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
         arch: AArch64Arch,
         state: &State<'_>,
         offset: i32,
+        memory_index: u32,
         access: MemorySize,
     ) -> Result<(), Self::Error>
     where
@@ -568,7 +597,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
     {
         self.wasm_pop(ctx, arch, T1)?; // value
         self.wasm_pop(ctx, arch, T0)?; // address
-        self.apply_mem_base(ctx, arch, state, T0, T2)?;
+        self.apply_mem_base(ctx, arch, state, T0, T2, memory_index)?;
         let mem = MemArgKind::Mem {
             base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
             offset: None,
@@ -803,7 +832,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             // F32 load/store reuse the i32 (low-32, zero-extended) paths.
             Instruction::I64Load(m) | Instruction::F64Load(m) => {
                 self.wasm_pop(ctx, arch, T0)?; // address
-                self.apply_mem_base(ctx, arch, state, T0, T2)?;
+                self.apply_mem_base(ctx, arch, state, T0, T2, m.memory_index)?;
                 let mem = MemArgKind::Mem {
                     base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
                     offset: None,
@@ -817,7 +846,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             }
             Instruction::I32Load(m) | Instruction::F32Load(m) => {
                 self.wasm_pop(ctx, arch, T0)?;
-                self.apply_mem_base(ctx, arch, state, T0, T2)?;
+                self.apply_mem_base(ctx, arch, state, T0, T2, m.memory_index)?;
                 let mem = MemArgKind::Mem {
                     base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
                     offset: None,
@@ -835,7 +864,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             Instruction::I64Store(m) | Instruction::F64Store(m) => {
                 self.wasm_pop(ctx, arch, T1)?; // value
                 self.wasm_pop(ctx, arch, T0)?; // address
-                self.apply_mem_base(ctx, arch, state, T0, T2)?;
+                self.apply_mem_base(ctx, arch, state, T0, T2, m.memory_index)?;
                 let mem = MemArgKind::Mem {
                     base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
                     offset: None,
@@ -850,7 +879,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             Instruction::I32Store(m) | Instruction::I64Store32(m) | Instruction::F32Store(m) => {
                 self.wasm_pop(ctx, arch, T1)?; // value
                 self.wasm_pop(ctx, arch, T0)?; // address
-                self.apply_mem_base(ctx, arch, state, T0, T2)?;
+                self.apply_mem_base(ctx, arch, state, T0, T2, m.memory_index)?;
                 let mem = MemArgKind::Mem {
                     base: ArgKind::Reg { reg: T0, size: MemorySize::_64 },
                     offset: None,
@@ -863,22 +892,22 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             }
 
             // ---- sub-word loads (zero/sign-extended) ----
-            Instruction::I32Load8U(m)  => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_8,  false, false),
-            Instruction::I32Load8S(m)  => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_8,  true,  false),
-            Instruction::I32Load16U(m) => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_16, false, false),
-            Instruction::I32Load16S(m) => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_16, true,  false),
-            Instruction::I64Load8U(m)  => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_8,  false, true),
-            Instruction::I64Load8S(m)  => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_8,  true,  true),
-            Instruction::I64Load16U(m) => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_16, false, true),
-            Instruction::I64Load16S(m) => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_16, true,  true),
-            Instruction::I64Load32U(m) => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_32, false, true),
-            Instruction::I64Load32S(m) => self.mem_load(ctx, arch, state, m.offset as i32, MemorySize::_32, true,  true),
+            Instruction::I32Load8U(m)  => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_8,  false, false),
+            Instruction::I32Load8S(m)  => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_8,  true,  false),
+            Instruction::I32Load16U(m) => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_16, false, false),
+            Instruction::I32Load16S(m) => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_16, true,  false),
+            Instruction::I64Load8U(m)  => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_8,  false, true),
+            Instruction::I64Load8S(m)  => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_8,  true,  true),
+            Instruction::I64Load16U(m) => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_16, false, true),
+            Instruction::I64Load16S(m) => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_16, true,  true),
+            Instruction::I64Load32U(m) => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_32, false, true),
+            Instruction::I64Load32S(m) => self.mem_load(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_32, true,  true),
 
             // ---- sub-word stores ----
-            Instruction::I32Store8(m)  => self.mem_store(ctx, arch, state, m.offset as i32, MemorySize::_8),
-            Instruction::I32Store16(m) => self.mem_store(ctx, arch, state, m.offset as i32, MemorySize::_16),
-            Instruction::I64Store8(m)  => self.mem_store(ctx, arch, state, m.offset as i32, MemorySize::_8),
-            Instruction::I64Store16(m) => self.mem_store(ctx, arch, state, m.offset as i32, MemorySize::_16),
+            Instruction::I32Store8(m)  => self.mem_store(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_8),
+            Instruction::I32Store16(m) => self.mem_store(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_16),
+            Instruction::I64Store8(m)  => self.mem_store(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_8),
+            Instruction::I64Store16(m) => self.mem_store(ctx, arch, state, m.offset as i32, m.memory_index, MemorySize::_16),
 
             // ---- memory.size / memory.grow ----
             Instruction::MemorySize(_) => {
@@ -1414,6 +1443,35 @@ mod membase_tests {
     #[test]
     fn wasm_mem_symbol_mode_references_base() {
         let externs = load_externals(MemBase::WasmMemSymbol);
-        assert_eq!(externs.iter().filter(|n| *n == "__wasm_mem").count(), 1);
+        // ADRP+ADD materialization may emit two relocs against the same symbol.
+        assert!(
+            externs.iter().filter(|n| *n == "__wasm_mem").count() >= 1,
+            "expected __wasm_mem reloc(s), got {externs:?}"
+        );
+    }
+
+    #[test]
+    fn per_index_raw_skips_wasm_mem() {
+        let mut by_index = BTreeMap::new();
+        by_index.insert(0, MemBase::Raw);
+        let mut out = AArch64Writer::<AArch64Label>::new();
+        let mut ctx = ();
+        let mut state = State {
+            mem_base: MemBase::WasmMemSymbol,
+            mem_base_by_index: by_index,
+            ..State::default()
+        };
+        let op = Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 });
+        WriterExt::handle_insn(&mut out, &mut ctx, AArch64Arch::default(), &mut state, &[], &[], &[], &op, 0)
+            .unwrap();
+        let (_bytes, _labels, relocs) = out.into_parts_with_relocs();
+        let externs: Vec<_> = relocs
+            .into_iter()
+            .filter_map(|r| match r.label {
+                AArch64Label::External { name } => Some(name),
+                _ => None,
+            })
+            .collect();
+        assert!(!externs.iter().any(|n| n.starts_with("__wasm_mem")));
     }
 }
