@@ -41,6 +41,9 @@ impl std::fmt::Write for NativeAsmWriter {
 portal_solutions_asm_x86_64::writers!(NativeAsmWriter);
 portal_solutions_asm_aarch64::writers!(NativeAsmWriter);
 portal_solutions_asm_riscv64::writers!(NativeAsmWriter);
+portal_solutions_asm_riscv32::writers!(NativeAsmWriter);
+portal_solutions_asm_arm::writers!(NativeAsmWriter);
+portal_solutions_asm_x86::writers!(NativeAsmWriter);
 
 use portal_solutions_blitz_common::HandleOpError;
 use portal_solutions_blitz_common::{
@@ -2330,6 +2333,9 @@ enum NativeArch {
     X86_64,
     AArch64,
     Riscv64,
+    Riscv32,
+    Arm,
+    I686,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2446,6 +2452,81 @@ fn compile_native_asm(wasm: &[u8], arch: NativeArch, abi: NativeAbi) -> String {
         (NativeArch::Riscv64, NativeAbi::Lfi) => {
             panic!("LFI not implemented for RISC-V 64");
         }
+        (NativeArch::Riscv32, NativeAbi::Naive) => {
+            use portal_solutions_blitz_riscv32::{naive, RiscV32Arch};
+            let mut state = naive::State::default();
+            for op in ops {
+                let op = op.unwrap();
+                naive::WriterExt::handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, RiscV32Arch::default(),
+                    &mut state, &[], &[], &[], &op, &mut reencoder, 0,
+                ).unwrap();
+            }
+        }
+        (NativeArch::Riscv32, NativeAbi::Sysv) => {
+            use portal_solutions_blitz_riscv32::{naive, sysv, RiscV32Arch};
+            let mut state = naive::State::default();
+            for op in ops {
+                let op = op.unwrap();
+                sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, RiscV32Arch::default(),
+                    &mut state, &[], &op, &mut reencoder, 0,
+                ).unwrap();
+            }
+        }
+        (NativeArch::Riscv32, NativeAbi::Lfi) => {
+            panic!("LFI not implemented for RISC-V 32");
+        }
+        (NativeArch::Arm, NativeAbi::Naive) => {
+            use portal_solutions_blitz_arm::{naive, ArmArch};
+            let mut state = naive::State::default();
+            for op in ops {
+                let op = op.unwrap();
+                naive::WriterExt::handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, ArmArch::default(),
+                    &mut state, &[], &[], &[], &op, &mut reencoder, 0,
+                ).unwrap();
+            }
+        }
+        (NativeArch::Arm, NativeAbi::Sysv) => {
+            use portal_solutions_blitz_arm::{naive, sysv, ArmArch};
+            let mut state = naive::State::default();
+            for op in ops {
+                let op = op.unwrap();
+                sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, ArmArch::default(),
+                    &mut state, &[], &op, &mut reencoder, 0,
+                ).unwrap();
+            }
+        }
+        (NativeArch::Arm, NativeAbi::Lfi) => {
+            panic!("LFI not implemented for ARM");
+        }
+        (NativeArch::I686, NativeAbi::Naive) => {
+            use portal_solutions_blitz_i686::{naive, X86Arch};
+            let mut state = naive::State::default();
+            for op in ops {
+                let op = op.unwrap();
+                naive::WriterExt::handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, X86Arch::default(),
+                    &mut state, &[], &[], &[], &op, &mut reencoder, 0,
+                ).unwrap();
+            }
+        }
+        (NativeArch::I686, NativeAbi::Sysv) => {
+            use portal_solutions_blitz_i686::{naive, sysv, X86Arch};
+            let mut state = naive::State::default();
+            for op in ops {
+                let op = op.unwrap();
+                sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                    &mut out, &mut ctx, X86Arch::default(),
+                    &mut state, &[], &op, &mut reencoder, 0,
+                ).unwrap();
+            }
+        }
+        (NativeArch::I686, NativeAbi::Lfi) => {
+            panic!("LFI not implemented for i686");
+        }
     }
 
     normalize_native_asm(arch, out.0)
@@ -2453,8 +2534,13 @@ fn compile_native_asm(wasm: &[u8], arch: NativeArch, abi: NativeAbi) -> String {
 
 fn normalize_native_asm(arch: NativeArch, asm: String) -> String {
     let asm = match arch {
-        NativeArch::X86_64 => format!(".intel_syntax noprefix\n.text\n.global f0\n{asm}"),
-        NativeArch::AArch64 | NativeArch::Riscv64 => format!(".text\n.global f0\n{asm}"),
+        NativeArch::X86_64 | NativeArch::I686 => {
+            format!(".intel_syntax noprefix\n.text\n.global f0\n{asm}")
+        }
+        NativeArch::AArch64
+        | NativeArch::Riscv64
+        | NativeArch::Riscv32
+        | NativeArch::Arm => format!(".text\n.global f0\n{asm}"),
     };
 
     // The x86 text writer currently omits a newline after LEA. Keep the tests
@@ -2495,6 +2581,9 @@ fn assemble_native_text(arch: NativeArch, asm: &str) -> Result<Vec<u8>, String> 
         NativeArch::X86_64 => "x86_64-unknown-linux-gnu",
         NativeArch::AArch64 => "aarch64-unknown-linux-gnu",
         NativeArch::Riscv64 => "riscv64-unknown-elf",
+        NativeArch::Riscv32 => "riscv32-unknown-elf",
+        NativeArch::Arm => "arm-linux-gnueabihf",
+        NativeArch::I686 => "i686-unknown-linux-gnu",
     };
 
     let output = std::process::Command::new("clang")
@@ -2527,9 +2616,10 @@ fn assemble_native_text(arch: NativeArch, asm: &str) -> Result<Vec<u8>, String> 
 }
 
 fn extract_elf_text(obj: &[u8]) -> Option<Vec<u8>> {
-    if obj.get(0..4)? != b"\x7fELF" || *obj.get(4)? != 2 || *obj.get(5)? != 1 {
+    if obj.get(0..4)? != b"\x7fELF" || *obj.get(5)? != 1 {
         return None;
     }
+    let class = *obj.get(4)?; // 1 = ELF32, 2 = ELF64
 
     let read_u16 = |offset: usize| -> Option<u16> {
         Some(u16::from_le_bytes(obj.get(offset..offset + 2)?.try_into().ok()?))
@@ -2541,17 +2631,41 @@ fn extract_elf_text(obj: &[u8]) -> Option<Vec<u8>> {
         Some(u64::from_le_bytes(obj.get(offset..offset + 8)?.try_into().ok()?))
     };
 
-    let shoff = read_u64(0x28)? as usize;
-    let shentsize = read_u16(0x3a)? as usize;
-    let shnum = read_u16(0x3c)? as usize;
-    let shstrndx = read_u16(0x3e)? as usize;
-    if shentsize < 64 || shstrndx >= shnum {
+    let (shoff, shentsize, shnum, shstrndx, min_shentsize, sh_off_field, sh_size_field) =
+        if class == 2 {
+            (
+                read_u64(0x28)? as usize,
+                read_u16(0x3a)? as usize,
+                read_u16(0x3c)? as usize,
+                read_u16(0x3e)? as usize,
+                64usize,
+                0x18usize,
+                0x20usize,
+            )
+        } else if class == 1 {
+            (
+                read_u32(0x20)? as usize,
+                read_u16(0x2e)? as usize,
+                read_u16(0x30)? as usize,
+                read_u16(0x32)? as usize,
+                40usize,
+                0x10usize,
+                0x14usize,
+            )
+        } else {
+            return None;
+        };
+
+    if shentsize < min_shentsize || shstrndx >= shnum {
         return None;
     }
 
     let shstr = shoff.checked_add(shstrndx.checked_mul(shentsize)?)?;
-    let shstr_off = read_u64(shstr + 0x18)? as usize;
-    let shstr_size = read_u64(shstr + 0x20)? as usize;
+    let (shstr_off, shstr_size) = if class == 2 {
+        (read_u64(shstr + sh_off_field)? as usize, read_u64(shstr + sh_size_field)? as usize)
+    } else {
+        (read_u32(shstr + sh_off_field)? as usize, read_u32(shstr + sh_size_field)? as usize)
+    };
     let shstrtab = obj.get(shstr_off..shstr_off.checked_add(shstr_size)?)?;
 
     for i in 0..shnum {
@@ -2561,8 +2675,11 @@ fn extract_elf_text(obj: &[u8]) -> Option<Vec<u8>> {
         let nul = name_tail.iter().position(|b| *b == 0)?;
         let name = core::str::from_utf8(&name_tail[..nul]).ok()?;
         if name == ".text" {
-            let off = read_u64(sh + 0x18)? as usize;
-            let size = read_u64(sh + 0x20)? as usize;
+            let (off, size) = if class == 2 {
+                (read_u64(sh + sh_off_field)? as usize, read_u64(sh + sh_size_field)? as usize)
+            } else {
+                (read_u32(sh + sh_off_field)? as usize, read_u32(sh + sh_size_field)? as usize)
+            };
             return Some(obj.get(off..off.checked_add(size)?)?.to_vec());
         }
     }
@@ -2625,6 +2742,50 @@ fn run_native_sysv_const(arch: NativeArch, code: &[u8]) -> u64 {
             attach_trace_hook(&mut uc, arch, CODE, code.len());
             uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
             uc.reg_read(RegisterRISCV::A0).unwrap()
+        }
+        NativeArch::Riscv32 => {
+            use unicorn_engine::RegisterRISCV;
+            let mut uc = Unicorn::new(Arch::RISCV, Mode::RISCV32).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16).unwrap();
+            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64).unwrap();
+            attach_trace_hook(&mut uc, arch, CODE, code.len());
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            let lo = uc.reg_read(RegisterRISCV::A0).unwrap();
+            let hi = uc.reg_read(RegisterRISCV::A1).unwrap();
+            lo | (hi << 32)
+        }
+        NativeArch::Arm => {
+            use unicorn_engine::RegisterARM;
+            // A32 little-endian (Unicorn: Arch::ARM + Mode::LITTLE_ENDIAN).
+            let mut uc = Unicorn::new(Arch::ARM, Mode::LITTLE_ENDIAN).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            uc.reg_write(RegisterARM::SP, STACK + STACK_SIZE - 16).unwrap();
+            uc.reg_write(RegisterARM::LR, CODE + code.len() as u64).unwrap();
+            attach_trace_hook(&mut uc, arch, CODE, code.len());
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            let lo = uc.reg_read(RegisterARM::R0).unwrap();
+            let hi = uc.reg_read(RegisterARM::R1).unwrap();
+            lo | (hi << 32)
+        }
+        NativeArch::I686 => {
+            use unicorn_engine::RegisterX86;
+            let mut uc = Unicorn::new(Arch::X86, Mode::MODE_32).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            let esp = STACK + STACK_SIZE - 4;
+            uc.mem_write(esp, &(CODE + code.len() as u64).to_le_bytes()[..4]).unwrap();
+            uc.reg_write(RegisterX86::ESP, esp).unwrap();
+            attach_trace_hook(&mut uc, arch, CODE, code.len());
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            let lo = uc.reg_read(RegisterX86::EAX).unwrap();
+            let hi = uc.reg_read(RegisterX86::EDX).unwrap();
+            lo | (hi << 32)
         }
     }
 }
@@ -2690,6 +2851,43 @@ fn run_native_naive_smoke(arch: NativeArch, code: &[u8]) {
             attach_trace_hook(&mut uc, arch, CODE, code.len());
             uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
         }
+        NativeArch::Riscv32 => {
+            use unicorn_engine::RegisterRISCV;
+            let mut uc = Unicorn::new(Arch::RISCV, Mode::RISCV32).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16).unwrap();
+            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64).unwrap();
+            attach_trace_hook(&mut uc, arch, CODE, code.len());
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+        }
+        NativeArch::Arm => {
+            use unicorn_engine::RegisterARM;
+            let mut uc = Unicorn::new(Arch::ARM, Mode::LITTLE_ENDIAN).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            uc.reg_write(RegisterARM::SP, STACK + STACK_SIZE - 16).unwrap();
+            uc.reg_write(RegisterARM::LR, CODE + code.len() as u64).unwrap();
+            attach_trace_hook(&mut uc, arch, CODE, code.len());
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+        }
+        NativeArch::I686 => {
+            use unicorn_engine::RegisterX86;
+            // Like x86-64 naive: verify non-empty codegen under soft-skip assemble.
+            // Also run when assembled: empty body is just prologue/epilogue.
+            assert!(!code.is_empty());
+            let mut uc = Unicorn::new(Arch::X86, Mode::MODE_32).unwrap();
+            uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
+            uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+            uc.mem_write(CODE, code).unwrap();
+            let esp = STACK + STACK_SIZE - 4;
+            uc.mem_write(esp, &(CODE + code.len() as u64).to_le_bytes()[..4]).unwrap();
+            uc.reg_write(RegisterX86::ESP, esp).unwrap();
+            attach_trace_hook(&mut uc, arch, CODE, code.len());
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+        }
     }
 }
 
@@ -2702,6 +2900,21 @@ fn assemble_or_skip(arch: NativeArch, asm: &str) -> Option<Vec<u8>> {
         }
         Err(err) if matches!(arch, NativeArch::Riscv64) && err.contains("riscv-add-build-attributes") => {
             eprintln!("skipping RISC-V Unicorn backend test: host clang cannot assemble RISC-V ({err})");
+            None
+        }
+        Err(err)
+            if matches!(
+                arch,
+                NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 | NativeArch::Riscv64
+            ) && (err.contains("unable to create target")
+                || err.contains("unable to find")
+                || err.contains("Invalid target")
+                || err.contains("unknown target")
+                || err.contains("riscv-add-build-attributes")
+                || err.contains("No available targets")
+                || err.contains("unsupported GNU target")) =>
+        {
+            eprintln!("skipping {arch:?} Unicorn backend test: host clang cannot assemble ({err})");
             None
         }
         Err(err) => panic!("{err}"),
@@ -2750,6 +2963,36 @@ fn test_unicorn_riscv64_naive_backend() {
 #[test]
 fn test_unicorn_riscv64_sysv_backend() {
     assert_native_sysv_const(NativeArch::Riscv64);
+}
+
+#[test]
+fn test_unicorn_riscv32_naive_backend() {
+    assert_native_naive_smoke(NativeArch::Riscv32);
+}
+
+#[test]
+fn test_unicorn_riscv32_sysv_backend() {
+    assert_native_sysv_const(NativeArch::Riscv32);
+}
+
+#[test]
+fn test_unicorn_arm_naive_backend() {
+    assert_native_naive_smoke(NativeArch::Arm);
+}
+
+#[test]
+fn test_unicorn_arm_sysv_backend() {
+    assert_native_sysv_const(NativeArch::Arm);
+}
+
+#[test]
+fn test_unicorn_i686_naive_backend() {
+    assert_native_naive_smoke(NativeArch::I686);
+}
+
+#[test]
+fn test_unicorn_i686_sysv_backend() {
+    assert_native_sysv_const(NativeArch::I686);
 }
 
 // ---------------------------------------------------------------------------
@@ -2881,6 +3124,9 @@ fn compile_allstack_binary(wasm: &[u8], arch: NativeArch) -> (Vec<u8>, u64) {
             let (bytes, labels) = out.into_parts();
             (bytes, labels[&RiscvLabel::Indexed { idx: 1 << 28 }] as u64)
         }
+        NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
+            panic!("AllStack binary not implemented for {arch:?}");
+        }
     }
 }
 
@@ -2955,6 +3201,9 @@ fn run_allstack_entry(arch: NativeArch, code: &[u8], entry_off: u64, args: &[u64
             attach_trace_hook(&mut uc, arch, CODE, code.len());
             uc.emu_start(CODE + entry_off, ret, 0, count as usize).unwrap();
             uc.reg_read(RegisterRISCV::A0).unwrap()
+        }
+        NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
+            panic!("AllStack entry not implemented for {arch:?}");
         }
     }
 }
@@ -3262,6 +3511,9 @@ fn import_stub_add_one(arch: NativeArch) -> &'static str {
             "sd a0, 0(sp)\n",
             "ret\n",
         ),
+        NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
+            panic!("import stub not implemented for {arch:?}");
+        }
     }
 }
 
@@ -3331,6 +3583,9 @@ fn run_native_sysv_with_mem(
             attach_trace_hook(&mut uc, arch, CODE, code.len());
             uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
             uc.reg_read(RegisterRISCV::A0).unwrap()
+        }
+        NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
+            panic!("run_native_sysv_with_mem not implemented for {arch:?}");
         }
     }
 }
@@ -3440,6 +3695,9 @@ fn run_native_naive_smoke_with_mem_and_locals(
             }
             attach_trace_hook(&mut uc, arch, CODE, code.len());
             uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+        }
+        NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
+            panic!("not implemented for {arch:?} in this helper");
         }
     }
 }
@@ -3692,6 +3950,9 @@ fn assert_native_compile_module_with_import(arch: NativeArch, abi: NativeAbi) {
             }
         }
     (_, NativeAbi::Lfi) => panic!("LFI not supported in this test helper"),
+        (NativeArch::Riscv32, _) | (NativeArch::Arm, _) | (NativeArch::I686, _) => {
+            panic!("not implemented for ILP32 arch in this helper");
+        }
     }
     let base_asm = normalize_native_asm(arch, out.0);
     let asm = format!("{base_asm}{}", import_stub_add_one(arch));
@@ -3840,6 +4101,9 @@ fn run_native_sysv_with_args(arch: NativeArch, code: &[u8], args: &[u64]) -> u64
             uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
             uc.reg_read(RegisterRISCV::A0).unwrap()
         }
+        NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
+            panic!("not implemented for {arch:?} in this helper");
+        }
     }
 }
 
@@ -3914,6 +4178,9 @@ fn run_native_sysv_with_args_and_mem(
             attach_trace_hook(&mut uc, arch, CODE, code.len());
             uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
             uc.reg_read(RegisterRISCV::A0).unwrap()
+        }
+        NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
+            panic!("not implemented for {arch:?} in this helper");
         }
     }
 }
@@ -4019,6 +4286,9 @@ fn compile_native_binary(wasm: &[u8], arch: NativeArch, abi: NativeAbi) -> Vec<u
             out.into_bytes()
         }
     (_, NativeAbi::Lfi) => panic!("LFI not supported in this test helper"),
+        (NativeArch::Riscv32, _) | (NativeArch::Arm, _) | (NativeArch::I686, _) => {
+            panic!("not implemented for ILP32 arch in this helper");
+        }
     }
 }
 
@@ -4111,6 +4381,9 @@ fn compile_native_asm_with_imports(
             }
         }
     (_, NativeAbi::Lfi) => panic!("LFI not supported in this test helper"),
+        (NativeArch::Riscv32, _) | (NativeArch::Arm, _) | (NativeArch::I686, _) => {
+            panic!("not implemented for ILP32 arch in this helper");
+        }
     }
 
     normalize_native_asm(arch, out.0)
@@ -5545,6 +5818,9 @@ fn compile_native_sysv_binary_traced(wasm: &[u8], arch: NativeArch) -> (Vec<u8>,
             }
             out.into_bytes()
         }
+        NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
+            panic!("not implemented for {arch:?} in this helper");
+        }
     };
     (code, num_probes)
 }
@@ -5574,6 +5850,9 @@ fn sysv_entry_stub(arch: NativeArch, sentinel: u16) -> Vec<u8> {
             let mut v = addi.to_le_bytes().to_vec();
             v.extend_from_slice(&0x0000_8067u32.to_le_bytes()); // ret
             v
+        }
+        NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
+            panic!("not implemented for {arch:?} in this helper");
         }
     }
 }
@@ -5665,6 +5944,9 @@ fn run_native_sysv_traced(
             uc.emu_start(CODE, HALT, 0, 100_000).unwrap();
             (uc.reg_read(RegisterRISCV::A0).unwrap(), read_counters!(uc))
         }
+        NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
+            panic!("not implemented for {arch:?} in this helper");
+        }
     }
 }
 
@@ -5715,6 +5997,9 @@ fn ret_only_stub(arch: NativeArch) -> Vec<u8> {
         NativeArch::X86_64 => vec![0xC3],
         NativeArch::AArch64 => 0xD65F_03C0u32.to_le_bytes().to_vec(),
         NativeArch::Riscv64 => 0x0000_8067u32.to_le_bytes().to_vec(),
+        NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
+            panic!("not implemented for {arch:?} in this helper");
+        }
     }
 }
 
@@ -5789,6 +6074,9 @@ fn compile_native_sysv_binary_with_plan(
                 ).unwrap();
             }
             out.into_bytes()
+        }
+        NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
+            panic!("not implemented for {arch:?} in this helper");
         }
     }
 }
@@ -6031,6 +6319,9 @@ fn run_call_probe(arch: NativeArch, install_handler: bool) -> (u64, u64, u64) {
             let mut counter = [0u8; 8];
             uc.mem_read(PROBE_TABLE, &mut counter).unwrap();
             (handler_ret, marker, u64::from_le_bytes(counter))
+        }
+        NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
+            panic!("not implemented for {arch:?} in this helper");
         }
     }
 }

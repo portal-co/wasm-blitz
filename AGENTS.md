@@ -5,9 +5,10 @@ wasm-blitz is a library-only WASM-to-native compiler. No CLI binary exists. AI a
 ## Key architecture constraints
 
 - `blitz-common` is `#![no_std]` — do not add std-dependent code there.
-- Each backend crate (`blitz-x86-64`, `blitz-aarch64`, `blitz-riscv64`, etc.) is independently versioned.
+- Each backend crate (`blitz-x86-64`, `blitz-aarch64`, `blitz-riscv64`, `blitz-riscv32`, `blitz-arm`, `blitz-i686`, etc.) is independently versioned.
 - `blitz-tests` has full std access and exercises all backends.
 - `BLITZ_TRACE_UNICORN` env var (existing) enables per-instruction Unicorn emulator cross-checking.
+- **ILP32 backends** (`blitz-riscv32`, `blitz-arm`, `blitz-i686`): WASM value slots stay **8 bytes**; host pointer / SCR / fn-ptr tables use **×4**. Unicorn/clang smokes soft-skip when the host lacks the clang triple (`riscv32-*`, `armv7-*` / `arm-linux-gnueabihf`, `i686-*`) — do not fail CI for missing cross toolchains; `assemble_or_skip` in `blitz-tests/tests/e2e.rs` is the pattern.
 
 ## Compression-aware logging
 

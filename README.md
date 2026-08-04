@@ -67,6 +67,8 @@ This project is organized as a Cargo workspace with the following crates:
   - Shared infrastructure for AArch64 and RISC-V 64-bit
   - Common optimizations for fixed 4-byte instruction architectures
 
+ILP32 backends `blitz-riscv32`, `blitz-arm`, and `blitz-i686` are in progress (8-byte WASM value slots, 4-byte host pointers). See [docs/abi.md](docs/abi.md#ilp32-native-abis-32-bit-hosts).
+
 ## Building
 
 Build all crates in the workspace:

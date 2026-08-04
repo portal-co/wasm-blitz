@@ -906,3 +906,29 @@ These require first-class `exnref` values on the WASM stack, which in turn
 need reference type support in the value representation. Deferred until
 reference types land in the type system.
 
+---
+
+## ILP32 native ABIs (32-bit hosts)
+
+Planned backends: `blitz-riscv32`, `blitz-arm` (AArch32 / AAPCS), `blitz-i686` (i386 SysV).
+
+### WASM value slots
+
+WASM operand-stack and local slots stay **8 bytes** even on ILP32 hosts. This matches the LP64 backends (`*8` offsets in naive/SysV layouts above) so `i64`/`f64` and multi-value marshalling do not need a second slot size. Host pointers (memory bases, function pointers, table elements that hold native addresses) are **4 bytes**.
+
+### Host calling conventions
+
+| Backend | Native ABI | Notes |
+|---------|------------|-------|
+| `blitz-riscv32` | RISC-V ILP32 (RV32 psABI) | Integer args in `a0`–`a7`; `i64` at the call boundary is a register pair |
+| `blitz-arm` | AAPCS (AArch32) | Integer args in `r0`–`r3` then stack; `i64` as even/odd register pairs |
+| `blitz-i686` | i386 System V | Args on stack; `i64` as edx:eax (or stack pair) at the SysV boundary |
+
+### Pointer tables
+
+Funcref / import / export pointer tables that store host addresses use **×4** element size (not ×8). WASM value stacks and local areas remain ×8.
+
+### `i64` at the call boundary
+
+On ILP32 SysV-style entry/exit, a WASM `i64` (or `f64` bitcast through integer regs) is split or joined as a **register pair** per the host ABI above. Inside the NaiveAbi WASM operand stack, each `i64` still occupies one 8-byte slot.
+

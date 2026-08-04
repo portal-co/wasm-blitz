@@ -1,0 +1,23 @@
+[package]
+name = "portal-solutions-blitz-riscv32"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+
+[features]
+# Enable stderr tracing of every handle_op dispatch and regalloc event.
+# Activate with: cargo test --features portal-solutions-blitz-riscv32/log
+log = []
+
+[dependencies]
+portal-solutions-blitz-codegen.workspace = true
+portal-solutions-blitz-common = { workspace = true, features = ["asm"] }
+portal-pc-asm-common = { workspace = true }
+
+portal-solutions-blitz-i4.workspace = true
+portal-solutions-asm-riscv32 = { workspace = true, features = ["regalloc-integration"] }
+portal-solutions-asm-regalloc.workspace = true
+wax-core.workspace = true
+wasm-encoder.workspace = true
+wasmparser.workspace = true

@@ -12,9 +12,15 @@ portal-solutions-blitz-codegen = { path = "../blitz-codegen" }
 portal-solutions-blitz-x86-64  = { path = "../blitz-x86-64" }
 portal-solutions-blitz-aarch64 = { path = "../blitz-aarch64" }
 portal-solutions-blitz-riscv64 = { path = "../blitz-riscv64" }
+portal-solutions-blitz-riscv32 = { path = "../blitz-riscv32" }
+portal-solutions-blitz-arm     = { path = "../blitz-arm" }
+portal-solutions-blitz-i686    = { path = "../blitz-i686" }
 portal-solutions-asm-x86-64    = { version = "0.1.0", git = "https://github.com/portal-co/asm-arch.git", features = ["iced"] }
 portal-solutions-asm-aarch64   = { version = "0.1.0", git = "https://github.com/portal-co/asm-arch.git", features = ["bin-backend"] }
 portal-solutions-asm-riscv64   = { version = "0.1.0", git = "https://github.com/portal-co/asm-arch.git", features = ["rv-asm-backend", "regalloc-integration"] }
+portal-solutions-asm-riscv32   = { workspace = true, features = ["alloc", "regalloc-integration"] }
+portal-solutions-asm-arm       = { workspace = true, features = ["alloc"] }
+portal-solutions-asm-x86       = { workspace = true, features = ["alloc"] }
 portal-solutions-asm-regalloc.workspace = true
 unicorn-engine                 = "2.1.5"
 libc                           = { version = "0.2" }
