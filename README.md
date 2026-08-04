@@ -51,6 +51,7 @@ This project is organized as a Cargo workspace with the following crates:
 - **`blitz-ppc64`**: PowerPC 64-bit code generator *(Work in Progress)*
   - Support for PowerPC 64-bit architecture
   - Power ISA v2.07 and later
+  - Note: speet’s `speet-powerpc` frontend is separately **not started** (stub only)
 
 - **`blitz-riscv64`**: RISC-V 64-bit code generator *(Work in Progress)*
   - RV64IMAFD instruction set (I, M, A, F, D extensions)

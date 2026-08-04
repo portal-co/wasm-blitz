@@ -120,6 +120,38 @@ where
             })?;
             Ok(true)
         }
+        // Bitwise ops — two-operand form, no RAX/RDX clobber (unlike `mul`).
+        Instruction::I32And | Instruction::I64And => {
+            binop(&mut rw, x86_regalloc::RegKind::Int, |rw, dst, rhs| {
+                rw.writer.and(rw.ctx, rw.arch, &Reg(dst), &Reg(rhs))
+            })?;
+            Ok(true)
+        }
+        Instruction::I32Or | Instruction::I64Or => {
+            binop(&mut rw, x86_regalloc::RegKind::Int, |rw, dst, rhs| {
+                rw.writer.or(rw.ctx, rw.arch, &Reg(dst), &Reg(rhs))
+            })?;
+            Ok(true)
+        }
+        Instruction::I32Xor | Instruction::I64Xor => {
+            binop(&mut rw, x86_regalloc::RegKind::Int, |rw, dst, rhs| {
+                rw.writer.eor(rw.ctx, rw.arch, &Reg(dst), &Reg(rhs))
+            })?;
+            Ok(true)
+        }
+        // Two-operand `imul` — no RAX/RDX implicit clobber (unlike one-operand `mul`).
+        Instruction::I32Mul | Instruction::I64Mul => {
+            let is32 = matches!(op, Instruction::I32Mul);
+            binop(&mut rw, x86_regalloc::RegKind::Int, |rw, dst, rhs| {
+                rw.writer.mul(rw.ctx, rw.arch, &Reg(dst), &Reg(rhs))?;
+                if is32 {
+                    let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(dst), size: MemorySize::_32 });
+                    rw.writer.mov(rw.ctx, rw.arch, &r, &r)?;
+                }
+                Ok(())
+            })?;
+            Ok(true)
+        }
         _ => Ok(false),
     }
 }

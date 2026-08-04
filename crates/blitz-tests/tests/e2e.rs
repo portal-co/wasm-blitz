@@ -1539,6 +1539,71 @@ fn native_aarch64_naive_memory_init_lowering() {
     assert!(asm.contains("__wasm_memory_init_copy"), "asm:\n{asm}");
 }
 
+/// Minimal module exercising `memory.copy` + `memory.fill` (bulk memory).
+fn make_module_with_memory_copy_fill() -> Vec<u8> {
+    use portal_solutions_blitz_common::wasm_encoder::*;
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([], []);
+    module.section(&types);
+    let mut funcs = FunctionSection::new();
+    funcs.function(0);
+    module.section(&funcs);
+    let mut memories = MemorySection::new();
+    memories.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
+    module.section(&memories);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    let mut func = Function::new([]);
+    // memory.copy dest=0 src=0 len=0
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    // memory.fill dest=0 val=0 len=0
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&Instruction::MemoryFill(0));
+    func.instruction(&Instruction::Return);
+    func.instruction(&Instruction::End);
+    code.function(&func);
+    module.section(&code);
+    module.finish()
+}
+
+#[test]
+fn native_x86_64_naive_memory_copy_fill_lowering() {
+    let wasm = make_module_with_memory_copy_fill();
+    let asm = compile_native_asm(&wasm, NativeArch::X86_64, NativeAbi::Naive);
+    assert!(asm.contains("__wasm_memory_copy"), "asm:\n{asm}");
+    assert!(asm.contains("__wasm_memory_fill"), "asm:\n{asm}");
+}
+
+#[test]
+fn native_aarch64_naive_memory_copy_fill_lowering() {
+    let wasm = make_module_with_memory_copy_fill();
+    let asm = compile_native_asm(&wasm, NativeArch::AArch64, NativeAbi::Naive);
+    assert!(asm.contains("__wasm_memory_copy"), "asm:\n{asm}");
+    assert!(asm.contains("__wasm_memory_fill"), "asm:\n{asm}");
+}
+
+#[test]
+fn native_riscv64_naive_memory_copy_fill_lowering() {
+    let wasm = make_module_with_memory_copy_fill();
+    let asm = compile_native_asm(&wasm, NativeArch::Riscv64, NativeAbi::Naive);
+    assert!(asm.contains("__wasm_memory_copy"), "asm:\n{asm}");
+    assert!(asm.contains("__wasm_memory_fill"), "asm:\n{asm}");
+}
+
 /// Compile a WASM module (with memory and possibly data) to JS.
 /// Data segments are NOT emitted here; call `apply_segments_to_mem` to
 /// pre-initialise the memory buffer before passing it to `run_js_with_mem`.
@@ -4580,8 +4645,28 @@ fn assert_native_codegen_throw_catch_matching(arch: NativeArch, abi: NativeAbi) 
     );
     let asm = compile_native_asm(&wasm, arch, abi);
     assert!(!asm.is_empty());
+    // Software EH stack: TryTable open must register a dispatch frame.
+    assert!(asm.contains("__wasm_eh_push"), "TryTable should push EH frame:\n{asm}");
 }
 native_variants!(codegen_throw_catch_matching, assert_native_codegen_throw_catch_matching);
+
+/// Unmatched `throw` (no enclosing TryTable) must jump to `__wasm_exn_propagate`
+/// (cross-function walk / `__wasm_unhandled_exception`), not silently fall through.
+fn assert_native_codegen_throw_unmatched_propagates(arch: NativeArch, abi: NativeAbi) {
+    let wasm = make_module_with_tag(
+        &[ValType::I32], &[], &[],
+        &[
+            Instruction::I32Const(1),
+            Instruction::Throw(0),
+        ],
+    );
+    let asm = compile_native_asm(&wasm, arch, abi);
+    assert!(
+        asm.contains("__wasm_exn_propagate"),
+        "unmatched throw must reference __wasm_exn_propagate:\n{asm}"
+    );
+}
+native_variants!(codegen_throw_unmatched_propagates, assert_native_codegen_throw_unmatched_propagates);
 
 fn assert_native_bin_codegen_throw_catch_matching(arch: NativeArch, abi: NativeAbi) {
     use wasm_encoder::Catch;

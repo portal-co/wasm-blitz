@@ -694,6 +694,12 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             Instruction::I64Const(_) | Instruction::I32Const(_)
                 | Instruction::LocalGet(_) | Instruction::LocalSet(_)
                 | Instruction::I64Add | Instruction::I64Sub
+                | Instruction::I64Mul | Instruction::I64And | Instruction::I64Or
+                | Instruction::I64Xor | Instruction::I64Shl | Instruction::I64ShrU
+                | Instruction::I64ShrS
+                | Instruction::I32Add | Instruction::I32Sub | Instruction::I32Mul
+                | Instruction::I32And | Instruction::I32Or | Instruction::I32Xor
+                | Instruction::I32Shl | Instruction::I32ShrU | Instruction::I32ShrS
         );
         if !regalloc_covered {
             let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
@@ -752,7 +758,13 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                     |rw, dst, rhs| rw.writer.sub(rw.ctx, rw.arch, &reg(Reg(dst)), &reg(Reg(dst)), &reg(Reg(rhs))),
                 )
             }
-            Instruction::I64Mul => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.mul(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::I64Mul => {
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.mul(rw.ctx, rw.arch, &reg(Reg(dst)), &reg(Reg(dst)), &reg(Reg(rhs))),
+                )
+            }
             Instruction::I64DivU => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.udiv(c, a, &reg(d), &reg(x), &reg(y))),
             Instruction::I64DivS => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.sdiv(c, a, &reg(d), &reg(x), &reg(y))),
             Instruction::I64RemU => {
@@ -772,34 +784,79 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 self.sub(ctx, arch, &reg(T2), &reg(T0), &reg(T2))?;
                 self.wasm_push(ctx, arch, T2)
             }
-            Instruction::I64And => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.and(c, a, &reg(d), &reg(x), &reg(y))),
-            Instruction::I64Or  => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.orr(c, a, &reg(d), &reg(x), &reg(y))),
-            Instruction::I64Xor => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.eor(c, a, &reg(d), &reg(x), &reg(y))),
-            Instruction::I64Shl => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.lsl(c, a, &reg(d), &reg(x), &reg(y))),
-            Instruction::I64ShrU => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.lsr(c, a, &reg(d), &reg(x), &reg(y))),
-            Instruction::I64ShrS => self.pop2_push(ctx, arch, |w, c, a, d, x, y| w.asr(c, a, &reg(d), &reg(x), &reg(y))),
+            Instruction::I64And => {
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.and(rw.ctx, rw.arch, &reg(Reg(dst)), &reg(Reg(dst)), &reg(Reg(rhs))),
+                )
+            }
+            Instruction::I64Or => {
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.orr(rw.ctx, rw.arch, &reg(Reg(dst)), &reg(Reg(dst)), &reg(Reg(rhs))),
+                )
+            }
+            Instruction::I64Xor => {
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.eor(rw.ctx, rw.arch, &reg(Reg(dst)), &reg(Reg(dst)), &reg(Reg(rhs))),
+                )
+            }
+            Instruction::I64Shl => {
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.lsl(rw.ctx, rw.arch, &reg(Reg(dst)), &reg(Reg(dst)), &reg(Reg(rhs))),
+                )
+            }
+            Instruction::I64ShrU => {
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.lsr(rw.ctx, rw.arch, &reg(Reg(dst)), &reg(Reg(dst)), &reg(Reg(rhs))),
+                )
+            }
+            Instruction::I64ShrS => {
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, dst, rhs| rw.writer.asr(rw.ctx, rw.arch, &reg(Reg(dst)), &reg(Reg(dst)), &reg(Reg(rhs))),
+                )
+            }
 
             // ---- i32 arithmetic (zero-extend results to 64 bits) ----
             Instruction::I32Add => {
-                self.wasm_pop(ctx, arch, T1)?;
-                self.wasm_pop(ctx, arch, T0)?;
-                self.add(ctx, arch, &reg32(T2), &reg32(T0), &reg32(T1))?;
-                self.uxt(ctx, arch, &reg(T2), &reg32(T2))?;
-                self.wasm_push(ctx, arch, T2)
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer.add(rw.ctx, rw.arch, &reg32(Reg(dst)), &reg32(Reg(dst)), &reg32(Reg(rhs)))?;
+                        rw.writer.uxt(rw.ctx, rw.arch, &reg(Reg(dst)), &reg32(Reg(dst)))
+                    },
+                )
             }
             Instruction::I32Sub => {
-                self.wasm_pop(ctx, arch, T1)?;
-                self.wasm_pop(ctx, arch, T0)?;
-                self.sub(ctx, arch, &reg32(T2), &reg32(T0), &reg32(T1))?;
-                self.uxt(ctx, arch, &reg(T2), &reg32(T2))?;
-                self.wasm_push(ctx, arch, T2)
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer.sub(rw.ctx, rw.arch, &reg32(Reg(dst)), &reg32(Reg(dst)), &reg32(Reg(rhs)))?;
+                        rw.writer.uxt(rw.ctx, rw.arch, &reg(Reg(dst)), &reg32(Reg(dst)))
+                    },
+                )
             }
             Instruction::I32Mul => {
-                self.wasm_pop(ctx, arch, T1)?;
-                self.wasm_pop(ctx, arch, T0)?;
-                self.mul(ctx, arch, &reg32(T2), &reg32(T0), &reg32(T1))?;
-                self.uxt(ctx, arch, &reg(T2), &reg32(T2))?;
-                self.wasm_push(ctx, arch, T2)
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer.mul(rw.ctx, rw.arch, &reg32(Reg(dst)), &reg32(Reg(dst)), &reg32(Reg(rhs)))?;
+                        rw.writer.uxt(rw.ctx, rw.arch, &reg(Reg(dst)), &reg32(Reg(dst)))
+                    },
+                )
             }
             Instruction::I32DivU => {
                 self.wasm_pop(ctx, arch, T1)?;
@@ -815,30 +872,66 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 self.uxt(ctx, arch, &reg(T2), &reg32(T2))?;
                 self.wasm_push(ctx, arch, T2)
             }
-            Instruction::I32And => self.pop2_push(ctx, arch, |w, c, a, d, x, y| {
-                w.and(c, a, &reg32(d), &reg32(x), &reg32(y))?;
-                w.uxt(c, a, &reg(d), &reg32(d))
-            }),
-            Instruction::I32Or => self.pop2_push(ctx, arch, |w, c, a, d, x, y| {
-                w.orr(c, a, &reg32(d), &reg32(x), &reg32(y))?;
-                w.uxt(c, a, &reg(d), &reg32(d))
-            }),
-            Instruction::I32Xor => self.pop2_push(ctx, arch, |w, c, a, d, x, y| {
-                w.eor(c, a, &reg32(d), &reg32(x), &reg32(y))?;
-                w.uxt(c, a, &reg(d), &reg32(d))
-            }),
-            Instruction::I32Shl => self.pop2_push(ctx, arch, |w, c, a, d, x, y| {
-                w.lsl(c, a, &reg32(d), &reg32(x), &reg32(y))?;
-                w.uxt(c, a, &reg(d), &reg32(d))
-            }),
-            Instruction::I32ShrU => self.pop2_push(ctx, arch, |w, c, a, d, x, y| {
-                w.lsr(c, a, &reg32(d), &reg32(x), &reg32(y))?;
-                w.uxt(c, a, &reg(d), &reg32(d))
-            }),
-            Instruction::I32ShrS => self.pop2_push(ctx, arch, |w, c, a, d, x, y| {
-                w.asr(c, a, &reg32(d), &reg32(x), &reg32(y))?;
-                w.uxt(c, a, &reg(d), &reg32(d))
-            }),
+            Instruction::I32And => {
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer.and(rw.ctx, rw.arch, &reg32(Reg(dst)), &reg32(Reg(dst)), &reg32(Reg(rhs)))?;
+                        rw.writer.uxt(rw.ctx, rw.arch, &reg(Reg(dst)), &reg32(Reg(dst)))
+                    },
+                )
+            }
+            Instruction::I32Or => {
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer.orr(rw.ctx, rw.arch, &reg32(Reg(dst)), &reg32(Reg(dst)), &reg32(Reg(rhs)))?;
+                        rw.writer.uxt(rw.ctx, rw.arch, &reg(Reg(dst)), &reg32(Reg(dst)))
+                    },
+                )
+            }
+            Instruction::I32Xor => {
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer.eor(rw.ctx, rw.arch, &reg32(Reg(dst)), &reg32(Reg(dst)), &reg32(Reg(rhs)))?;
+                        rw.writer.uxt(rw.ctx, rw.arch, &reg(Reg(dst)), &reg32(Reg(dst)))
+                    },
+                )
+            }
+            Instruction::I32Shl => {
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer.lsl(rw.ctx, rw.arch, &reg32(Reg(dst)), &reg32(Reg(dst)), &reg32(Reg(rhs)))?;
+                        rw.writer.uxt(rw.ctx, rw.arch, &reg(Reg(dst)), &reg32(Reg(dst)))
+                    },
+                )
+            }
+            Instruction::I32ShrU => {
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer.lsr(rw.ctx, rw.arch, &reg32(Reg(dst)), &reg32(Reg(dst)), &reg32(Reg(rhs)))?;
+                        rw.writer.uxt(rw.ctx, rw.arch, &reg(Reg(dst)), &reg32(Reg(dst)))
+                    },
+                )
+            }
+            Instruction::I32ShrS => {
+                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                portal_solutions_blitz_codegen::regalloc_frontend::binop(
+                    &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer.asr(rw.ctx, rw.arch, &reg32(Reg(dst)), &reg32(Reg(dst)), &reg32(Reg(rhs)))?;
+                        rw.writer.uxt(rw.ctx, rw.arch, &reg(Reg(dst)), &reg32(Reg(dst)))
+                    },
+                )
+            }
 
             // ---- comparisons ----
             Instruction::I64Eqz | Instruction::I32Eqz => {
@@ -953,6 +1046,26 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 })?;
                 self.bl(ctx, arch, &reg(T0))
             }
+            // memory.copy: (dest, src, len) → `__wasm_memory_copy`.
+            Instruction::MemoryCopy { .. } => {
+                self.wasm_pop(ctx, arch, Reg(2))?; // X2 ← len
+                self.wasm_pop(ctx, arch, Reg(1))?; // X1 ← src_offset
+                self.wasm_pop(ctx, arch, Reg(0))?; // X0 ← dest_offset
+                crate::load_label_addr(self, ctx, arch, &reg(T0), AArch64Label::External {
+                    name: "__wasm_memory_copy".into(),
+                })?;
+                self.bl(ctx, arch, &reg(T0))
+            }
+            // memory.fill: (dest, val, len) → `__wasm_memory_fill`.
+            Instruction::MemoryFill(_) => {
+                self.wasm_pop(ctx, arch, Reg(2))?; // X2 ← len
+                self.wasm_pop(ctx, arch, Reg(1))?; // X1 ← val
+                self.wasm_pop(ctx, arch, Reg(0))?; // X0 ← dest_offset
+                crate::load_label_addr(self, ctx, arch, &reg(T0), AArch64Label::External {
+                    name: "__wasm_memory_fill".into(),
+                })?;
+                self.bl(ctx, arch, &reg(T0))
+            }
             // `data.drop` is a compile-time no-op here: this AOT backend
             // never re-runs a `memory.init` for the same `data_index` after a
             // `data.drop` (each generated data-init function initializes
@@ -1024,6 +1137,16 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                         Endable::TryTable { end_lbl, dispatch_lbl, catches } => {
                             let after_lbl = AArch64Label::Indexed { idx: state.label_index };
                             state.label_index += 1;
+                            // Software EH stack: normal (non-throwing) exit —
+                            // discard our frame. Local `Throw` and
+                            // `__wasm_exn_propagate` each pop their own
+                            // frame right before jumping into a dispatch
+                            // stub, so this is the only path that needs to
+                            // pop here.
+                            crate::load_label_addr(self, ctx, arch, &reg(T0), AArch64Label::External {
+                                name: "__wasm_eh_pop".into(),
+                            })?;
+                            self.bl(ctx, arch, &reg(T0))?;
                             // Normal path: jump past dispatch stub.
                             self.b_label(ctx, arch, after_lbl.clone())?;
                             // Dispatch stub.
@@ -1052,11 +1175,21 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                                     Catch::OneRef { .. } | Catch::AllRef { .. } => {}
                                 }
                             }
+                            // No catch matched: propagate via the software
+                            // EH stack (see `speet_rt::generate_exn_tu`).
+                            // `__wasm_eh_take` already popped the frame that
+                            // got us here, so no explicit pop is needed —
+                            // plain `br` (not `bl`): `__wasm_exn_propagate`
+                            // never returns, and using `bl` here would set
+                            // LR pointlessly (and, since this can be entered
+                            // via a plain jump rather than a call itself,
+                            // there's no meaningful return address to link
+                            // back to anyway).
                             crate::load_label_addr(
                                 self, ctx, arch, &reg(T0),
                                 AArch64Label::External { name: "__wasm_exn_propagate".into() },
                             )?;
-                            self.bl(ctx, arch, &reg(T0))?;
+                            self.br(ctx, arch, &reg(T0))?;
                             self.set_label(ctx, arch, after_lbl)?;
                             self.set_label(ctx, arch, end_lbl)?;
                         }
@@ -1069,21 +1202,40 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 let arity = if (*tag_index as usize) < tags.len() {
                     sigs[tags[*tag_index as usize] as usize].params().len()
                 } else { 0 };
+                // Static dispatch: does the innermost TryTable's if_stack
+                // entry (a purely compile-time, same-function lookup) have a
+                // dispatch stub for us? Resolved before marshalling
+                // tag/values below since `__wasm_eh_pop` is a real AAPCS64
+                // call and would otherwise clobber caller-saved X9-X15.
+                let local_dispatch = state.if_stack.iter().rev().find_map(|e| match e {
+                    Endable::TryTable { dispatch_lbl, .. } => Some(dispatch_lbl.clone()),
+                    _ => None,
+                });
+                if local_dispatch.is_some() {
+                    // Software EH stack: this try_table will handle the
+                    // throw locally (bypassing __wasm_exn_propagate
+                    // entirely), so pop its frame ourselves — propagate
+                    // only pops when *it* dispatches (see TryTable::End).
+                    crate::load_label_addr(self, ctx, arch, &reg(T0), AArch64Label::External {
+                        name: "__wasm_eh_pop".into(),
+                    })?;
+                    self.bl(ctx, arch, &reg(T0))?;
+                }
                 self.mov_imm(ctx, arch, &reg(T0), *tag_index as u64)?; // tag in T0
                 for i in 0..arity.min(3) {
                     self.wasm_pop(ctx, arch, Reg(11 + i as u8))?; // x11, x12, x13 for values
                 }
-                if let Some(dispatch_lbl) = state.if_stack.iter().rev().find_map(|e| match e {
-                    Endable::TryTable { dispatch_lbl, .. } => Some(dispatch_lbl.clone()),
-                    _ => None,
-                }) {
+                if let Some(dispatch_lbl) = local_dispatch {
                     self.b_label(ctx, arch, dispatch_lbl)
                 } else {
+                    // No intra-function handler: propagate via the software
+                    // EH stack. `br` (not `bl`): see TryTable::End's doc for
+                    // why `__wasm_exn_propagate` is a plain tail branch.
                     crate::load_label_addr(
                         self, ctx, arch, &reg(T1),
                         AArch64Label::External { name: "__wasm_exn_propagate".into() },
                     )?;
-                    self.bl(ctx, arch, &reg(T1))
+                    self.br(ctx, arch, &reg(T1))
                 }
             }
             Instruction::ThrowRef => todo!("exnref deferred"),
@@ -1094,9 +1246,21 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 state.label_index += 1;
                 state.if_stack.push(Endable::TryTable {
                     end_lbl,
-                    dispatch_lbl,
+                    dispatch_lbl: dispatch_lbl.clone(),
                     catches: catches.iter().cloned().collect::<alloc::vec::Vec<_>>().into_boxed_slice(),
                 });
+                // Software EH stack: __wasm_eh_push(dispatch_addr, current
+                // SP) — a real AAPCS64 call (like `MemoryInit`), marshalling
+                // args into X0/X1 explicitly. This is what
+                // `__wasm_exn_propagate` walks on a cross-function throw
+                // (see `speet_rt::generate_exn_tu`'s doc) — AArch64's
+                // NaiveAbi has no CTX-chain equivalent to fall back on.
+                crate::load_label_addr(self, ctx, arch, &reg(Reg(0)), dispatch_lbl)?; // X0 = dispatch addr
+                self.mov(ctx, arch, &reg(Reg(1)), &reg(SP))?; // X1 = current operand-stack SP
+                crate::load_label_addr(self, ctx, arch, &reg(T0), AArch64Label::External {
+                    name: "__wasm_eh_push".into(),
+                })?;
+                self.bl(ctx, arch, &reg(T0))?;
                 Ok(())
             }
             Instruction::Br(depth) => self.do_br(ctx, arch, state, *depth),

@@ -1268,6 +1268,14 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                             self.pop(ctx, arch, &Reg(0))?;  // exit_label
                             self.pop(ctx, arch, &Reg(1))?;  // old_RSP
                             self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
+                            // Software EH stack: normal (non-throwing) exit —
+                            // discard our frame. Local `Throw` and
+                            // `__wasm_exn_propagate` each pop their own
+                            // frame right before jumping into a dispatch
+                            // stub, so this is the only path that needs to
+                            // pop here.
+                            self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: "__wasm_eh_pop".into() })?;
+                            self.call(ctx, arch, &Reg(0))?;
                             // Jump over dispatch stub.
                             self.jmp_label(ctx, arch, X64Label::Indexed { idx: after_dispatch_idx })?;
 
@@ -1324,19 +1332,33 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 let arity = if (*tag_index as usize) < tags.len() {
                     sigs[tags[*tag_index as usize] as usize].params().len()
                 } else { 0 };
+                // Static dispatch: does the innermost TryTable's if_stack
+                // entry (a purely compile-time, same-function lookup) have a
+                // dispatch stub for us? Resolved before marshalling
+                // tag/values below since `__wasm_eh_pop` is a real SysV
+                // call and would otherwise clobber caller-saved RDX/RBX etc.
+                let local_dispatch = state.if_stack.iter().rev().find_map(|e| match e {
+                    Endable::TryTable { dispatch_idx, .. } => Some(*dispatch_idx),
+                    _ => None,
+                });
+                if local_dispatch.is_some() {
+                    // Software EH stack: this try_table will handle the
+                    // throw locally (bypassing __wasm_exn_propagate
+                    // entirely), so pop its frame ourselves — propagate
+                    // only pops when *it* dispatches (see TryTable::End).
+                    self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: "__wasm_eh_pop".into() })?;
+                    self.call(ctx, arch, &Reg(0))?;
+                }
                 // Tag index → r2; exception values → r3, r4, r5 (up to arity 3).
                 self.mov64(ctx, arch, &Reg(2), *tag_index as u64)?;
                 for i in 0..arity.min(3) {
                     self.pop(ctx, arch, &Reg(3 + i as u8))?;
                 }
-                // Static dispatch: jump to innermost TryTable's dispatch stub if present.
-                if let Some(dispatch_idx) = state.if_stack.iter().rev().find_map(|e| match e {
-                    Endable::TryTable { dispatch_idx, .. } => Some(*dispatch_idx),
-                    _ => None,
-                }) {
+                if let Some(dispatch_idx) = local_dispatch {
                     self.jmp_label(ctx, arch, X64Label::Indexed { idx: dispatch_idx })?;
                 } else {
-                    // No intra-function handler: propagate via CTX chain.
+                    // No intra-function handler: propagate via the software
+                    // EH stack (see `speet_rt::generate_exn_tu`).
                     self.lea_label(ctx, arch, &Reg(0), X64Label::External {
                         name: alloc::format!("__wasm_exn_propagate"),
                     })?;
@@ -1364,6 +1386,17 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.push(ctx, arch, &Reg(0))?;  // exit_label
                 self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
                 self.set_label(ctx, arch, X64Label::Indexed { idx: exit_idx })?;
+                // Software EH stack: __wasm_eh_push(dispatch_addr, current
+                // operand-stack RSP) — a real SysV call (like `MemoryInit`),
+                // marshalling args into RDI/RSI explicitly. This is what
+                // `__wasm_exn_propagate` walks on a cross-function throw,
+                // instead of a CTX chain — see `speet_rt::generate_exn_tu`'s
+                // doc for why. The CTX frame above still handles the
+                // same-function fast path unchanged.
+                self.lea_label(ctx, arch, &Reg(7), X64Label::Indexed { idx: dispatch_idx })?; // RDI = dispatch addr
+                self.mov(ctx, arch, &Reg(6), &RSP)?; // RSI = saved operand-stack RSP
+                self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: "__wasm_eh_push".into() })?;
+                self.call(ctx, arch, &Reg(0))?;
             }
             Instruction::Call(function_index) => {
                 let fn_idx = *function_index;
@@ -1455,6 +1488,26 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 })?; // RSI ← segment base (2nd SysV arg)
                 self.lea_label(ctx, arch, &Reg(0), X64Label::External {
                     name: "__wasm_memory_init_copy".into(),
+                })?;
+                self.call(ctx, arch, &Reg(0))?;
+            }
+            // memory.copy: (dest, src, len) → `__wasm_memory_copy` (memmove).
+            Instruction::MemoryCopy { .. } => {
+                self.pop(ctx, arch, &Reg(2))?; // RDX ← len
+                self.pop(ctx, arch, &Reg(6))?; // RSI ← src_offset
+                self.pop(ctx, arch, &Reg(7))?; // RDI ← dest_offset
+                self.lea_label(ctx, arch, &Reg(0), X64Label::External {
+                    name: "__wasm_memory_copy".into(),
+                })?;
+                self.call(ctx, arch, &Reg(0))?;
+            }
+            // memory.fill: (dest, val, len) → `__wasm_memory_fill` (memset).
+            Instruction::MemoryFill(_) => {
+                self.pop(ctx, arch, &Reg(2))?; // RDX ← len
+                self.pop(ctx, arch, &Reg(6))?; // RSI ← val
+                self.pop(ctx, arch, &Reg(7))?; // RDI ← dest_offset
+                self.lea_label(ctx, arch, &Reg(0), X64Label::External {
+                    name: "__wasm_memory_fill".into(),
                 })?;
                 self.call(ctx, arch, &Reg(0))?;
             }

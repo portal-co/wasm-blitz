@@ -446,33 +446,53 @@ both blocks exit.
 
 ### NaiveAbi native backends (x86-64, AArch64, RISC-V 64)
 
-Exception handling for the NaiveAbi custom calling convention uses the **CTX
-stack** — the same mechanism used for control flow block frames. Platform
-unwinding (`_Unwind_RaiseException` / DWARF) is **not** used; see *SysVAbi
-deferral* below.
+Exception handling for the NaiveAbi custom calling convention uses **two**
+complementary mechanisms:
+
+- the **CTX stack** (same mechanism as control-flow block frames) for the
+  same-function fast path — a `throw` whose handler is in the *current*
+  function's own `if_stack`, resolved entirely at compile time;
+- a **global software EH stack** (`__wasm_eh_push`/`__wasm_eh_pop`/
+  `__wasm_eh_take`, implemented by the embedding runtime — see
+  `speet-rt/src/exn.rs` in `speet`) for **cross-function propagation**, since
+  a CTX-chain walk would require every native caller frame on the stack
+  (including non-blitz-generated ones) to cooperate. See
+  `docs/exception-propagation-gap.md` for the design rationale.
+
+Platform unwinding (`_Unwind_RaiseException` / DWARF) is **not** used; see
+*SysVAbi deferral* below.
 
 #### CTX stack layout for `try_table`
 
-On `try_table` entry, three words are pushed onto the CTX stack (after
-`xchg RSP ↔ CTX`):
+On `try_table` entry, two words are pushed onto the CTX stack (after
+`xchg RSP ↔ CTX`), same layout as a `Block` frame:
 
 ```
 [CTX+0]  dispatch_label_addr   ← address of the exception dispatch stub
 [CTX+8]  old_RSP               ← operand stack to restore when catch fires
-[CTX+16] TRYTABLE_SENTINEL     ← 0xE4C3_E4C3_E4C3_E4C3 (identifies TryTable frames)
 ```
+
+In parallel, a frame is pushed onto the **software EH stack** (a real ABI
+call, not a CTX push): `__wasm_eh_push(dispatch_label_addr, current_RSP)`.
+This is what makes the dispatch stub reachable from a `throw` in a different
+function entirely.
 
 #### `throw` — NaiveAbi
 
 1. Pop `arity` values from the operand stack into scratch registers (Reg(3)..Reg(2+arity)).
 2. Save `tag_index` into a context-relative slot.
-3. Walk the CTX stack backward looking for a `TRYTABLE_SENTINEL` frame.
-4. On match: restore `RSP` from `old_RSP`, jump to `dispatch_label_addr`.
-5. If CTX stack exhausted: load the **caller's saved CTX** (stored at a fixed
-   offset in the current frame base) and continue scanning — this is the
-   **cross-function propagation** path.
-6. If the root frame is reached with no handler: call `__wasm_unhandled_exception`
-   (traps with `ud2` / `unimp` / `ebreak`).
+3. Scan the **current function's** `if_stack` (compile-time, same-function
+   only) for a `TryTable` entry.
+4. On match (local handler): call `__wasm_eh_pop()` first (this throw
+   consumes that `try_table`'s software-stack frame directly, without ever
+   going through `__wasm_exn_propagate`), then jump to `dispatch_label_addr`.
+5. If no local handler: jump (not call — this never returns) to
+   `__wasm_exn_propagate`, a routine supplied by the embedding runtime. It
+   calls `__wasm_eh_take(&dispatch_out, &sp_out)`: on a hit, overwrites the
+   hardware SP with `sp_out` and jumps to `dispatch_out` (the innermost
+   still-open `try_table` frame from *any* function in the current call
+   chain); on a miss (software EH stack empty), falls through to
+   `__wasm_unhandled_exception` (traps).
 
 #### `try_table` start — NaiveAbi
 
@@ -480,46 +500,63 @@ On `try_table` entry, three words are pushed onto the CTX stack (after
 lea_label r0, <dispatch_idx>   ; dispatch handler address
 mov r2, RSP                     ; save current operand stack pointer
 xchg RSP, CTX
-push TRYTABLE_SENTINEL
 push r2                          ; old_RSP
 push r0                          ; dispatch label
 xchg RSP, CTX
 <exit_label>:                    ; fall-through to body
+; software EH stack — real ABI call, args in the two argument registers:
+call __wasm_eh_push(dispatch_label_addr, r2)
 ```
 
 #### `try_table` end — NaiveAbi
 
-Normal exit (no exception): pops the three CTX slots and falls through to the
-exit label (same pattern as `Block`):
+Normal exit (no exception): pops the two CTX slots, calls `__wasm_eh_pop()`
+to discard the matching software-stack frame (this is the *only* path that
+pops on a normal exit — a local `throw` pops its own frame per step 4 above,
+and `__wasm_exn_propagate` pops via `__wasm_eh_take` on the cross-function
+path), then falls through to the exit label (same pattern as `Block`):
 
 ```asm
 xchg RSP, CTX
 pop r0   ; dispatch label (discard)
 pop r1   ; old_RSP (discard)
-pop r0   ; TRYTABLE_SENTINEL (discard)
 xchg RSP, CTX
+call __wasm_eh_pop()
 <exit_label>:   ; placed here
 ```
 
 #### Exception dispatch stub — NaiveAbi
 
-Placed at `dispatch_idx` label. Compares the saved tag index against each
-`Catch::One { tag }` clause; on match, restores the operand stack (from
-`old_RSP`), pushes exception values, and jumps to the catch target label via
-the standard `br`-style CTX restore + jump. `Catch::All` always matches.
+Placed at `dispatch_idx` label, reached either by a local `throw`'s direct
+jump or by `__wasm_exn_propagate`'s cross-function jump. Restores the
+operand stack from `old_RSP` (still read off the CTX stack), then compares
+the saved tag index against each `Catch::One { tag }` clause; on match,
+pushes exception values and jumps to the catch target label via the standard
+`br`-style CTX restore + jump. `Catch::All` always matches. If no catch
+matches, falls through to a bare jump to `__wasm_exn_propagate` (this
+frame's own software-stack entry was already popped — by whichever of
+`try_table` end / local `throw` / `__wasm_eh_take` got us here — so
+propagation continues from the *next* still-open frame, not this one again).
 
 ---
 
-### SysVAbi deferral
+### SysVAbi exception handling (short-term: NaiveAbi software EH)
 
-SysVAbi exception handling is **not implemented**. It requires DWARF `.eh_frame`
-personality routines and `_Unwind_RaiseException` integration, which is
-non-trivial and architecturally independent work.
+**Supported today:** SysV codegen falls through to NaiveAbi `Throw`/`TryTable`
+handlers, which use the **software EH stack** (`__wasm_eh_push` /
+`__wasm_exn_propagate` — see above). Cross-function exception paths (including
+speet `CallEscape::Exception`) therefore work under SysV object emission the
+same way they do under NaiveAbi, without DWARF.
 
-All `BackendAbi` exception methods on SysVAbi variants panic with:
-```
-todo!("SysVAbi exception handling requires platform unwinder — deferred; see docs/abi.md")
-```
+**Still deferred (tracked separately):** a true SysV/platform unwind path —
+DWARF `.eh_frame` personality routines and `_Unwind_RaiseException` — needed
+only if embedders require C++/libunwind interop with non-blitz frames. Until
+then, `BackendAbi::emit_throw` / `emit_try_table_*` on SysVAbi variants remain
+`todo!("…platform unwinder…")` and are unused; the insn path goes through
+naive.
+
+Goal: keep documenting this split; do not implement DWARF until an embedder
+asks for it.
 
 ---
 

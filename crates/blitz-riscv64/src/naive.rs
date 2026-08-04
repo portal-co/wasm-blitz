@@ -955,6 +955,14 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                                 let it = ralloc.flush();
                                 emit_cmds(self, ctx, arch, it)?;
                             }
+                            // Software EH stack: normal (non-throwing) exit —
+                            // discard our frame. Local `Throw` and
+                            // `__wasm_exn_propagate` each pop their own
+                            // frame right before jumping into a dispatch
+                            // stub, so this is the only path that needs to
+                            // pop here.
+                            self.la_label(ctx, arch, &Reg(5), RiscvLabel::External { name: "__wasm_eh_pop".into() })?;
+                            self.jalr(ctx, arch, &Reg(1), &Reg(5), 0)?;
                             let ra = portal_solutions_blitz_common::asm::Reg(0);
                             // Normal path: jump over dispatch stub.
                             self.jal_label(ctx, arch, &ra, RiscvLabel::Indexed { idx: after_dispatch_idx })?;
@@ -987,7 +995,15 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                                     Catch::OneRef { .. } | Catch::AllRef { .. } => {}
                                 }
                             }
-                            self.jal_label(ctx, arch, &Reg(1), RiscvLabel::External { name: "__wasm_exn_propagate".into() })?;
+                            // No catch matched: propagate via the software
+                            // EH stack (see `speet_rt::generate_exn_tu`).
+                            // `__wasm_eh_take` already popped the frame that
+                            // got us here, so no explicit pop is needed —
+                            // target `x0` (discard link), a plain tail
+                            // jump: `__wasm_exn_propagate` never returns,
+                            // and this dispatch stub can itself be reached
+                            // via a bare jump rather than a call.
+                            self.jal_label(ctx, arch, &Reg(0), RiscvLabel::External { name: "__wasm_exn_propagate".into() })?;
                             self.set_label(ctx, arch, RiscvLabel::Indexed { idx: after_dispatch_idx })?;
                             self.set_label(ctx, arch, RiscvLabel::Indexed { idx: exit_idx })?;
                         }
@@ -1130,6 +1146,34 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 })?;
                 self.jalr(ctx, arch, &Reg(1), &Reg(5), 0)?;
             }
+            // memory.copy: (dest, src, len) → `__wasm_memory_copy`.
+            Instruction::MemoryCopy { .. } => {
+                if let Some(ralloc) = state.regalloc.as_mut() {
+                    let it = ralloc.flush();
+                    emit_cmds(self, ctx, arch, it)?;
+                }
+                pop(self, ctx, arch, &Reg(12))?; // a2 = len
+                pop(self, ctx, arch, &Reg(11))?; // a1 = src_offset
+                pop(self, ctx, arch, &Reg(10))?; // a0 = dest_offset
+                self.la_label(ctx, arch, &Reg(5), RiscvLabel::External {
+                    name: "__wasm_memory_copy".into(),
+                })?;
+                self.jalr(ctx, arch, &Reg(1), &Reg(5), 0)?;
+            }
+            // memory.fill: (dest, val, len) → `__wasm_memory_fill`.
+            Instruction::MemoryFill(_) => {
+                if let Some(ralloc) = state.regalloc.as_mut() {
+                    let it = ralloc.flush();
+                    emit_cmds(self, ctx, arch, it)?;
+                }
+                pop(self, ctx, arch, &Reg(12))?; // a2 = len
+                pop(self, ctx, arch, &Reg(11))?; // a1 = val
+                pop(self, ctx, arch, &Reg(10))?; // a0 = dest_offset
+                self.la_label(ctx, arch, &Reg(5), RiscvLabel::External {
+                    name: "__wasm_memory_fill".into(),
+                })?;
+                self.jalr(ctx, arch, &Reg(1), &Reg(5), 0)?;
+            }
             // AOT data segments are immutable symbols; dropping their runtime
             // liveness is intentionally a no-op, like the other backends.
             Instruction::DataDrop(_) => {}
@@ -1138,18 +1182,40 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 let arity = if (*tag_index as usize) < tags.len() {
                     sigs[tags[*tag_index as usize] as usize].params().len()
                 } else { 0 };
+                // Static dispatch: does the innermost TryTable's if_stack
+                // entry (a purely compile-time, same-function lookup) have a
+                // dispatch stub for us? Resolved before marshalling
+                // tag/values below since `__wasm_eh_pop` is a real psABI
+                // call and would otherwise clobber caller-saved a0-a7/t0-t6.
+                let local_dispatch = state.if_stack.iter().rev().find_map(|e| match e {
+                    Endable::TryTable { dispatch_idx, .. } => Some(*dispatch_idx),
+                    _ => None,
+                });
+                if let Some(ralloc) = state.regalloc.as_mut() {
+                    let it = ralloc.flush();
+                    emit_cmds(self, ctx, arch, it)?;
+                }
+                if local_dispatch.is_some() {
+                    // Software EH stack: this try_table will handle the
+                    // throw locally (bypassing __wasm_exn_propagate
+                    // entirely), so pop its frame ourselves — propagate
+                    // only pops when *it* dispatches (see TryTable::End).
+                    self.la_label(ctx, arch, &Reg(5), RiscvLabel::External { name: "__wasm_eh_pop".into() })?;
+                    self.jalr(ctx, arch, &Reg(1), &Reg(5), 0)?;
+                }
                 // T0 (a0/x10) = tag index, T2..T(1+arity) = exception values
                 self.addi(ctx, arch, &Reg(10), &Reg(0), *tag_index as i32)?; // a0 = tag
                 for i in 0..arity.min(3) {
                     pop(self, ctx, arch, &Reg(12 + i as u8))?; // a2, a3, a4
                 }
-                if let Some(dispatch_idx) = state.if_stack.iter().rev().find_map(|e| match e {
-                    Endable::TryTable { dispatch_idx, .. } => Some(*dispatch_idx),
-                    _ => None,
-                }) {
+                if let Some(dispatch_idx) = local_dispatch {
                     self.jal_label(ctx, arch, &Reg(0), RiscvLabel::Indexed { idx: dispatch_idx })?;
                 } else {
-                    self.jal_label(ctx, arch, &Reg(1), RiscvLabel::External { name: "__wasm_exn_propagate".into() })?;
+                    // No intra-function handler: propagate via the software
+                    // EH stack. Target x0 (discard link): a plain tail jump,
+                    // matching x86/AArch64's `jmp`/`br` — see TryTable::End's
+                    // doc for why `__wasm_exn_propagate` never returns.
+                    self.jal_label(ctx, arch, &Reg(0), RiscvLabel::External { name: "__wasm_exn_propagate".into() })?;
                 }
             }
             Instruction::ThrowRef => { /* exnref deferred */ }
@@ -1166,6 +1232,21 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     after_dispatch_idx,
                     catches: catches.iter().cloned().collect::<alloc::vec::Vec<_>>().into_boxed_slice(),
                 });
+                // Software EH stack: __wasm_eh_push(dispatch_addr, current
+                // sp) — a real RISC-V psABI call (like `MemoryInit`),
+                // marshalling args into a0/a1 explicitly. This is what
+                // `__wasm_exn_propagate` walks on a cross-function throw
+                // (see `speet_rt::generate_exn_tu`'s doc); this backend's
+                // own `if_stack` scan stays compile-time/same-function-only,
+                // per its existing design.
+                if let Some(ralloc) = state.regalloc.as_mut() {
+                    let it = ralloc.flush();
+                    emit_cmds(self, ctx, arch, it)?;
+                }
+                self.la_label(ctx, arch, &Reg(10), RiscvLabel::Indexed { idx: dispatch_idx })?; // a0 = dispatch addr
+                self.mv(ctx, arch, &Reg(11), &Reg(2))?; // a1 = sp
+                self.la_label(ctx, arch, &Reg(5), RiscvLabel::External { name: "__wasm_eh_push".into() })?;
+                self.jalr(ctx, arch, &Reg(1), &Reg(5), 0)?;
                 self.set_label(ctx, arch, RiscvLabel::Indexed { idx: exit_idx })?;
             }
             other => panic!("unimplemented WASM instruction in RISC-V naive handle_op: {other:?}"),
