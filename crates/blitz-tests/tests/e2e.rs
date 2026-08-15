@@ -3072,6 +3072,12 @@ fn compile_allstack_binary(wasm: &[u8], arch: NativeArch) -> (Vec<u8>, u64) {
             state.call_abi = sysv::CallAbi::AllStack;
             state.call_params = call_params;
             state.call_results = call_results;
+            // `CallIndirect`/`CallRef`-family lowering reads `sig_params`/
+            // `sig_results` (keyed by *type* index, unlike `call_params`/
+            // `call_results` above which are keyed by *function* index) —
+            // needed by `test_unicorn_x86_64_call_ref` and its siblings.
+            state.sig_params = sigs_wp.iter().map(|s| s.params().len() as u32).collect();
+            state.sig_results = sigs_wp.iter().map(|s| s.results().len() as u32).collect();
             for op in ops {
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
                     &mut out, &mut ctx, X64Arch::default(), &mut state, &[], &op.unwrap(),
@@ -3091,6 +3097,8 @@ fn compile_allstack_binary(wasm: &[u8], arch: NativeArch) -> (Vec<u8>, u64) {
             state.call_abi = naive::CallAbi::AllStack;
             state.call_params = call_params;
             state.call_results = call_results;
+            state.sig_params = sigs_wp.iter().map(|s| s.params().len() as u32).collect();
+            state.sig_results = sigs_wp.iter().map(|s| s.results().len() as u32).collect();
             for op in ops {
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
                     &mut out, &mut ctx, AArch64Arch::default(), &mut state, &[], &op.unwrap(),
@@ -3344,6 +3352,78 @@ fn test_unicorn_x86_64_deep_tailchain() {
 fn test_unicorn_aarch64_deep_tailchain() {
     let n = 20_000u64;
     assert_eq!(run_deep_tailchain(NativeArch::AArch64, n, 0), n * (n + 1) / 2);
+}
+
+/// Two functions, `(i64) -> i64` each: func 0 (the `compile_allstack_binary`
+/// entry point) does `ref.func 1` then `call_ref`/`return_call_ref` (per
+/// `tail`) against func 1, which computes `n + 1`. Proves the native SysV
+/// `RefFunc`/`CallRef`/`ReturnCallRef` lowering (blitz-x86-64/blitz-aarch64
+/// `sysv.rs`) end-to-end: no WASM table exists at the machine-code level in
+/// this backend, so `ref.func` materializes a raw function address directly
+/// (see `sysv.rs`'s doc comment on those match arms) and `call_ref` consumes
+/// it exactly like `call_indirect` consumes a table-loaded one.
+fn ref_func_call_wasm(tail: bool) -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([ValType::I64], [ValType::I64]); // type 0
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0); // func 0: caller (entry)
+    functions.function(0); // func 1: callee (n+1)
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+
+    let mut caller = Function::new([]);
+    caller.instruction(&Instruction::LocalGet(0));
+    caller.instruction(&Instruction::RefFunc(1));
+    if tail {
+        caller.instruction(&Instruction::ReturnCallRef(0));
+    } else {
+        caller.instruction(&Instruction::CallRef(0));
+        caller.instruction(&Instruction::Return);
+    }
+    caller.instruction(&Instruction::End);
+    code.function(&caller);
+
+    let mut callee = Function::new([]);
+    callee.instruction(&Instruction::LocalGet(0));
+    callee.instruction(&Instruction::I64Const(1));
+    callee.instruction(&Instruction::I64Add);
+    callee.instruction(&Instruction::Return);
+    callee.instruction(&Instruction::End);
+    code.function(&callee);
+
+    module.section(&code);
+    module.finish()
+}
+
+fn run_ref_func_call(arch: NativeArch, tail: bool, n: u64) -> u64 {
+    let wasm = ref_func_call_wasm(tail);
+    let (code, entry) = compile_allstack_binary(&wasm, arch);
+    run_allstack_entry(arch, &code, entry, &[n], 100_000)
+}
+
+#[test]
+fn test_unicorn_x86_64_call_ref() {
+    assert_eq!(run_ref_func_call(NativeArch::X86_64, false, 41), 42);
+}
+
+#[test]
+fn test_unicorn_aarch64_call_ref() {
+    assert_eq!(run_ref_func_call(NativeArch::AArch64, false, 41), 42);
+}
+
+#[test]
+fn test_unicorn_x86_64_return_call_ref() {
+    assert_eq!(run_ref_func_call(NativeArch::X86_64, true, 41), 42);
+}
+
+#[test]
+fn test_unicorn_aarch64_return_call_ref() {
+    assert_eq!(run_ref_func_call(NativeArch::AArch64, true, 41), 42);
 }
 
 // ── Load/store width family (sub-word, signed/unsigned) ───────────────────────

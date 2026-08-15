@@ -629,6 +629,50 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 }
             }
 
+            // ---- Function references: a "ref" on the operand stack is just the
+            // raw native address of the target, exactly what `lea_label`
+            // materializes for a direct `Call`/`ReturnCall` target — so
+            // `ref.func` is `lea_label` + push, and `call_ref`/
+            // `return_call_ref` are `call_indirect`/`return_call_indirect`
+            // with the table-load step (`sysv_load_indirect_target`)
+            // replaced by a plain pop, since the popped value already *is*
+            // the target address rather than an index to look up. No WASM
+            // table (typed or otherwise) exists at the machine-code level
+            // in this backend — an embedder splices a compiled function's
+            // entry address in directly (see os-jit-core's `JitArtifact::
+            // Native`), so a typed funcref table's runtime type check has
+            // no native equivalent to lower either; this backend accepts
+            // any `(ref $t)`/`(ref null $t)` blindly, on the same trust
+            // model already implied by `call_indirect`'s bare `Reg(10)`
+            // load skipping any table bounds/type check. ----
+            Instruction::RefFunc(idx) if state.call_abi == CallAbi::AllStack => {
+                self.sysv_flush_regalloc(ctx, arch, state)?;
+                let (label, ..) = Self::sysv_call_target(state, func_imports, *idx);
+                self.lea_label(ctx, arch, &RAX, label)?;
+                self.push(ctx, arch, &RAX)
+            }
+            Instruction::CallRef(type_index) if state.call_abi == CallAbi::AllStack => {
+                self.sysv_flush_regalloc(ctx, arch, state)?;
+                let ty = *type_index as usize;
+                let arity = state.sig_params.get(ty).copied().unwrap_or(0);
+                let results = state.sig_results.get(ty).copied().unwrap_or(0);
+                self.pop(ctx, arch, &Reg(10))?; // funcref value (raw target address) → R10
+                self.sysv_emit_marshalled_call_reg(ctx, arch, Reg(10), arity, results)
+            }
+            Instruction::ReturnCallRef(type_index) if state.call_abi == CallAbi::AllStack => {
+                self.sysv_flush_regalloc(ctx, arch, state)?;
+                let ty = *type_index as usize;
+                let arity = state.sig_params.get(ty).copied().unwrap_or(0);
+                let results = state.sig_results.get(ty).copied().unwrap_or(0);
+                self.pop(ctx, arch, &Reg(10))?;
+                if arity as usize > state.param_count {
+                    self.sysv_emit_marshalled_call_reg(ctx, arch, Reg(10), arity, results)?;
+                    self.sysv_emit_epilogue(ctx, arch, state)
+                } else {
+                    self.sysv_emit_tail_call_reg(ctx, arch, Reg(10), arity, state.shard.is_some())
+                }
+            }
+
             // ---- Return: always emit SysV epilogue regardless of block depth ----
             Instruction::Return => self.sysv_emit_epilogue(ctx, arch, state),
             // ---- Function-level End (empty ctrl_stack) ----

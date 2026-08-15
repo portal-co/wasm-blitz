@@ -418,6 +418,44 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 }
             }
 
+            // ---- Function references: see blitz-x86-64's sysv.rs (same design,
+            // same reasoning) for why `ref.func` is just `load_label_addr` +
+            // push, and `call_ref`/`return_call_ref` are `call_indirect`/
+            // `return_call_indirect` with the table load
+            // (`sysv_load_indirect_target`) replaced by a plain pop — the
+            // popped value already *is* the target address. x14 mirrors
+            // `sysv_load_indirect_target`'s existing choice of a
+            // marshalling-preserved scratch register. ----
+            Instruction::RefFunc(idx) if state.call_abi == CallAbi::AllStack => {
+                self.sysv_flush_regalloc(ctx, arch, state)?;
+                let (label, ..) = Self::sysv_call_target(state, func_imports, *idx);
+                crate::load_label_addr(self, ctx, arch, &reg(Reg(14)), label)?;
+                self.wasm_push(ctx, arch, Reg(14))
+            }
+            Instruction::CallRef(type_index) if state.call_abi == CallAbi::AllStack => {
+                self.sysv_flush_regalloc(ctx, arch, state)?;
+                let ty = *type_index as usize;
+                let arity = state.sig_params.get(ty).copied().unwrap_or(0);
+                let results = state.sig_results.get(ty).copied().unwrap_or(0);
+                self.wasm_pop(ctx, arch, Reg(14))?; // funcref value (raw target address) → x14
+                self.sysv_emit_marshalled_call(ctx, arch, None, Some(Reg(14)), arity, results, false)
+            }
+            Instruction::ReturnCallRef(type_index) if state.call_abi == CallAbi::AllStack => {
+                self.sysv_flush_regalloc(ctx, arch, state)?;
+                let ty = *type_index as usize;
+                let arity = state.sig_params.get(ty).copied().unwrap_or(0);
+                let results = state.sig_results.get(ty).copied().unwrap_or(0);
+                self.wasm_pop(ctx, arch, Reg(14))?;
+                if arity as usize > state.param_count {
+                    self.sysv_emit_marshalled_call(
+                        ctx, arch, None, Some(Reg(14)), arity, results, false,
+                    )?;
+                    self.sysv_emit_epilogue(ctx, arch, state)
+                } else {
+                    self.sysv_emit_tail_call(ctx, arch, None, Some(Reg(14)), arity, state.shard.is_some())
+                }
+            }
+
             // ---- Return: always emit AAPCS64 epilogue regardless of block depth ----
             Instruction::Return => self.sysv_emit_epilogue(ctx, arch, state),
             // ---- Function-level End (empty if_stack) ----
