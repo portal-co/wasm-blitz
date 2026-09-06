@@ -55,24 +55,25 @@ pub fn inspect_native(wasm: &[u8]) -> Result<NativeModule, String> {
     for payload in wasmparser::Parser::new(0).parse_all(wasm) {
         match payload.map_err(|e| e.to_string())? {
             wasmparser::Payload::MemorySection(_) => {
-                return Err("memory unsupported in native scope".into())
+                return Err("memory unsupported in native scope".into());
             }
             wasmparser::Payload::GlobalSection(_) => {
-                return Err("globals unsupported in native scope".into())
+                return Err("globals unsupported in native scope".into());
             }
             wasmparser::Payload::TableSection(_) => {
-                return Err("tables unsupported in native scope".into())
+                return Err("tables unsupported in native scope".into());
             }
             wasmparser::Payload::ImportSection(_) => {
-                return Err("imports unsupported in native scope".into())
+                return Err("imports unsupported in native scope".into());
             }
             wasmparser::Payload::TagSection(_) => {
-                return Err("tags unsupported in native scope".into())
+                return Err("tags unsupported in native scope".into());
             }
             wasmparser::Payload::TypeSection(reader) => {
                 for group in reader {
                     for subtype in group.map_err(|e| e.to_string())?.into_types() {
-                        if let wasmparser::CompositeInnerType::Func(ft) = subtype.composite_type.inner
+                        if let wasmparser::CompositeInnerType::Func(ft) =
+                            subtype.composite_type.inner
                         {
                             let ok = ft.results().len() <= 1
                                 && ft.params().iter().all(|t| *t == wasmparser::ValType::I64)

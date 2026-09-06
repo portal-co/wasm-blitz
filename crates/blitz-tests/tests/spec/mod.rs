@@ -23,6 +23,7 @@ mod baseline;
 mod features;
 mod logging;
 pub mod native;
+pub mod native_exec;
 
 pub use baseline::Baseline;
 pub use logging::Logger;
@@ -99,7 +100,9 @@ fn f64_bits(f: wast::token::F64) -> u64 {
 /// Convert a parsed wast argument into an executable `Val`.
 /// Returns `None` when the argument is out of phase-1 scope (refs, v128).
 fn arg_to_val(arg: &WastArg<'_>) -> Option<Val> {
-    let WastArg::Core(core) = arg else { return None };
+    let WastArg::Core(core) = arg else {
+        return None;
+    };
     Some(match core {
         WastArgCore::I32(v) => Val::I32(*v as u32),
         WastArgCore::I64(v) => Val::I64(*v as u64),
@@ -112,7 +115,9 @@ fn arg_to_val(arg: &WastArg<'_>) -> Option<Val> {
 /// Classify a wast expected result into a checker.
 /// Returns `None` when out of phase-1 scope.
 fn ret_to_expected(ret: &WastRet<'_>) -> Option<Expected> {
-    let WastRet::Core(core) = ret else { return None };
+    let WastRet::Core(core) = ret else {
+        return None;
+    };
     Some(match core {
         WastRetCore::I32(v) => Expected::I32(*v as u32),
         WastRetCore::I64(v) => Expected::I64(*v as u64),
@@ -159,8 +164,12 @@ impl F32Pat {
             F32Pat::Value(v) => bits == v,
             // Spec: result is canonical NaN if we got a NaN with canonical payload,
             // arithmetic NaN patterns accept any NaN payload — but only NaNs.
-            F32Pat::CanonicalNan => bits == CANON_F32_BITS || bits == (CANON_F32_BITS | 0x8000_0000),
-            F32Pat::ArithmeticNan => (bits & 0x7f80_0000) == 0x7f80_0000 && (bits & 0x007f_ffff) != 0,
+            F32Pat::CanonicalNan => {
+                bits == CANON_F32_BITS || bits == (CANON_F32_BITS | 0x8000_0000)
+            }
+            F32Pat::ArithmeticNan => {
+                (bits & 0x7f80_0000) == 0x7f80_0000 && (bits & 0x007f_ffff) != 0
+            }
         }
     }
 }
@@ -278,7 +287,10 @@ fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
                     if let TypeRef::Global(gty) = imp.ty {
                         // Global imports: only spectest i32/i64 globals are supported.
                         if imp.module == "spectest"
-                            && matches!(gty.content_type, wasmparser::ValType::I32 | wasmparser::ValType::I64)
+                            && matches!(
+                                gty.content_type,
+                                wasmparser::ValType::I32 | wasmparser::ValType::I64
+                            )
                         {
                             m.global_inits
                                 .push(GlobalInit::Spectest(imp.name.to_string()));
@@ -293,7 +305,8 @@ fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
                 for mem in reader {
                     let mem = mem.map_err(|e| format!("memory: {e}"))?;
                     if m.memory_pages.is_none() {
-                        m.memory_pages = Some(u32::try_from(mem.initial).map_err(|_| "memory too large")?);
+                        m.memory_pages =
+                            Some(u32::try_from(mem.initial).map_err(|_| "memory too large")?);
                     }
                 }
             }
@@ -302,8 +315,7 @@ fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
                     let exp = exp.map_err(|e| format!("export: {e}"))?;
                     match exp.kind {
                         wasmparser::ExternalKind::Func => {
-                            m.exported_funcs
-                                .push((exp.name.to_string(), exp.index));
+                            m.exported_funcs.push((exp.name.to_string(), exp.index));
                         }
                         wasmparser::ExternalKind::Global => {
                             m.exported_globals.push(exp.name.to_string());
@@ -317,7 +329,10 @@ fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
                     let table = table.map_err(|e| format!("table: {e}"))?;
                     let is_plain_func = matches!(
                         table.ty.element_type.heap_type(),
-                        wasmparser::HeapType::Abstract { shared: false, ty: wasmparser::AbstractHeapType::Func }
+                        wasmparser::HeapType::Abstract {
+                            shared: false,
+                            ty: wasmparser::AbstractHeapType::Func
+                        }
                     );
                     if !is_plain_func {
                         m.typed_table = true;
@@ -333,9 +348,12 @@ fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
                         Ok(wasmparser::Operator::I64Const { value }) => GlobalInit::I64(value),
                         Ok(wasmparser::Operator::GlobalGet { global_index }) => {
                             // Init-from-import (e.g. spectest global) — resolve via import order.
-                            m.global_inits.get(global_index as usize).cloned().ok_or_else(|| {
-                                "global init references unknown global".to_string()
-                            })?
+                            m.global_inits
+                                .get(global_index as usize)
+                                .cloned()
+                                .ok_or_else(|| {
+                                    "global init references unknown global".to_string()
+                                })?
                         }
                         _ => return Err("unsupported global init expr".into()),
                     };
@@ -345,7 +363,10 @@ fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
             Payload::DataSection(reader) => {
                 for data in reader {
                     let data = data.map_err(|e| format!("data: {e}"))?;
-                    if let wasmparser::DataKind::Active { memory_index, offset_expr } = data.kind
+                    if let wasmparser::DataKind::Active {
+                        memory_index,
+                        offset_expr,
+                    } = data.kind
                     {
                         let _ = memory_index;
                         // Evaluate the offset const-expr: only `i32.const N` supported.
@@ -367,8 +388,8 @@ fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
 /// Compile a module through the blitz C backend (same pipeline as e2e's
 /// `compile_c`).
 fn blitz_compile_c(wasm: &[u8]) -> Result<String, String> {
-    use portal_solutions_blitz_common::{dce_pass, ops::mach_operators};
     use portal_solutions_blitz_c::{CWrite, State as CState};
+    use portal_solutions_blitz_common::{dce_pass, ops::mach_operators};
     use wasm_encoder::reencode::RoundtripReencoder;
 
     let mut sigs_wp: Vec<wasmparser::FuncType> = Vec::new();
@@ -378,11 +399,9 @@ fn blitz_compile_c(wasm: &[u8]) -> Result<String, String> {
         match payload.map_err(|e| e.to_string())? {
             wasmparser::Payload::TypeSection(reader) => {
                 for group in reader {
-                    for subtype in group
-                        .map_err(|e| e.to_string())?
-                        .into_types()
-                    {
-                        if let wasmparser::CompositeInnerType::Func(ft) = subtype.composite_type.inner
+                    for subtype in group.map_err(|e| e.to_string())?.into_types() {
+                        if let wasmparser::CompositeInnerType::Func(ft) =
+                            subtype.composite_type.inner
                         {
                             sigs_wp.push(ft);
                         }
@@ -410,8 +429,7 @@ fn blitz_compile_c(wasm: &[u8]) -> Result<String, String> {
         .map(wasm_encoder::FuncType::try_from)
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
-    let raw_ops =
-        mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
     let ops = dce_pass!(raw_ops);
 
     let mut out = String::new();
@@ -420,8 +438,17 @@ fn blitz_compile_c(wasm: &[u8]) -> Result<String, String> {
     let mut reencoder = RoundtripReencoder;
     for op in ops {
         let op = op.map_err(|e| e.to_string())?;
-        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder)
-            .map_err(|e| e.to_string())?;
+        CWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .map_err(|e| e.to_string())?;
     }
     Ok(out)
 }
@@ -445,7 +472,10 @@ fn synthesize_c_module(m: &SpecModule) -> Result<String, String> {
     // Init memory: point __wasm_mems[0] at the driver buffer, apply segments.
     out.push_str("\nstatic void __wasm_spec_setup(void){\n  __wasm_mems[0]=__wasm_driver_mem;__wasm_mem_pages_arr[0]=__wasm_driver_pages;\n");
     for (off, bytes) in &m.data_segments {
-        out.push_str(&format!("  {{static const uint8_t seg[]={bytes:?};memcpy(__wasm_driver_mem+{off},seg,{});}}\n", bytes.len()));
+        out.push_str(&format!(
+            "  {{static const uint8_t seg[]={bytes:?};memcpy(__wasm_driver_mem+{off},seg,{});}}\n",
+            bytes.len()
+        ));
     }
     // Persist module globals across per-invoke processes so sequences like
     // `(module) ... invoke ... invoke` observe mutating globals.
@@ -473,11 +503,9 @@ fn blitz_compile_js(wasm: &[u8]) -> Result<String, String> {
         match payload.map_err(|e| e.to_string())? {
             wasmparser::Payload::TypeSection(reader) => {
                 for group in reader {
-                    for subtype in group
-                        .map_err(|e| e.to_string())?
-                        .into_types()
-                    {
-                        if let wasmparser::CompositeInnerType::Func(ft) = subtype.composite_type.inner
+                    for subtype in group.map_err(|e| e.to_string())?.into_types() {
+                        if let wasmparser::CompositeInnerType::Func(ft) =
+                            subtype.composite_type.inner
                         {
                             sigs_wp.push(ft);
                         }
@@ -502,9 +530,7 @@ fn blitz_compile_js(wasm: &[u8]) -> Result<String, String> {
 
     let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
     for payload in wasmparser::Parser::new(0).parse_all(wasm) {
-        if let wasmparser::Payload::CodeSectionEntry(body) =
-            payload.map_err(|e| e.to_string())?
-        {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload.map_err(|e| e.to_string())? {
             bodies.push(body);
         }
     }
@@ -516,8 +542,7 @@ fn blitz_compile_js(wasm: &[u8]) -> Result<String, String> {
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
 
-    let raw_ops =
-        mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
     let ops = dce_pass!(raw_ops);
 
     let mut out = String::new();
@@ -584,12 +609,8 @@ fn synthesize_js_module(m: &SpecModule) -> Result<String, String> {
     js.push_str(
         "function __wasm_trap(kind){const e=new Error('wasm trap: '+kind);e.__wasm_trap=true;throw e;}\n",
     );
-    js.push_str(
-        "function __popcnt32(x){x=x>>>0;let c=0;while(x){x&=x-1;c++;}return c;}\n",
-    );
-    js.push_str(
-        "function __popcnt64(x){let c=0;x=BigInt(x);while(x){x&=x-1n;c++;}return c;}\n",
-    );
+    js.push_str("function __popcnt32(x){x=x>>>0;let c=0;while(x){x&=x-1;c++;}return c;}\n");
+    js.push_str("function __popcnt64(x){let c=0;x=BigInt(x);while(x){x&=x-1n;c++;}return c;}\n");
     // u64 -> f64 without precision loss path through BigInt division rounding.
     js.push_str(
         "function __u64ToF64(x){if(x<0x8000000000000000n)return Number(x);return Number(x-(x>>24n)*0x1000000n)+Number((x&0xffffffn))*1.0;}\n",
@@ -658,8 +679,9 @@ fn synthesize_js_module(m: &SpecModule) -> Result<String, String> {
         if module == "spectest" {
             let f = match name.as_str() {
                 "print" => "__print".to_string(),
-                "print_i32" => "function(x){console.log('PRINT',Number(BigInt.asIntN(32,x)))}"
-                    .to_string(),
+                "print_i32" => {
+                    "function(x){console.log('PRINT',Number(BigInt.asIntN(32,x)))}".to_string()
+                }
                 "print_i64" => "function(x){console.log('PRINT',x)}".to_string(),
                 "print_i32_f32" => {
                     "function(x,y){console.log('PRINT',Number(BigInt.asIntN(32,x)),y)}".to_string()
@@ -835,7 +857,7 @@ fn run_directive(
             let encoded = match encode_quotewat(qw) {
                 Ok(e) => e,
                 Err(reason) => {
-                    return Verdict::Skip(leak_reason(&format!("module encode: {reason}")))
+                    return Verdict::Skip(leak_reason(&format!("module encode: {reason}")));
                 }
             };
             let Encoded::Binary(wasm) = encoded else {
@@ -900,7 +922,9 @@ fn run_directive(
             runner.registered.push(name.to_string());
             Verdict::Skip("register (cross-module imports)")
         }
-        WastDirective::AssertMalformed { module, message, .. } => {
+        WastDirective::AssertMalformed {
+            module, message, ..
+        } => {
             // We test decode of *binary* forms only; quote forms test the
             // text parser, which is not ours.
             let encoded = match encode_quotewat(module) {
@@ -911,7 +935,10 @@ fn run_directive(
                 Encoded::Quote => Verdict::Skip("assert_malformed quote (text parser)"),
                 Encoded::Binary(wasm) => {
                     // wasmparser must reject it.
-                    match wasmparser::Parser::new(0).parse_all(&wasm).collect::<Result<Vec<_>, _>>() {
+                    match wasmparser::Parser::new(0)
+                        .parse_all(&wasm)
+                        .collect::<Result<Vec<_>, _>>()
+                    {
                         Ok(_) => {
                             // Parser accepted; validation may still reject.
                             match validate_binary(&wasm) {
@@ -932,7 +959,9 @@ fn run_directive(
                 }
             }
         }
-        WastDirective::AssertInvalid { module, message, .. } => {
+        WastDirective::AssertInvalid {
+            module, message, ..
+        } => {
             let encoded = match encode_quotewat(module) {
                 Ok(e) => e,
                 Err(reason) => return Verdict::Skip(leak_reason(&reason)),
@@ -1004,11 +1033,14 @@ fn run_directive(
                 Ok(None) => return Verdict::Skip("unsupported action"),
                 Err(reason) => return Verdict::Skip(leak_reason(&reason)),
             };
-            let expected: Vec<Expected> =
-                match results.iter().map(ret_to_expected).collect::<Option<Vec<_>>>() {
-                    Some(e) => e,
-                    None => return Verdict::Skip("unsupported result type (ref/v128)"),
-                };
+            let expected: Vec<Expected> = match results
+                .iter()
+                .map(ret_to_expected)
+                .collect::<Option<Vec<_>>>()
+            {
+                Some(e) => e,
+                None => return Verdict::Skip("unsupported result type (ref/v128)"),
+            };
             match execute_action(runner, &action, log, idx) {
                 Err(ExecError::Failed(reason)) => Verdict::Skip(leak_reason(&reason)),
                 Err(ExecError::Trap(out)) => {
@@ -1144,11 +1176,7 @@ function toWire(v){
 
     fn send(&mut self, msg: &str) -> Result<DriverResponse, String> {
         use std::io::Write as _;
-        let stdin = self
-            .child
-            .stdin
-            .as_mut()
-            .ok_or("node stdin closed")?;
+        let stdin = self.child.stdin.as_mut().ok_or("node stdin closed")?;
         stdin
             .write_all(msg.as_bytes())
             .and_then(|_| stdin.write_all(b"\n"))
@@ -1156,11 +1184,9 @@ function toWire(v){
             .map_err(|e| format!("node stdin write: {e}"))?;
         let mut line = String::new();
         use std::io::BufRead as _;
-        let n = std::io::BufReader::new(
-            self.child.stdout.as_mut().ok_or("node stdout closed")?,
-        )
-        .read_line(&mut line)
-        .map_err(|e| format!("node stdout read: {e}"))?;
+        let n = std::io::BufReader::new(self.child.stdout.as_mut().ok_or("node stdout closed")?)
+            .read_line(&mut line)
+            .map_err(|e| format!("node stdout read: {e}"))?;
         if n == 0 {
             return Err("node died".into());
         }
@@ -1187,7 +1213,10 @@ struct DriverResponse {
 }
 
 fn parse_driver_response(s: &str) -> DriverResponse {
-    let mut r = DriverResponse { ok: s.contains("\"ok\":true"), ..Default::default() };
+    let mut r = DriverResponse {
+        ok: s.contains("\"ok\":true"),
+        ..Default::default()
+    };
     r.trap = extract_json_string(s, "trap");
     r.err = extract_json_string(s, "err");
     if let Some(start) = s.find("\"results\":[") {
@@ -1293,10 +1322,15 @@ fn execute_action_js(
             (format!("${fn_idx}"), args.clone())
         }
         Action::Get { .. } => {
-            return Err(ExecError::Failed("global export read unsupported in phase 1".into()));
+            return Err(ExecError::Failed(
+                "global export read unsupported in phase 1".into(),
+            ));
         }
     };
-    let session = runner.session.as_mut().ok_or_else(|| ExecError::Failed("no node session".into()))?;
+    let session = runner
+        .session
+        .as_mut()
+        .ok_or_else(|| ExecError::Failed("no node session".into()))?;
     let args_json: Vec<String> = args
         .iter()
         .map(|a| match a {
@@ -1342,7 +1376,12 @@ pub struct FileResult {
 
 /// Run a wast file against a given backend driver.
 /// `backend` selects compilation (`js` or `c`) and execution.
-pub fn run_wast_file_backend(path: &Path, log: &Logger, baseline: &Baseline, backend: Backend) -> FileResult {
+pub fn run_wast_file_backend(
+    path: &Path,
+    log: &Logger,
+    baseline: &Baseline,
+    backend: Backend,
+) -> FileResult {
     let file = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -1381,14 +1420,26 @@ pub fn run_wast_file_backend(path: &Path, log: &Logger, baseline: &Baseline, bac
         Ok(b) => b,
         Err(e) => {
             log.event("fail", "parse", &format!("{file}: {e}"), &[]);
-            return FileResult { file, pass, fail_known, fail_new: vec![0], skip };
+            return FileResult {
+                file,
+                pass,
+                fail_known,
+                fail_new: vec![0],
+                skip,
+            };
         }
     };
     let mut wast: Wast<'_> = match parser::parse(&buf) {
         Ok(w) => w,
         Err(e) => {
             log.event("fail", "parse", &format!("{file}: {e}"), &[]);
-            return FileResult { file, pass, fail_known, fail_new: vec![0], skip };
+            return FileResult {
+                file,
+                pass,
+                fail_known,
+                fail_new: vec![0],
+                skip,
+            };
         }
     };
 
@@ -1407,7 +1458,13 @@ pub fn run_wast_file_backend(path: &Path, log: &Logger, baseline: &Baseline, bac
         }
     }
 
-    FileResult { file, pass, fail_known, fail_new, skip }
+    FileResult {
+        file,
+        pass,
+        fail_known,
+        fail_new,
+        skip,
+    }
 }
 
 /// Backend selector for a spectest run.
@@ -1424,7 +1481,6 @@ pub fn run_wast_file(path: &Path, log: &Logger, baseline: &Baseline) -> FileResu
     run_wast_file_backend(path, log, baseline, Backend::Js)
 }
 
-
 /// Execute one invoke through the C backend: write the translation unit with
 /// a fresh `main`, compile with cc, run, parse the printed uint64 results.
 fn execute_action_c(
@@ -1440,7 +1496,9 @@ fn execute_action_c(
             (*idx, args.clone(), 1)
         }
         Action::Get { .. } => {
-            return Err(ExecError::Failed("global export read unsupported in phase 1".into()));
+            return Err(ExecError::Failed(
+                "global export read unsupported in phase 1".into(),
+            ));
         }
     };
     let _ = nrets;
@@ -1480,7 +1538,8 @@ fn execute_action_c(
 
     let full_src = format!(
         "#include<stdint.h>\n#include<string.h>\n#include<stdlib.h>\n#include<stdio.h>\n#include<math.h>\n{}\n{}\n",
-        runner.c_module.as_ref().unwrap().src, main_body
+        runner.c_module.as_ref().unwrap().src,
+        main_body
     );
     std::fs::write(&src_path, &full_src).map_err(|e| ExecError::Failed(format!("write: {e}")))?;
 
@@ -1525,7 +1584,6 @@ fn execute_action_c(
     Ok(results)
 }
 
-
 /// Run a wast file through the native (Unicorn) backends.
 ///
 /// Phase-3 scope: only pure-i64 modules (no memory/globals/tables/imports)
@@ -1543,7 +1601,13 @@ pub fn run_wast_file_native(path: &Path, baseline: &Baseline, log: &Logger) -> F
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(_) => {
-            return FileResult { file, pass: 0, fail_known: vec![], fail_new: vec![usize::MAX], skip: 0 };
+            return FileResult {
+                file,
+                pass: 0,
+                fail_known: vec![],
+                fail_new: vec![usize::MAX],
+                skip: 0,
+            };
         }
     };
     let mut pass = 0u32;
@@ -1552,10 +1616,22 @@ pub fn run_wast_file_native(path: &Path, baseline: &Baseline, log: &Logger) -> F
     let fail_known: Vec<usize> = Vec::new();
 
     let Ok(buf) = ParseBuffer::new(&source) else {
-        return FileResult { file, pass, fail_known, fail_new: vec![0], skip };
+        return FileResult {
+            file,
+            pass,
+            fail_known,
+            fail_new: vec![0],
+            skip,
+        };
     };
     let Ok(mut wast) = parser::parse::<wast::Wast<'_>>(&buf) else {
-        return FileResult { file, pass, fail_known, fail_new: vec![0], skip };
+        return FileResult {
+            file,
+            pass,
+            fail_known,
+            fail_new: vec![0],
+            skip,
+        };
     };
 
     for (idx, directive) in wast.directives.iter_mut().enumerate() {
@@ -1589,5 +1665,11 @@ pub fn run_wast_file_native(path: &Path, baseline: &Baseline, log: &Logger) -> F
         let _ = idx;
     }
 
-    FileResult { file, pass, fail_known, fail_new, skip }
+    FileResult {
+        file,
+        pass,
+        fail_known,
+        fail_new,
+        skip,
+    }
 }

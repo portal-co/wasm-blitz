@@ -163,12 +163,202 @@ spectest_c! {
 //#[test]
 //fn _dump_js() {}
 
+// ---- Native backends (phase A of docs/native-spectests-plan.md) ------------
 
-// ---- Native backends (phase 3, Unicorn) ------------------------------------
-//
-// Pure-i64 subset of the phase-1 files runs through the AllStack backends;
-// missing cross-clang triples soft-skip (assemble_or_skip pattern). Full
-// native coverage awaits Unicorn host-import support (plan phase 3 risks).
+/// Sentinel-page smoke (phase A): compile a trivial module with one import,
+/// run it, and confirm the run completes (import not called by this module,
+/// but the sentinel trampolines + data area must not break execution).
+#[test]
+fn native_smoke_import_service() {
+    // (import "spectest" "print_i32" (func (param i32)))
+    // (func (export "run") (param i64) (result i64) local.get 0)
+    let mut module = wasm_encoder::Module::new();
+    let mut types = wasm_encoder::TypeSection::new();
+    types.ty().function([wasm_encoder::ValType::I32], []);
+    types
+        .ty()
+        .function([wasm_encoder::ValType::I64], [wasm_encoder::ValType::I64]);
+    module.section(&types);
+    let mut imports = wasm_encoder::ImportSection::new();
+    imports.import(
+        "spectest",
+        "print_i32",
+        wasm_encoder::EntityType::Function(0),
+    );
+    module.section(&imports);
+    let mut funcs = wasm_encoder::FunctionSection::new();
+    funcs.function(1);
+    module.section(&funcs);
+    let mut exports = wasm_encoder::ExportSection::new();
+    exports.export("run", wasm_encoder::ExportKind::Func, 1);
+    module.section(&exports);
+    let mut code = wasm_encoder::CodeSection::new();
+    let mut f = wasm_encoder::Function::new([]);
+    f.instruction(&wasm_encoder::Instruction::LocalGet(0));
+    f.instruction(&wasm_encoder::Instruction::End);
+    code.function(&f);
+    module.section(&code);
+    let wasm = module.finish();
+
+    for arch in [spec::native_exec::NativeArch::X86_64] {
+        let bin = spec::native_exec::compile_module(
+            &wasm,
+            arch,
+            &[("spectest".into(), "print_i32".into())],
+            None,
+            &[],
+        )
+        .unwrap_or_else(|e| panic!("{arch:?} compile failed: {e:?}"));
+
+        let mut calls: Vec<Vec<u64>> = Vec::new();
+        {
+            let mut host = |slot: usize, args: &[u64]| -> Result<Vec<u64>, String> {
+                assert_eq!(slot, 0, "one import");
+                // print_i32(i32): the arg slot is the last pushed; with the
+                // operand window the host picks arg 0 of its own arity.
+                calls.push(args[..1].to_vec());
+                Ok(vec![])
+            };
+            let outcome = spec::native_exec::run_module(
+                arch,
+                &bin,
+                bin.entry_off,
+                &[0x1234_5678],
+                10_000_000,
+                &mut host,
+            );
+            match outcome {
+                spec::native_exec::RunOutcome::Returned(v) => {
+                    assert_eq!(v as u32, 0x1234_5678);
+                }
+                spec::native_exec::RunOutcome::Trapped(e) => {
+                    panic!("{arch:?} trapped: {e}")
+                }
+            }
+        }
+        assert_eq!(calls.len(), 0, "print_i32 not called by this module");
+    }
+}
+
+/// Sentinel-page smoke, import actually called: the module forwards its param
+/// to `print_i32`, then returns a constant. The hook must service the import
+/// and emulation must resume correctly afterward.
+#[test]
+fn native_smoke_import_called() {
+    // (import "spectest" "print_i32" (func $p (param i32)))
+    // (func (export "run") (param i64) (result i64)
+    //   local.get 0  i32.wrap_i64  call $p
+    //   i64.const 77)
+    let mut module = wasm_encoder::Module::new();
+    let mut types = wasm_encoder::TypeSection::new();
+    types.ty().function([wasm_encoder::ValType::I32], []);
+    types
+        .ty()
+        .function([wasm_encoder::ValType::I64], [wasm_encoder::ValType::I64]);
+    module.section(&types);
+    let mut imports = wasm_encoder::ImportSection::new();
+    imports.import(
+        "spectest",
+        "print_i32",
+        wasm_encoder::EntityType::Function(0),
+    );
+    module.section(&imports);
+    let mut funcs = wasm_encoder::FunctionSection::new();
+    funcs.function(1);
+    module.section(&funcs);
+    let mut exports = wasm_encoder::ExportSection::new();
+    exports.export("run", wasm_encoder::ExportKind::Func, 1);
+    module.section(&exports);
+    let mut code = wasm_encoder::CodeSection::new();
+    let mut f = wasm_encoder::Function::new([]);
+    f.instruction(&wasm_encoder::Instruction::LocalGet(0));
+    f.instruction(&wasm_encoder::Instruction::I32WrapI64);
+    f.instruction(&wasm_encoder::Instruction::Call(0));
+    f.instruction(&wasm_encoder::Instruction::I64Const(77));
+    f.instruction(&wasm_encoder::Instruction::End);
+    code.function(&f);
+    module.section(&code);
+    let wasm = module.finish();
+
+    for arch in [spec::native_exec::NativeArch::X86_64] {
+        let bin = spec::native_exec::compile_module(
+            &wasm,
+            arch,
+            &[("spectest".into(), "print_i32".into())],
+            None,
+            &[],
+        )
+        .unwrap_or_else(|e| panic!("{arch:?} compile failed: {e:?}"));
+
+        let mut seen: Option<u64> = None;
+        {
+            let mut host = |slot: usize, args: &[u64]| -> Result<Vec<u64>, String> {
+                assert_eq!(slot, 0, "one import");
+                // print_i32(i32): psABI arg 0 (RDI for x86-64).
+                seen = Some(args[0]);
+                Ok(vec![])
+            };
+            let outcome = spec::native_exec::run_module(
+                arch,
+                &bin,
+                bin.entry_off,
+                &[0x1234_5678],
+                10_000_000,
+                &mut host,
+            );
+            match outcome {
+                spec::native_exec::RunOutcome::Returned(v) => {
+                    assert_eq!(v, 77, "code after the import call must run");
+                }
+                spec::native_exec::RunOutcome::Trapped(e) => {
+                    panic!("{arch:?} trapped: {e}")
+                }
+            }
+        }
+        assert_eq!(
+            seen,
+            Some(0x1234_5678),
+            "import not called with wrapped arg"
+        );
+    }
+}
+
+/// Sentinel trap: `unreachable` compiles to `hlt` and the driver reports
+/// `RunOutcome::Trapped` rather than panicking.
+#[test]
+fn native_smoke_unreachable_trap() {
+    // (func (export "run") (result i64) unreachable)
+    let mut module = wasm_encoder::Module::new();
+    let mut types = wasm_encoder::TypeSection::new();
+    types.ty().function([], [wasm_encoder::ValType::I64]);
+    module.section(&types);
+    let mut funcs = wasm_encoder::FunctionSection::new();
+    funcs.function(0);
+    module.section(&funcs);
+    let mut exports = wasm_encoder::ExportSection::new();
+    exports.export("run", wasm_encoder::ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = wasm_encoder::CodeSection::new();
+    let mut f = wasm_encoder::Function::new([]);
+    f.instruction(&wasm_encoder::Instruction::Unreachable);
+    f.instruction(&wasm_encoder::Instruction::End);
+    code.function(&f);
+    module.section(&code);
+    let wasm = module.finish();
+
+    let arch = spec::native_exec::NativeArch::X86_64;
+    let bin = spec::native_exec::compile_module(&wasm, arch, &[], None, &[])
+        .unwrap_or_else(|e| panic!("compile failed: {e:?}"));
+    let mut host = |_slot: usize, _args: &[u64]| -> Result<Vec<u64>, String> { Ok(vec![]) };
+    match spec::native_exec::run_module(arch, &bin, bin.entry_off, &[], 10_000_000, &mut host) {
+        spec::native_exec::RunOutcome::Trapped(msg) => {
+            eprintln!("[unreachable] trap message: {msg}");
+        }
+        spec::native_exec::RunOutcome::Returned(v) => {
+            panic!("unreachable must trap, returned {v}");
+        }
+    }
+}
 
 #[test]
 fn native_pure_i64_subset() {
@@ -177,11 +367,7 @@ fn native_pure_i64_subset() {
         eprintln!("skipping native spectests: no spec suite found");
         return;
     };
-    let result = spec::run_wast_file_native(
-        &dir.join("test/core/fac.wast"),
-        baseline(),
-        &log,
-    );
+    let result = spec::run_wast_file_native(&dir.join("test/core/fac.wast"), baseline(), &log);
     assert!(
         result.fail_new.is_empty(),
         "[native] fac: new failures at {:?}",
