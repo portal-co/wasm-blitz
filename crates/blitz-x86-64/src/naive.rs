@@ -2198,6 +2198,28 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.push(ctx, arch, &Reg(0))?;
             }
 
+            // ---- copysign: GP bit-mask on the sign bit (bits live in RAX) ----
+            Instruction::F64Copysign => {
+                self.pop(ctx, arch, &Reg(1))?; // y (sign source)
+                self.pop(ctx, arch, &Reg(0))?; // x
+                self.mov64(ctx, arch, &Reg(2), 0x7fff_ffff_ffff_ffff)?;
+                self.and(ctx, arch, &Reg(0), &Reg(2))?; // x & ~sign
+                self.mov64(ctx, arch, &Reg(2), 0x8000_0000_0000_0000)?;
+                self.and(ctx, arch, &Reg(1), &Reg(2))?; // y & sign
+                self.eor(ctx, arch, &Reg(0), &Reg(1))?; // combine
+                self.push(ctx, arch, &Reg(0))?;
+            }
+            Instruction::F32Copysign => {
+                self.pop(ctx, arch, &Reg(1))?; // y
+                self.pop(ctx, arch, &Reg(0))?; // x
+                self.mov64(ctx, arch, &Reg(2), 0x7fff_ffff)?;
+                self.and(ctx, arch, &Reg(0), &Reg(2))?;
+                self.mov64(ctx, arch, &Reg(2), 0x8000_0000)?;
+                self.and(ctx, arch, &Reg(1), &Reg(2))?;
+                self.eor(ctx, arch, &Reg(0), &Reg(1))?;
+                self.push(ctx, arch, &Reg(0))?;
+            }
+
             // ---- FP compares (false on NaN except ne) ----
             Instruction::F64Eq => self.fp_cmp_eq(ctx, arch, false, true)?,
             Instruction::F64Ne => self.fp_cmp_eq(ctx, arch, false, false)?,

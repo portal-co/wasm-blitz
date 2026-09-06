@@ -334,7 +334,8 @@ fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
             wasmparser::Payload::TypeSection(reader) => {
                 for group in reader {
                     for subtype in group.map_err(|e| format!("type: {e}"))?.into_types() {
-                        if let wasmparser::CompositeInnerType::Func(ft) = subtype.composite_type.inner
+                        if let wasmparser::CompositeInnerType::Func(ft) =
+                            subtype.composite_type.inner
                         {
                             type_results.push(ft.results().len());
                         }
@@ -896,7 +897,9 @@ fn compile_native_module(m: &SpecModule) -> Result<native_exec::NativeBinary, St
                 if name == "global_i32" || name == "global_i64" {
                     gvals.push(666);
                 } else {
-                    unsupported = Some(format!("spectest global {name} unsupported in native scope"));
+                    unsupported = Some(format!(
+                        "spectest global {name} unsupported in native scope"
+                    ));
                 }
             }
         }
@@ -1434,14 +1437,17 @@ fn execute_action_native(
         .and_then(|v| v.parse().ok())
         .unwrap_or(100_000_000);
     // spectest import dispatch: print* are no-ops; results empty.
-    let mut host = |_slot: usize, _args: &[u64]| -> Result<Vec<u64>, String> {
-        Ok(vec![])
-    };
+    let mut host = |_slot: usize, _args: &[u64]| -> Result<Vec<u64>, String> { Ok(vec![]) };
     // Result count for the invoked function: 0 results => return no wire
     // values (the native blob leaves garbage in RAX for void fns).
     let nrets: usize = runner
         .current()
-        .map(|m| m.native_fn_results.get(fn_idx as usize).copied().unwrap_or(1))
+        .map(|m| {
+            m.native_fn_results
+                .get(fn_idx as usize)
+                .copied()
+                .unwrap_or(1)
+        })
         .unwrap_or(1);
     match native_exec::run_module(
         native_exec::NativeArch::X86_64,
@@ -1449,9 +1455,7 @@ fn execute_action_native(
         bin.fn_entries
             .get(local_idx as usize)
             .copied()
-            .ok_or_else(|| {
-                ExecError::Failed(format!("no fn entry for local index {local_idx}"))
-            })?,
+            .ok_or_else(|| ExecError::Failed(format!("no fn entry for local index {local_idx}")))?,
         &native_args,
         nrets,
         cap,
@@ -1625,7 +1629,12 @@ pub fn run_wast_file_backend(
         match verdict {
             Verdict::Pass => pass += 1,
             Verdict::Fail => {
-                if baseline.contains(&file, idx) {
+                let backend_key = match backend {
+                    Backend::Js => "js",
+                    Backend::C => "c",
+                    Backend::NativeX86 => "native-x86",
+                };
+                if baseline.contains(&file, idx, backend_key) {
                     fail_known.push(idx);
                 } else {
                     fail_new.push(idx);
@@ -1762,5 +1771,3 @@ fn execute_action_c(
         .collect();
     Ok(results)
 }
-
-

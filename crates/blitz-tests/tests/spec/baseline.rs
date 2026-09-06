@@ -114,8 +114,12 @@ impl Baseline {
         Ok(baseline)
     }
 
-    pub fn contains(&self, file: &str, idx: usize) -> bool {
-        self.entries.iter().any(|e| e.file == file && e.idx == idx)
+    /// Ratchet lookup: `backend` is part of the key; entries with an empty
+    /// backend field match every backend (legacy/whole-file reasons).
+    pub fn contains(&self, file: &str, idx: usize, backend: &str) -> bool {
+        self.entries.iter().any(|e| {
+            e.file == file && e.idx == idx && (e.backend.is_empty() || e.backend == backend)
+        })
     }
 }
 
@@ -132,8 +136,8 @@ mod tests {
         assert_eq!(b.entries.len(), 1);
         assert_eq!(b.entries[0].file, "i32");
         assert_eq!(b.entries[0].idx, 3);
-        assert!(b.contains("i32", 3));
-        assert!(!b.contains("i32", 4));
+        assert!(b.contains("i32", 3, ""));
+        assert!(!b.contains("i32", 4, ""));
     }
 
     #[test]

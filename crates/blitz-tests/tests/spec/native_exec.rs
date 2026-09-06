@@ -359,13 +359,14 @@ fn data_area(
     let mem_pages_off = mem_pages.map(|_| start);
     let mem_ptr_off = mem_pages.map(|_| start + 8);
     let globals_off = start + 16;
+    let _ = start;
     let mut buf = vec![0u8; 16 + globals_words * 8];
     if let Some(p) = mem_pages {
-        buf[start..start + 4].copy_from_slice(&p.to_le_bytes());
-        buf[start + 8..start + 16].copy_from_slice(&MEM_BASE.to_le_bytes());
+        buf[0..4].copy_from_slice(&p.to_le_bytes());
+        buf[8..16].copy_from_slice(&MEM_BASE.to_le_bytes());
     }
     for (i, v) in global_inits.iter().enumerate() {
-        let o = globals_off + i * 8;
+        let o = 16 + i * 8;
         buf[o..o + 8].copy_from_slice(&v.to_le_bytes());
     }
     (buf, mem_pages_off, mem_ptr_off, globals_off)
@@ -388,11 +389,7 @@ pub enum RunOutcome {
 /// Read `n` extra results from the guest stack after an AllStack return.
 /// The SysV epilogue leaves results at [rsp], first result at the LOWEST
 /// address (pushed last: RA was pushed above them by `ret`'s pop).
-fn read_stack_results<D>(
-    uc: &mut Unicorn<'_, D>,
-    arch: NativeArch,
-    n: usize,
-) -> Vec<u64> {
+fn read_stack_results<D>(uc: &mut Unicorn<'_, D>, arch: NativeArch, n: usize) -> Vec<u64> {
     if n == 0 {
         return vec![];
     }

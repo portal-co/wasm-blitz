@@ -229,11 +229,11 @@ fn native_smoke_import_service() {
                 &mut host,
             );
             match outcome {
-                spec::native_exec::RunOutcome::Returned(v) => {
-                    assert_eq!(v as u32, 0x1234_5678);
+                spec::native_exec::RunOutcome::ReturnedMulti(mut vs) => {
+                    assert_eq!(vs.remove(0) as u32, 0x1234_5678);
                 }
-                spec::native_exec::RunOutcome::ReturnedMulti(_) => {
-                    panic!("single-result invoke returned multi");
+                spec::native_exec::RunOutcome::Returned(_) => {
+                    panic!("expected multi-result path");
                 }
                 spec::native_exec::RunOutcome::Trapped(e) => {
                     panic!("{arch:?} trapped: {e}")
@@ -312,11 +312,11 @@ fn native_smoke_import_called() {
                 &mut host,
             );
             match outcome {
-                spec::native_exec::RunOutcome::Returned(v) => {
-                    assert_eq!(v, 77, "code after the import call must run");
-                }
                 spec::native_exec::RunOutcome::ReturnedMulti(mut vs) => {
                     assert_eq!(vs.remove(0), 77, "code after the import call must run");
+                }
+                spec::native_exec::RunOutcome::Returned(_) => {
+                    panic!("expected multi-result path");
                 }
                 spec::native_exec::RunOutcome::Trapped(e) => {
                     panic!("{arch:?} trapped: {e}")
@@ -360,8 +360,11 @@ fn native_smoke_unreachable_trap() {
     let mut host = |_slot: usize, _args: &[u64]| -> Result<Vec<u64>, String> { Ok(vec![]) };
     match spec::native_exec::run_module(arch, &bin, bin.entry_off, &[], 1, 10_000_000, &mut host) {
         spec::native_exec::RunOutcome::Trapped(_) => {}
-        spec::native_exec::RunOutcome::Returned(v) => {
-            panic!("unreachable must trap, returned {v}");
+        spec::native_exec::RunOutcome::ReturnedMulti(vs) => {
+            panic!("unreachable must trap, returned {vs:?}");
+        }
+        spec::native_exec::RunOutcome::Returned(_) => {
+            panic!("unreachable must trap (single-result path)");
         }
         spec::native_exec::RunOutcome::ReturnedMulti(_) => {
             panic!("unreachable returned values");
