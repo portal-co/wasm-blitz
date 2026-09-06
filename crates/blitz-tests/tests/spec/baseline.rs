@@ -14,6 +14,9 @@ use std::path::Path;
 pub struct BaselineEntry {
     pub file: String,
     pub idx: usize,
+    /// Backend id (`js` / `c`); empty means all backends.
+    #[allow(dead_code)]
+    pub backend: String,
     pub reason: String,
 }
 
@@ -59,11 +62,22 @@ impl Baseline {
             let key = key.trim();
             let value = value.trim().trim_matches('"').to_string();
             match key {
+                "backend" => {
+                    current
+                        .get_or_insert_with(|| BaselineEntry {
+                            file: String::new(),
+                            idx: 0,
+                            backend: String::new(),
+                            reason: String::new(),
+                        })
+                        .backend = value;
+                }
                 "file" => {
                     current
                         .get_or_insert_with(|| BaselineEntry {
                             file: String::new(),
                             idx: 0,
+                            backend: String::new(),
                             reason: String::new(),
                         })
                         .file = value;
@@ -76,6 +90,7 @@ impl Baseline {
                         .get_or_insert_with(|| BaselineEntry {
                             file: String::new(),
                             idx: 0,
+                            backend: String::new(),
                             reason: String::new(),
                         })
                         .idx = idx;

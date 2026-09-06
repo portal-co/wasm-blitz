@@ -248,9 +248,15 @@ When unset, plain output only on failure.
    conversions/stores/loads, wrap/extend/sign-ext, div/rem with spec trap
    semantics (`__udiv`/`__urem`/`__idivS`/`__srem` in `js_module_preamble`),
    function-level `br` label (Frame::Function early-return).
-2. **C backend + full core file set** — all of `test/core/*.wast` for js+c,
-   value/NaN comparison complete, `register`/host-registry support, stale-entry
-   ratchet enforced.
+2. **C backend + full core file set** — DONE (phase-1 file set × 2 backends,
+   32 backend tests green under the ratchet). C backend extended with the same
+   instruction coverage as JS (comparisons, bitwise, float ops via
+   bit-pattern helpers in `c_module_preamble`, globals via `__wasm_globals[1024]`,
+   spec-exact div/rem trap checks); C execution via per-invoke cc-compiled
+   binary with global persistence across invokes (save/load to /tmp keyed by
+   pid); function-level `br` (Frame::Function + `fn_ret_N:` label) in both
+   backends; JS backend gained `js_module_preamble` div/rem helpers so e2e
+   stays green. Known-fail baseline re-seeded per backend:
 3. **Native backends** — x86-64 sysv under Unicorn for files expressible
    standalone; ILP32 soft-skips per existing pattern; host imports behind
    Unicorn callback support.

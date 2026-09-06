@@ -33,6 +33,10 @@ use wast::{QuoteWat, Wast, WastArg, WastDirective, WastExecute, WastRet};
 // Values
 // ---------------------------------------------------------------------------
 
+/// Global counter for unique temp-file names (parallel test runs).
+static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+use std::sync::atomic::Ordering;
+
 /// A runtime value crossing the JS execution boundary.
 ///
 /// Everything is a JS number-or-BigInt string at the end; we keep the typed
@@ -182,14 +186,23 @@ pub fn check_expected(got: &[(char, String)], expected: &[Expected]) -> bool {
                 // Integers: wire as u64; i32 results keep only the low 32 bits.
                 (_, Expected::I32(b)) => *t == 'i' && (u as u32) == *b,
                 (_, Expected::I64(b)) => *t == 'i' && u == *b,
-                // Floats: wire as exact f64 bit patterns. An expected-f32 result
-                // was computed at f32 precision (fround), so the f64->f32 cast
-                // is exact and restores the true f32 bit pattern.
+                // Floats: wire as exact bit patterns. The C backend prints raw
+                // u64 words (tag 'i'); the JS backend tags floats 'f'/'d'.
+                // An expected-f32 result computed at f32 precision (fround /
+                // C float) reinterprets exactly from the low 32 bits.
                 ('f', Expected::F32(p)) => {
+                    // JS: f32 results are fround-ed then widened to f64 exactly;
+                    // narrow back to recover the true f32 bit pattern.
                     let f = f64::from_bits(u) as f32;
                     p.matches(f.to_bits())
                 }
                 ('f', Expected::F64(p)) => p.matches(u),
+                // C: results are printed as raw u64 words.
+                ('i', Expected::F32(p)) => {
+                    let f = f32::from_bits(u as u32);
+                    p.matches(f.to_bits())
+                }
+                ('i', Expected::F64(p)) => p.matches(u),
                 _ => false,
             }
         })
@@ -230,6 +243,8 @@ struct SpecModule {
     global_inits: Vec<GlobalInit>,
     /// Compilation produced by blitz (JS source body).
     js: String,
+    /// Compilation produced by blitz (C source body).
+    c_body: String,
 }
 
 /// Extract module structure from binary wasm bytes.
@@ -246,6 +261,7 @@ fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
         imports_host: false,
         global_inits: Vec::new(),
         js: String::new(),
+        c_body: String::new(),
     };
     for payload in wasmparser::Parser::new(0).parse_all(wasm) {
         let payload = payload.map_err(|e| format!("wasmparser: {e}"))?;
@@ -344,6 +360,101 @@ fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
         }
     }
     Ok(m)
+}
+
+/// Compile a module through the blitz C backend (same pipeline as e2e's
+/// `compile_c`).
+fn blitz_compile_c(wasm: &[u8]) -> Result<String, String> {
+    use portal_solutions_blitz_common::{dce_pass, ops::mach_operators};
+    use portal_solutions_blitz_c::{CWrite, State as CState};
+    use wasm_encoder::reencode::RoundtripReencoder;
+
+    let mut sigs_wp: Vec<wasmparser::FuncType> = Vec::new();
+    let mut fsigs: Vec<u32> = Vec::new();
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        match payload.map_err(|e| e.to_string())? {
+            wasmparser::Payload::TypeSection(reader) => {
+                for group in reader {
+                    for subtype in group
+                        .map_err(|e| e.to_string())?
+                        .into_types()
+                    {
+                        if let wasmparser::CompositeInnerType::Func(ft) = subtype.composite_type.inner
+                        {
+                            sigs_wp.push(ft);
+                        }
+                    }
+                }
+            }
+            wasmparser::Payload::ImportSection(reader) => {
+                for imp in reader {
+                    let imp = imp.map_err(|e| e.to_string())?;
+                    if let wasmparser::TypeRef::Func(ty_idx) = imp.ty {
+                        fsigs.push(ty_idx);
+                    }
+                }
+            }
+            wasmparser::Payload::FunctionSection(reader) => {
+                fsigs.extend(reader.into_iter().flatten());
+            }
+            wasmparser::Payload::CodeSectionEntry(body) => bodies.push(body),
+            _ => {}
+        }
+    }
+    let sigs_enc: Vec<wasm_encoder::FuncType> = sigs_wp
+        .iter()
+        .cloned()
+        .map(wasm_encoder::FuncType::try_from)
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    let raw_ops =
+        mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+
+    let mut out = String::new();
+    portal_solutions_blitz_c::c_module_preamble(&mut out).map_err(|e| e.to_string())?;
+    let mut state = CState::default();
+    let mut reencoder = RoundtripReencoder;
+    for op in ops {
+        let op = op.map_err(|e| e.to_string())?;
+        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(out)
+}
+
+/// Full C synthesis: compile module + memory/data scaffolding for the driver.
+fn synthesize_c_module(m: &SpecModule) -> Result<String, String> {
+    if m.typed_table {
+        return Err("typed table (function-references) unsupported in phase 1".into());
+    }
+    if !m.func_imports.is_empty() {
+        return Err("function imports unsupported in C phase-1".into());
+    }
+    let pages = m.memory_pages.unwrap_or(0);
+    let mut out = String::new();
+    out.push_str(&format!(
+        "#define WASM_STACK_SIZE 4096\nstatic uint8_t __wasm_driver_mem[{}];\nstatic uint32_t __wasm_driver_pages = {};\n",
+        pages as usize * 65536,
+        pages
+    ));
+    out.push_str(&m.c_body);
+    // Init memory: point __wasm_mems[0] at the driver buffer, apply segments.
+    out.push_str("\nstatic void __wasm_spec_setup(void){\n  __wasm_mems[0]=__wasm_driver_mem;__wasm_mem_pages_arr[0]=__wasm_driver_pages;\n");
+    for (off, bytes) in &m.data_segments {
+        out.push_str(&format!("  {{static const uint8_t seg[]={bytes:?};memcpy(__wasm_driver_mem+{off},seg,{});}}\n", bytes.len()));
+    }
+    // Persist module globals across per-invoke processes so sequences like
+    // `(module) ... invoke ... invoke` observe mutating globals.
+    out.push_str(
+        "static void __wasm_spec_save(void){char p[128];snprintf(p,128,\"/tmp/blitz_spec_globals_%d.bin\",(int)getpid());FILE*f=fopen(p,\"wb\");if(f){fwrite(__wasm_globals,sizeof(__wasm_globals),1,f);fclose(f);}}\n",
+    );
+    out.push_str(
+        "static void __wasm_spec_load(void){char p[128];snprintf(p,128,\"/tmp/blitz_spec_globals_%d.bin\",(int)getpid());FILE*f=fopen(p,\"rb\");if(f){fread(__wasm_globals,sizeof(__wasm_globals),1,f);fclose(f);}}\n",
+    );
+    out.push_str("}\n");
+    Ok(out)
 }
 
 /// Compile a binary wasm module through the blitz JS backend, returning the
@@ -641,7 +752,7 @@ pub enum Action {
 }
 
 struct Runner {
-    /// Stack of synthesized JS modules; the last is "current".
+    /// Stack of synthesized modules; the last is "current".
     modules: Vec<SpecModule>,
     /// Registered instance names (phase 1: tracked but cross-module
     /// instantiation not supported — such imports produce skips).
@@ -652,6 +763,10 @@ struct Runner {
     current_loaded: bool,
     /// Why the current module failed to load (for skip reasons).
     current_load_err: Option<String>,
+    /// Which backend is being exercised.
+    backend: Backend,
+    /// C backend: the full compiled C source of the current module.
+    c_module: Option<CSpecModule>,
 }
 
 impl Runner {
@@ -662,30 +777,56 @@ impl Runner {
     }
 }
 
-/// Load the current module's JS into the node session.
+/// A C-backend spectest module: full C translation unit + export index.
+struct CSpecModule {
+    src: String,
+    /// Exported functions: (name, wasm fn index) — invoked as fn_<idx+imports>.
+    exports: Vec<(String, u32)>,
+    /// Memory pages (0 if none) for __wasm_mem allocation in the driver.
+    mem_pages: u32,
+    /// Data segments for driver-side initialization.
+    data: Vec<(u32, Vec<u8>)>,
+}
+
+/// Load the current module for the active backend.
 fn load_current_module(runner: &mut Runner) -> Result<(), String> {
-    let js = runner
-        .modules
-        .last()
-        .map(|m| m.js.clone())
-        .ok_or("no current module")?;
-    if std::env::var_os("BLITZ_SPEC_DUMP_JS").is_some() {
-        eprintln!("==== generated JS ====\n{js}\n==== end ====\n");
-    }
-    if runner.session.is_none() {
-        runner.session = Some(NodeSession::spawn()?);
-    }
-    let req = format!("{{\"op\":\"load\",\"js\":\"{}\"}}", json_escape(&js));
-    let resp = runner
-        .session
-        .as_mut()
-        .unwrap()
-        .send(&req)
-        .map_err(|e| format!("session: {e}"))?;
-    if resp.ok {
-        Ok(())
-    } else {
-        Err(resp.err.unwrap_or_else(|| "load failed".into()))
+    match runner.backend {
+        Backend::Js => {
+            let js = runner
+                .modules
+                .last()
+                .map(|m| m.js.clone())
+                .ok_or("no current module")?;
+            if std::env::var_os("BLITZ_SPEC_DUMP_JS").is_some() {
+                eprintln!("==== generated JS ====\n{js}\n==== end ====\n");
+            }
+            if runner.session.is_none() {
+                runner.session = Some(NodeSession::spawn()?);
+            }
+            let req = format!("{{\"op\":\"load\",\"js\":\"{}\"}}", json_escape(&js));
+            let resp = runner
+                .session
+                .as_mut()
+                .unwrap()
+                .send(&req)
+                .map_err(|e| format!("session: {e}"))?;
+            if resp.ok {
+                Ok(())
+            } else {
+                Err(resp.err.unwrap_or_else(|| "load failed".into()))
+            }
+        }
+        Backend::C => {
+            let m = runner.modules.last().ok_or("no current module")?;
+            let c_src = synthesize_c_module(m)?;
+            runner.c_module = Some(CSpecModule {
+                src: c_src,
+                exports: m.exported_funcs.clone(),
+                mem_pages: m.memory_pages.unwrap_or(0),
+                data: m.data_segments.clone(),
+            });
+            Ok(())
+        }
     }
 }
 
@@ -712,12 +853,22 @@ fn run_directive(
                 Ok(m) => m,
                 Err(reason) => return Verdict::Skip(leak_reason(&reason)),
             };
-            match synthesize_js_module(&m) {
-                Ok(js) => {
-                    m.js = js;
+            // Compile + pre-check per backend; failures map to skips.
+            let synth = match runner.backend {
+                Backend::Js => synthesize_js_module(&m).map(|js| m.js = js),
+                Backend::C => {
+                    if !m.func_imports.is_empty() {
+                        return Verdict::Skip("function imports unsupported in C phase-1");
+                    }
+                    if m.typed_table {
+                        return Verdict::Skip("typed table unsupported in C phase-1");
+                    }
+                    blitz_compile_c(&wasm).map(|c| m.c_body = c)
+                }
+            };
+            match synth {
+                Ok(()) => {
                     runner.modules.push(m);
-                    // Load the new module into the persistent node session:
-                    // re-executing its source rebinds every `$N`/`$g_N` global.
                     runner.current_load_err = None;
                     match load_current_module(runner) {
                         Ok(()) => runner.current_loaded = true,
@@ -742,6 +893,7 @@ fn run_directive(
                         imports_host: false,
                         global_inits: Vec::new(),
                         js: String::new(),
+                        c_body: String::new(),
                     });
                     runner.current_loaded = false;
                     runner.current_load_err = Some(reason.clone());
@@ -1099,15 +1251,40 @@ fn json_escape(s: &str) -> String {
     out
 }
 
-/// Execute an action against the current synthesized module via the node
-/// session. Spawns/reloads as needed; returns `Val`s for comparisons.
+/// Execute an action against the current synthesized module.
+/// JS: via the persistent node session. C: compile once per module (cached),
+/// one process per invoke.
 fn execute_action(
     runner: &mut Runner,
     action: &Action,
     _log: &Logger,
     _idx: usize,
 ) -> Result<Vec<(char, String)>, ExecError> {
-    let m = runner.current().map_err(ExecError::Failed)?;
+    if !runner.current_loaded {
+        return Err(ExecError::Failed(
+            runner
+                .current_load_err
+                .clone()
+                .unwrap_or_else(|| "module not loaded".into()),
+        ));
+    }
+    let backend = runner.backend;
+    let exports: Vec<(String, u32)> = runner
+        .current()
+        .map_err(ExecError::Failed)?
+        .exported_funcs
+        .clone();
+    match backend {
+        Backend::Js => execute_action_js(runner, action, &exports),
+        Backend::C => execute_action_c(runner, action, &exports),
+    }
+}
+
+fn execute_action_js(
+    runner: &mut Runner,
+    action: &Action,
+    exports: &[(String, u32)],
+) -> Result<Vec<(char, String)>, ExecError> {
     if !runner.current_loaded {
         return Err(ExecError::Failed(
             runner
@@ -1118,7 +1295,7 @@ fn execute_action(
     }
     let (fn_ident, args): (String, Vec<Val>) = match action {
         Action::Invoke { export, args } => {
-            let Some((_, fn_idx)) = m.exported_funcs.iter().find(|(n, _)| n == export) else {
+            let Some((_, fn_idx)) = exports.iter().find(|(n, _)| n == export) else {
                 return Err(ExecError::Failed(format!("export {export:?} not found")));
             };
             (format!("${fn_idx}"), args.clone())
@@ -1171,13 +1348,14 @@ pub struct FileResult {
     pub skip: u32,
 }
 
-pub fn run_wast_file(path: &Path, log: &Logger, baseline: &Baseline) -> FileResult {
+/// Run a wast file against a given backend driver.
+/// `backend` selects compilation (`js` or `c`) and execution.
+pub fn run_wast_file_backend(path: &Path, log: &Logger, baseline: &Baseline, backend: Backend) -> FileResult {
     let file = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("<unknown>")
         .to_string();
-
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -1203,9 +1381,10 @@ pub fn run_wast_file(path: &Path, log: &Logger, baseline: &Baseline) -> FileResu
         session: None,
         current_loaded: false,
         current_load_err: None,
+        backend,
+        c_module: None,
     };
 
-    // Parse the whole file up front; `wast` borrows the source.
     let buf = match ParseBuffer::new(&source) {
         Ok(b) => b,
         Err(e) => {
@@ -1237,4 +1416,119 @@ pub fn run_wast_file(path: &Path, log: &Logger, baseline: &Baseline) -> FileResu
     }
 
     FileResult { file, pass, fail_known, fail_new, skip }
+}
+
+/// Backend selector for a spectest run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backend {
+    /// JS backend executed under a persistent node session.
+    Js,
+    /// C backend compiled with the host C compiler, one process per invoke.
+    C,
+}
+
+/// Compatibility wrapper for the phase-1 JS entry point.
+pub fn run_wast_file(path: &Path, log: &Logger, baseline: &Baseline) -> FileResult {
+    run_wast_file_backend(path, log, baseline, Backend::Js)
+}
+
+
+/// Execute one invoke through the C backend: write the translation unit with
+/// a fresh `main`, compile with cc, run, parse the printed uint64 results.
+fn execute_action_c(
+    runner: &mut Runner,
+    action: &Action,
+    exports: &[(String, u32)],
+) -> Result<Vec<(char, String)>, ExecError> {
+    let (fn_idx, args, nrets): (u32, Vec<Val>, usize) = match action {
+        Action::Invoke { export, args } => {
+            let Some((_, idx)) = exports.iter().find(|(n, _)| n == export) else {
+                return Err(ExecError::Failed(format!("export {export:?} not found")));
+            };
+            (*idx, args.clone(), 1)
+        }
+        Action::Get { .. } => {
+            return Err(ExecError::Failed("global export read unsupported in phase 1".into()));
+        }
+    };
+    let _ = nrets;
+
+    let seq = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let seq = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let dir = std::env::temp_dir();
+    let src_path = dir.join(format!("blitz_spec_{pid}_{seq}.c"));
+    let bin_path = dir.join(format!("blitz_spec_{pid}_{seq}"));
+
+    let nrets = 1; // single-result phase: loop below prints what's available
+    let mut main_body = format!(
+        "int main(void){{__wasm_spec_setup();uint64_t _args[{}]={{",
+        args.len().max(1)
+    );
+    if args.is_empty() {
+        main_body.push('0');
+    } else {
+        for (i, a) in args.iter().enumerate() {
+            if i > 0 {
+                main_body.push(',');
+            }
+            let v = match a {
+                Val::I32(v) => *v as u64,
+                Val::I64(v) => *v,
+                Val::F32(b) => *b as u64,
+                Val::F64(b) => *b,
+            };
+            main_body.push_str(&format!("{v}ull"));
+        }
+    }
+    main_body.push_str(&format!(
+        "}};__wasm_spec_load();uint64_t*_r=fn_{fn_idx}(_args);__wasm_spec_save();for(int i=0;i<{nrets};i++)printf(\"%llu\\n\",(unsigned long long)_r[i]);return 0;}}"
+    ));
+
+    let full_src = format!(
+        "#include<stdint.h>\n#include<string.h>\n#include<stdlib.h>\n#include<stdio.h>\n#include<math.h>\n{}\n{}\n",
+        runner.c_module.as_ref().unwrap().src, main_body
+    );
+    std::fs::write(&src_path, &full_src).map_err(|e| ExecError::Failed(format!("write: {e}")))?;
+
+    let compile = std::process::Command::new("cc")
+        .arg(&src_path)
+        .arg("-Wno-unsequenced")
+        .arg("-o")
+        .arg(&bin_path)
+        .output()
+        .map_err(|e| ExecError::Failed(format!("cc not found: {e}")))?;
+    if !compile.status.success() {
+        let err = String::from_utf8_lossy(&compile.stderr).to_string();
+        let _ = std::fs::remove_file(&src_path);
+        return Err(ExecError::Failed(format!("C compile failed: {err}")));
+    }
+
+    let run = std::process::Command::new(&bin_path)
+        .output()
+        .map_err(|e| ExecError::Failed(format!("run: {e}")))?;
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&bin_path);
+
+    // SIGABRT (134) => wasm trap surfaced as abort.
+    if let Some(code) = run.status.code() {
+        if code == 134 || code == 101 {
+            return Err(ExecError::Trap("abort (wasm trap)".into()));
+        }
+    }
+    if !run.status.success() {
+        return Err(ExecError::Failed(format!(
+            "binary exited non-zero: {}",
+            String::from_utf8_lossy(&run.stderr)
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&run.stdout).to_string();
+    let results = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| ('i', l.trim().to_string()))
+        .collect();
+    Ok(results)
 }

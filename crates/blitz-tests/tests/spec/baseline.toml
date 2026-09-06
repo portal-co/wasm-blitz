@@ -4,14 +4,17 @@
 [[entries]]
 file = "br"
 idx = 29
-reason = "multi-value br: block carrying two results (i32,i64) loses the first value in js backend"
+backend = "js"
+reason = "multi-value br: block carrying two results (i32,i64) loses the first value"
 
 [[entries]]
 file = "fac"
 idx = 5
-reason = "fac-opt: loop back-edge br_if 0 (gt_s) condition not emitted before continue in js backend"
+backend = "js"
+reason = "fac-opt: loop back-edge br_if 0 (gt_s) condition not emitted before continue"
 
 [[entries]]
 file = "fac"
 idx = 6
-reason = "fac-ssa: same loop back-edge condition loss as fac-opt in js backend"
+backend = "js"
+reason = "fac-ssa: same loop back-edge condition loss as fac-opt"

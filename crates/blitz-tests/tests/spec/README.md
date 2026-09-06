@@ -7,6 +7,7 @@ Format: TOML with `[[entries]]` records.
 [[entries]]
 file = "i32"        # wast file stem (test/core/<file>.wast)
 idx = 17            # 0-based directive index within the file
+backend = "js"      # optional: "js" | "c" (informational for now)
 reason = "why this assertion fails"
 ```
 

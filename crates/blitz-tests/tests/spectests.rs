@@ -109,5 +109,56 @@ spectest_js! {
     js_left_to_right => "left-to-right",
 }
 
+// ---- C backend --------------------------------------------------------------
+
+fn run_phase1_c(file: &str) {
+    let log = spec::Logger::from_env();
+    let Some(dir) = spec_dir() else {
+        eprintln!("skipping spectests: no spec suite found (set BLITZ_SPEC_DIR)");
+        return;
+    };
+    let path = dir.join("test/core").join(format!("{file}.wast"));
+    let result = spec::run_wast_file_backend(&path, &log, baseline(), spec::Backend::C);
+    assert!(
+        result.fail_new.is_empty(),
+        "[c] {file}: {} new failing assertion(s) at {:?} (pass={}, known={}, skip={})",
+        result.fail_new.len(),
+        result.fail_new,
+        result.pass,
+        result.fail_known.len(),
+        result.skip
+    );
+}
+
+macro_rules! spectest_c {
+    ($($name:ident => $file:expr),* $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                run_phase1_c($file);
+            }
+        )*
+    };
+}
+
+spectest_c! {
+    c_const => "const",
+    c_local_get => "local_get",
+    c_block => "block",
+    c_loop => "loop",
+    c_if => "if",
+    c_br => "br",
+    c_br_if => "br_if",
+    c_br_table => "br_table",
+    c_call => "call",
+    c_labels => "labels",
+    c_forward => "forward",
+    c_fac => "fac",
+    c_stack => "stack",
+    c_int_exprs => "int_exprs",
+    c_int_literals => "int_literals",
+    c_left_to_right => "left-to-right",
+}
+
 //#[test]
 //fn _dump_js() {}

@@ -189,6 +189,7 @@ fn compile_c(wasm: &[u8]) -> String {
     let ops = dce_pass!(raw_ops);
 
     let mut out = String::new();
+    c_module_preamble(&mut out).unwrap();
     let mut state = CState::default();
     let mut reencoder = RoundtripReencoder;
 
