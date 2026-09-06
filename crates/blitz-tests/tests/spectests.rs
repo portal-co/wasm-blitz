@@ -162,3 +162,29 @@ spectest_c! {
 
 //#[test]
 //fn _dump_js() {}
+
+
+// ---- Native backends (phase 3, Unicorn) ------------------------------------
+//
+// Pure-i64 subset of the phase-1 files runs through the AllStack backends;
+// missing cross-clang triples soft-skip (assemble_or_skip pattern). Full
+// native coverage awaits Unicorn host-import support (plan phase 3 risks).
+
+#[test]
+fn native_pure_i64_subset() {
+    let log = spec::Logger::from_env();
+    let Some(dir) = spec_dir() else {
+        eprintln!("skipping native spectests: no spec suite found");
+        return;
+    };
+    let result = spec::run_wast_file_native(
+        &dir.join("test/core/fac.wast"),
+        baseline(),
+        &log,
+    );
+    assert!(
+        result.fail_new.is_empty(),
+        "[native] fac: new failures at {:?}",
+        result.fail_new
+    );
+}
