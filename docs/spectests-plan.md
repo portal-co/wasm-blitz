@@ -260,8 +260,12 @@ When unset, plain output only on failure.
 3. **Native backends** — x86-64 sysv under Unicorn for files expressible
    standalone; ILP32 soft-skips per existing pattern; host imports behind
    Unicorn callback support.
-4. **Proposals** — per-backend opt-in for bulk-memory, reference-types,
-   tail-call, multi-memory, sign-extension, multi-value.
+4. **Proposals** — DONE (gating infrastructure). `tests/spec/features.rs`
+   maps proposals to wasmparser feature flags and defines the harness feature
+   set (MVP + mutable-global + sign-ext + sat-float + reference-types +
+   multi-value + bulk-memory + multi-memory + tail-call; SIMD/threads
+   excluded); `PROPOSAL_DIRS` table ready for per-backend opt-in as
+   instruction smokes land.
 5. **Tightening** — trap-message matching where cheap, arithmetic-NaN
    narrowing, macOS CI leg, scheduled upstream-drift job → eventually flip
    "known failures" reporting into tracked issues per backend.

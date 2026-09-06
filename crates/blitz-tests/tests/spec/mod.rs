@@ -20,6 +20,7 @@
 //!   never silently.
 
 mod baseline;
+mod features;
 mod logging;
 pub mod native;
 
@@ -727,17 +728,7 @@ fn encode_quotewat(qw: &mut QuoteWat<'_>) -> Result<Encoded, String> {
 /// proposals the blitz backends already claim (reference types, bulk memory,
 /// multi-value, multi-memory, tail calls, sign extension, sat float->int).
 fn validate_binary(wasm: &[u8]) -> Result<(), String> {
-    use wasmparser::WasmFeatures;
-    let mut features = WasmFeatures::MVP
-        | WasmFeatures::MUTABLE_GLOBAL
-        | WasmFeatures::SIGN_EXTENSION
-        | WasmFeatures::SATURATING_FLOAT_TO_INT
-        | WasmFeatures::REFERENCE_TYPES
-        | WasmFeatures::MULTI_VALUE
-        | WasmFeatures::BULK_MEMORY
-        | WasmFeatures::MULTI_MEMORY
-        | WasmFeatures::TAIL_CALL;
-    features.remove(WasmFeatures::SIMD | WasmFeatures::THREADS);
+    let features = features::harness_features();
     let mut validator = wasmparser::Validator::new_with_features(features);
     validator
         .validate_all(wasm)
