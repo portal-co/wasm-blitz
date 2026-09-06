@@ -5,8 +5,11 @@
 
 extern crate alloc;
 
-use portal_solutions_asm_riscv64::{RiscV64Arch, RegisterClass, out::arg::{ArgKind, MemArgKind}};
 use portal_pc_asm_common::types::mem::MemorySize;
+use portal_solutions_asm_riscv64::{
+    RegisterClass, RiscV64Arch,
+    out::arg::{ArgKind, MemArgKind},
+};
 use portal_solutions_blitz_common::{
     abi::BackendAbi,
     asm::Reg,
@@ -15,7 +18,7 @@ use portal_solutions_blitz_common::{
 };
 
 use crate::RiscvLabel;
-use crate::naive::{State as NaiveState, WriterExt as NaiveWriterExt, push, pop};
+use crate::naive::{State as NaiveState, WriterExt as NaiveWriterExt, pop, push};
 use crate::sysv::SysVWriterExt;
 
 // ---------------------------------------------------------------------------
@@ -29,17 +32,27 @@ pub struct SysVAbi;
 
 // RISC-V psABI argument registers: A0–A7
 const ARG_REGS: [Reg; 8] = [
-    Reg(10), Reg(11), Reg(12), Reg(13), Reg(14), Reg(15), Reg(16), Reg(17),
+    Reg(10),
+    Reg(11),
+    Reg(12),
+    Reg(13),
+    Reg(14),
+    Reg(15),
+    Reg(16),
+    Reg(17),
 ];
 const A0: Reg = Reg(10);
 const A1: Reg = Reg(11);
-const FP: Reg = Reg(8);  // s0 / frame pointer
+const FP: Reg = Reg(8); // s0 / frame pointer
 const SP: Reg = Reg(2);
 const RA: Reg = Reg(1);
 
 fn mem64(base: Reg, disp: i32) -> MemArgKind {
     MemArgKind::Mem {
-        base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
+        base: ArgKind::Reg {
+            reg: base,
+            size: MemorySize::_64,
+        },
         offset: None,
         disp,
         size: MemorySize::_64,
@@ -60,7 +73,10 @@ where
     W: NaiveWriterExt<Context>,
 {
     type Error = W::Error;
-    type State<'s> = NaiveState<'s> where Self: 's;
+    type State<'s>
+        = NaiveState<'s>
+    where
+        Self: 's;
     type Arch = RiscV64Arch;
 
     fn emit_prologue(
@@ -83,7 +99,10 @@ where
         if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW::new(w, ctx, arch, 6);
             portal_solutions_blitz_codegen::emit_probe_site(
-                &mut bw, cfg.table_base_off, 0, 5,
+                &mut bw,
+                cfg.table_base_off,
+                0,
+                5,
                 portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
                 &mut state.label_index,
             )?;
@@ -201,13 +220,36 @@ where
         w.jalr(ctx, arch, &Reg(0), &RA, 0)
     }
 
-    fn emit_throw(_w: &mut W, _ctx: &mut Context, _arch: RiscV64Arch, _state: &mut NaiveState, _tag_index: u32, _arity: u32) -> Result<(), W::Error> {
+    fn emit_throw(
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: RiscV64Arch,
+        _state: &mut NaiveState,
+        _tag_index: u32,
+        _arity: u32,
+    ) -> Result<(), W::Error> {
         todo!("emit_throw via BackendAbi — use handle_op_ directly")
     }
-    fn emit_try_table_start(_w: &mut W, _ctx: &mut Context, _arch: RiscV64Arch, _state: &mut NaiveState, _catches: &[Catch], _sigs: &[FuncType], _tags: &[u32]) -> Result<(), W::Error> {
+    fn emit_try_table_start(
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: RiscV64Arch,
+        _state: &mut NaiveState,
+        _catches: &[Catch],
+        _sigs: &[FuncType],
+        _tags: &[u32],
+    ) -> Result<(), W::Error> {
         todo!("emit_try_table_start via BackendAbi — use handle_op_ directly")
     }
-    fn emit_try_table_end(_w: &mut W, _ctx: &mut Context, _arch: RiscV64Arch, _state: &mut NaiveState, _catches: &[Catch], _sigs: &[FuncType], _tags: &[u32]) -> Result<(), W::Error> {
+    fn emit_try_table_end(
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: RiscV64Arch,
+        _state: &mut NaiveState,
+        _catches: &[Catch],
+        _sigs: &[FuncType],
+        _tags: &[u32],
+    ) -> Result<(), W::Error> {
         todo!("emit_try_table_end via BackendAbi — use handle_op_ directly")
     }
 }
@@ -221,7 +263,10 @@ where
     W: SysVWriterExt<Context>,
 {
     type Error = W::Error;
-    type State<'s> = NaiveState<'s> where Self: 's;
+    type State<'s>
+        = NaiveState<'s>
+    where
+        Self: 's;
     type Arch = RiscV64Arch;
 
     fn emit_prologue(
@@ -237,16 +282,23 @@ where
         state.control_depth = data.control_depth;
 
         // SysV function label (offset avoids collision with naive Func labels)
-        w.set_label(ctx, arch, RiscvLabel::Indexed {
-            idx: id as usize | (1 << 28),
-        })?;
+        w.set_label(
+            ctx,
+            arch,
+            RiscvLabel::Indexed {
+                idx: id as usize | (1 << 28),
+            },
+        )?;
 
         // Function-entry probe: after label, before frame setup so SysV arg
         // regs (a0–a7, Reg 10–17) are intact for the outer-JIT tail-jump.
         if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW::new(w, ctx, arch, 6);
             portal_solutions_blitz_codegen::emit_probe_site(
-                &mut bw, cfg.table_base_off, 0, 5,
+                &mut bw,
+                cfg.table_base_off,
+                0,
+                5,
                 portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
                 &mut state.label_index,
             )?;
@@ -356,9 +408,14 @@ where
             w.call(ctx, arch, &A0)?;
         } else {
             let local_id = fn_idx - func_imports.len() as u32;
-            w.jal_label(ctx, arch, &A0, RiscvLabel::Indexed {
-                idx: local_id as usize | (1 << 28),
-            })?;
+            w.jal_label(
+                ctx,
+                arch,
+                &A0,
+                RiscvLabel::Indexed {
+                    idx: local_id as usize | (1 << 28),
+                },
+            )?;
             w.call(ctx, arch, &A0)?;
         }
 
@@ -393,13 +450,36 @@ where
         w.jalr(ctx, arch, &Reg(0), &RA, 0)
     }
 
-    fn emit_throw(_w: &mut W, _ctx: &mut Context, _arch: RiscV64Arch, _state: &mut NaiveState, _tag_index: u32, _arity: u32) -> Result<(), W::Error> {
+    fn emit_throw(
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: RiscV64Arch,
+        _state: &mut NaiveState,
+        _tag_index: u32,
+        _arity: u32,
+    ) -> Result<(), W::Error> {
         todo!("SysVAbi exception handling requires platform unwinder — deferred; see docs/abi.md")
     }
-    fn emit_try_table_start(_w: &mut W, _ctx: &mut Context, _arch: RiscV64Arch, _state: &mut NaiveState, _catches: &[Catch], _sigs: &[FuncType], _tags: &[u32]) -> Result<(), W::Error> {
+    fn emit_try_table_start(
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: RiscV64Arch,
+        _state: &mut NaiveState,
+        _catches: &[Catch],
+        _sigs: &[FuncType],
+        _tags: &[u32],
+    ) -> Result<(), W::Error> {
         todo!("SysVAbi exception handling requires platform unwinder — deferred; see docs/abi.md")
     }
-    fn emit_try_table_end(_w: &mut W, _ctx: &mut Context, _arch: RiscV64Arch, _state: &mut NaiveState, _catches: &[Catch], _sigs: &[FuncType], _tags: &[u32]) -> Result<(), W::Error> {
+    fn emit_try_table_end(
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: RiscV64Arch,
+        _state: &mut NaiveState,
+        _catches: &[Catch],
+        _sigs: &[FuncType],
+        _tags: &[u32],
+    ) -> Result<(), W::Error> {
         todo!("SysVAbi exception handling requires platform unwinder — deferred; see docs/abi.md")
     }
 }

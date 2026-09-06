@@ -207,3 +207,41 @@ update spectests-plan.md phase-3 entry to point here.
   per-invoke configurable via env (`BLITZ_SPEC_NATIVE_CAP`), default ~10⁷.
 - **Baseline migration**: making `backend` part of the key is a one-time
   ratchet change — do it in its own commit so the diff is reviewable.
+
+## Status (updated as phases land)
+
+- **Phase A — DONE** (commit `5b58dfc`): `tests/spec/native_exec.rs` runtime —
+  AllStack compile + Unicorn runner, sentinel import trampolines, runtime data
+  area, trap classification, three x86-64 smokes.
+- **Phase B — DONE** (commits `6dee8eb`, `118cb6e`): x86-64 MVP+ instruction
+  parity in `blitz-x86-64` (comparisons, clz/ctz/popcnt, rotations, extends,
+  globals, copysign); `Backend::NativeX86` wired into the harness; backend key
+  added to the baseline ratchet (own commit); native-x86 baseline entries.
+- **Phase C — DONE** (commits `feb887c`, phase-C-step-2):
+  - aarch64: MVP+ arms in `blitz-aarch64` (nop, i32 rem, SWAR
+    clz/ctz/popcnt, shift-pair rotates/extends, globals, copysign — the
+    asm-aarch64 Writer has no raw-word escape hatch, so everything is built
+    from existing ALU primitives); AArch64 compile arm in `native_exec.rs`
+    with post-assembly ADRP/ADD relocation patching and a B-trampoline stub
+    region. The sentinel page moved to `0x1100_0000` — AArch64 `B` imm26 is
+    relative to the instruction's own address with ±128MB range, and the old
+    `0x4010_0000` page was out of reach.
+  - riscv64: MVP+ integer arms in `blitz-riscv64` (nop, ebreak-unreachable,
+    div/rem family, ge_s/ge_u, extends, SWAR clz/ctz/popcnt, globals);
+    `emit_const` replaces the vendored `li` medium path (i32 overflow on
+    values with low-12 ≥ 0x800); consts flush the allocator and push
+    directly (scratch registers may alias allocator regs). `uses_floats`
+    module gate skips float files on riscv64 (backend has no float support).
+- **Phase D — DONE**: file-set expansion stays opt-in via `features.rs`
+  `PROPOSAL_DIRS`; native baselines record the residual backend bugs (see
+  baseline.toml `native-*` entries); this file documents the landed state.
+
+Suite totals after phase D: **87 spectest tests green** (16 files × 3 native
+arches + JS + C legs + smokes), e2e unchanged at 389 pass / 5 pre-existing
+aarch64 host-clang failures.
+
+Residual native backend bugs (baselined, tracked for backend work):
+- All arches: multi-value br carries, deep br/br_if depths, missing
+  div/rem-by-zero spec traps, exhaustion classification.
+- riscv64 additionally: nested loop+if+br miscompile (returns 1), float ops
+  entirely.

@@ -978,3 +978,207 @@ idx = 91
 backend = "native-aarch64"
 reason = "aarch64 native: f32/f64 mixing FETCH_UNMAPPED (same class as x86-64)"
 
+[[entries]]
+file = "stack"
+idx = 1
+backend = "native-riscv64"
+reason = "riscv64 native: fac-expr/fac-stack nested loop+if+br miscompile (returns 1); Unhandled CPU exception on deeper cases"
+
+[[entries]]
+file = "stack"
+idx = 2
+backend = "native-riscv64"
+reason = "riscv64 native: fac-expr/fac-stack nested loop+if+br miscompile (returns 1); Unhandled CPU exception on deeper cases"
+
+[[entries]]
+file = "stack"
+idx = 3
+backend = "native-riscv64"
+reason = "riscv64 native: fac-expr/fac-stack nested loop+if+br miscompile (returns 1); Unhandled CPU exception on deeper cases"
+
+[[entries]]
+file = "stack"
+idx = 4
+backend = "native-riscv64"
+reason = "riscv64 native: fac-expr/fac-stack nested loop+if+br miscompile (returns 1); Unhandled CPU exception on deeper cases"
+
+[[entries]]
+file = "stack"
+idx = 5
+backend = "native-riscv64"
+reason = "riscv64 native: fac-expr/fac-stack nested loop+if+br miscompile (returns 1); Unhandled CPU exception on deeper cases"
+
+[[entries]]
+file = "fac"
+idx = 2
+backend = "native-riscv64"
+reason = "riscv64 native: fac-rec-named/fac-iter-named loop+if+br miscompile (same class as stack); exhaustion case unclassified"
+
+[[entries]]
+file = "fac"
+idx = 4
+backend = "native-riscv64"
+reason = "riscv64 native: fac-rec-named/fac-iter-named loop+if+br miscompile (same class as stack); exhaustion case unclassified"
+
+[[entries]]
+file = "fac"
+idx = 6
+backend = "native-riscv64"
+reason = "riscv64 native: fac-rec-named/fac-iter-named loop+if+br miscompile (same class as stack); exhaustion case unclassified"
+
+[[entries]]
+file = "labels"
+idx = 2
+backend = "native-riscv64"
+reason = "riscv64 native: nested label br miscompile (bad control flow)"
+
+[[entries]]
+file = "labels"
+idx = 3
+backend = "native-riscv64"
+reason = "riscv64 native: nested label br miscompile (bad control flow)"
+
+[[entries]]
+file = "labels"
+idx = 22
+backend = "native-riscv64"
+reason = "riscv64 native: nested label br miscompile (bad control flow)"
+
+[[entries]]
+file = "int_exprs"
+idx = 1
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 2
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 9
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 11
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 12
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 26
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 27
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 28
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 29
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 31
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 32
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 33
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 34
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 36
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 37
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 41
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 44
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 47
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 48
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 49
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 50
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 106
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 107
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+

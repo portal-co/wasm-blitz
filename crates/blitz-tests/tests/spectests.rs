@@ -411,6 +411,10 @@ macro_rules! spectest_native {
                 fn [<$name _aarch64>]() {
                     run_phase1_native($file, spec::Backend::NativeAArch64);
                 }
+                #[test]
+                fn [<$name _riscv64>]() {
+                    run_phase1_native($file, spec::Backend::NativeRiscv64);
+                }
             }
         )*
     };

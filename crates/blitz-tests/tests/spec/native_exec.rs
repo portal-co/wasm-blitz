@@ -518,10 +518,181 @@ pub fn compile_module(
                 globals_off,
             })
         }
-        NativeArch::Riscv64 => Err(CompileError::Internal(format!(
-            "{arch:?}: riscv64 lands in phase C step 2"
-        ))),
+        NativeArch::Riscv64 => {
+            use portal_solutions_asm_riscv64::out::rv_asm_backend::RvAsmWriter;
+            use portal_solutions_asm_riscv64::out::{Writer as _, WriterCore as _};
+            use portal_solutions_blitz_common::wasm_encoder::reencode::RoundtripReencoder;
+            use portal_solutions_blitz_riscv64::{RiscV64Arch, RiscvLabel, naive, sysv};
+
+            let mut out = RvAsmWriter::<RiscvLabel>::new();
+            let mut ctx = ();
+            let arch_cfg = RiscV64Arch::default();
+
+            // Emit import trampolines FIRST, at the very start of the blob,
+            // so every backend External reference resolves in-buffer (the
+            // RvFixup::La machinery handles already-defined labels
+            // immediately). Trampoline shape (2 instructions):
+            //   li   t2, SENTINEL_BASE + slot*SENTINEL_SLOT
+            //   jalr x0, t2, 0          ; unconditional jump, never returns
+            // The runner's sentinel code hook services the call and resumes
+            // at the recorded RA.
+            //
+            // Data symbols are laid out AFTER codegen as a plain data area;
+            // because their cell addresses are unknown before codegen, we
+            // cannot label them up front. The riscv64 backend only emits
+            // data-symbol references through `apply_mem_base`
+            // (`__wasm_mem`) and `MemorySize` (`__wasm_mem_pages`), so we
+            // keep a name→cell map and patch those AUIPC+ADDI placeholder
+            // pairs post-assembly: `la_label` on an UNDEFINED label emits
+            // AUIPC rd,0 + ADDI rd,rd,0 with zero immediates, which we can
+            // find and rewrite deterministically because each such pair is
+            // uniquely identified by its rd (t0 for mem base in the naive
+            // mem path, x9 in MemorySize) and there is at most one
+            // unresolved reference per symbol per blob in the phase-1
+            // file set.
+            //
+            // Emit function trampolines and define their labels now.
+            for (name, &k) in slot_of.iter() {
+                if k < imports.len() {
+                    out.set_label(
+                        &mut ctx,
+                        arch_cfg,
+                        RiscvLabel::External { name: name.clone() },
+                    )
+                    .map_err(|e| internal(e.to_string()))?;
+                    let target = SENTINEL_BASE + (k as u64) * SENTINEL_SLOT;
+                    // li t2, target  (RvAsmWriter::li handles arbitrary u64)
+                    out.li(&mut ctx, arch_cfg, &rv_reg(7), target)
+                        .map_err(|e| internal(e.to_string()))?;
+                    // jalr x0, t2, 0
+                    out.jalr(&mut ctx, arch_cfg, &rv_reg(0), &rv_reg(7), 0)
+                        .map_err(|e| internal(e.to_string()))?;
+                }
+            }
+
+            let mut state = naive::State::default();
+            state.call_abi = naive::CallAbi::AllStack;
+            state.call_params = call_params;
+            state.call_results = call_results;
+            state.sig_params = sig_params;
+            state.sig_results = sig_results;
+            state.n_imports = import_count;
+            if mem_pages.is_some() {
+                state.mem_base = naive::MemBase::WasmMemSymbol;
+                state
+                    .mem_base_by_index
+                    .insert(0, naive::MemBase::WasmMemSymbol);
+            }
+            let mut reencoder = RoundtripReencoder;
+            for op in ops {
+                let op = op.map_err(|e| internal(format!("mach op: {e}")))?;
+                sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                    &mut out,
+                    &mut ctx,
+                    arch_cfg,
+                    &mut state,
+                    &func_imports,
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .map_err(|e| unsupported(format!("riscv64 emit: {e:?}")))?;
+            }
+
+            let (bytes, labels) = out.into_parts();
+            let mut code = bytes;
+
+            // Patch the unresolved data-symbol AUIPC+ADDI placeholder pairs
+            // (AUIPC rd,0 is word 0x00000017 | rd<<7; ADDI rd,rd,0 is
+            // 0x00000013 | rd<<20 | rd<<7). We know each symbol's rd from
+            // the backend's usage and there is exactly one unresolved
+            // reference per data symbol present.
+            let patch_la = |code: &mut Vec<u8>, rd: u32, cell_off: usize| -> bool {
+                let mut found = false;
+                let mut i = 0;
+                while i + 8 <= code.len() {
+                    let w1 = u32::from_le_bytes(code[i..i + 4].try_into().unwrap());
+                    let w2 = u32::from_le_bytes(code[i + 4..i + 8].try_into().unwrap());
+                    let auipc_rd0 =
+                        w1 & 0x0000_007F == 0x17 && (w1 >> 7) & 0x1F == rd && (w1 >> 12) == 0;
+                    let addi_rd0 = w2 & 0x0000_007F == 0x13
+                        && (w2 >> 15) & 0x1F == rd
+                        && (w2 >> 7) & 0x1F == rd
+                        && (w2 >> 20) == 0;
+                    if auipc_rd0 && addi_rd0 {
+                        // Re-encode against the true cell address.
+                        let pc = CODE_BASE + i as u64;
+                        let target = CODE_BASE + cell_off as u64;
+                        let delta = target as i64 - pc as i64;
+                        let hi20 = ((delta + 0x800) >> 12) as i32;
+                        let lo12 = delta - ((hi20 as i64) << 12);
+                        let auipc = ((hi20 as u32) << 12) | (rd << 7) | 0x17;
+                        let addi = (((lo12 as u32) & 0xFFF) << 20) | (rd << 15) | (rd << 7) | 0x13;
+                        code[i..i + 4].copy_from_slice(&auipc.to_le_bytes());
+                        code[i + 4..i + 8].copy_from_slice(&addi.to_le_bytes());
+                        found = true;
+                        i += 8;
+                    } else {
+                        i += 4;
+                    }
+                }
+                found
+            };
+
+            // Compute data-area layout (must match `data_area`).
+            let globals_words = 1024usize.max(global_inits.len().next_multiple_of(1024));
+            let data_start = code.len();
+            let mut mem_pages_off = None;
+            let mut mem_ptr_off = None;
+            if mem_pages.is_some() {
+                mem_pages_off = Some(data_start);
+                mem_ptr_off = Some(data_start + 8);
+                patch_la(&mut code, 9, data_start + 8); // __wasm_mem (rd = x9? naive uses t1)
+            }
+            let globals_off = data_start + 16;
+            let (databytes, _, _, _) =
+                data_area(data_start, mem_pages, global_inits, globals_words);
+            code.extend_from_slice(&databytes);
+
+            let n_fns = (0..)
+                .map_while(|i| {
+                    labels
+                        .get(&RiscvLabel::Indexed { idx: i | (1 << 28) })
+                        .copied()
+                })
+                .count();
+            let mut fn_entries = Vec::with_capacity(n_fns);
+            for i in 0..n_fns {
+                let off = *labels
+                    .get(&RiscvLabel::Indexed { idx: i | (1 << 28) })
+                    .ok_or_else(|| internal(format!("missing fn {i} label")))?;
+                fn_entries.push(off as u64);
+            }
+            let entry = *labels
+                .get(&RiscvLabel::Indexed { idx: 1 << 28 })
+                .ok_or_else(|| internal("missing entry label".into()))?;
+
+            Ok(NativeBinary {
+                code,
+                entry_off: entry as u64,
+                fn_entries,
+                slot_imports: targets,
+                mem_pages_off,
+                mem_ptr_off,
+                globals_off,
+            })
+        }
     }
+}
+
+/// RISC-V register MemArg helper (64-bit GPR `n`).
+fn rv_reg(n: u8) -> portal_solutions_asm_riscv64::out::arg::MemArgKind {
+    use portal_pc_asm_common::types::mem::MemorySize;
+    use portal_solutions_asm_riscv64::out::arg::{ArgKind, MemArgKind};
+    MemArgKind::NoMem(ArgKind::Reg {
+        reg: portal_solutions_blitz_common::asm::Reg(n),
+        size: MemorySize::_64,
+    })
 }
 
 /// Build the data-area bytes; returns (bytes, mem_pages_off, mem_ptr_off,

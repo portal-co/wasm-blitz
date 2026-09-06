@@ -49,14 +49,14 @@ impl Display for RiscvLabel {
 pub trait Label: portal_solutions_blitz_common::Label<RiscvLabel> {}
 impl<T: portal_solutions_blitz_common::Label<RiscvLabel> + ?Sized> Label for T {}
 
+/// BackendAbi implementations for RISC-V 64.
+pub mod abi;
 /// Naive code generation implementation (stub).
 ///
 /// A minimal, correctness-first implementation will be placed here. For now this
 /// module is a placeholder modeled after the x86-64 backend structure.
 pub mod codegen;
 pub mod naive;
-pub mod sysv;
-/// BackendAbi implementations for RISC-V 64.
-pub mod abi;
 /// `wax-core` `InstructionSink` / `OperatorSink` impls for the RISC-V 64 backend.
 pub mod sink;
+pub mod sysv;

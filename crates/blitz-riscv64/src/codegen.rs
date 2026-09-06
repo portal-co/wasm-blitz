@@ -1,14 +1,20 @@
 //! [`portal_solutions_blitz_codegen::BlitzWriter`] implementation for RISC-V 64.
 
+use crate::RiscvLabel;
 use portal_solutions_asm_riscv64::{
     ConditionCode, RegisterClass, RiscV64Arch,
-    out::{Writer, WriterCore, arg::{ArgKind, MemArgKind}},
+    out::{
+        Writer, WriterCore,
+        arg::{ArgKind, MemArgKind},
+    },
 };
 use portal_solutions_blitz_common::asm::{Reg, common::mem::MemorySize};
-use crate::RiscvLabel;
 
 fn riscv_reg(r: Reg) -> MemArgKind {
-    MemArgKind::NoMem(ArgKind::Reg { reg: r, size: MemorySize::_64 })
+    MemArgKind::NoMem(ArgKind::Reg {
+        reg: r,
+        size: MemorySize::_64,
+    })
 }
 
 fn riscv_mem_base(base: Reg) -> MemArgKind {
@@ -17,8 +23,12 @@ fn riscv_mem_base(base: Reg) -> MemArgKind {
 
 fn riscv_mem_base_disp(base: Reg, disp: i32) -> MemArgKind {
     MemArgKind::Mem {
-        base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
-        offset: None, disp,
+        base: ArgKind::Reg {
+            reg: base,
+            size: MemorySize::_64,
+        },
+        offset: None,
+        disp,
         size: MemorySize::_64,
         reg_class: RegisterClass::Gpr,
     }
@@ -57,7 +67,13 @@ pub struct BlitzW<'a, W, Context> {
 impl<'a, W, Context> BlitzW<'a, W, Context> {
     /// Construct a wrapper using the default CTX-relative probe-base convention.
     pub fn new(writer: &'a mut W, ctx: &'a mut Context, arch: RiscV64Arch, scratch2: u8) -> Self {
-        BlitzW { writer, ctx, arch, scratch2, probe_base: ProbeBase::CtxSlot }
+        BlitzW {
+            writer,
+            ctx,
+            arch,
+            scratch2,
+            probe_base: ProbeBase::CtxSlot,
+        }
     }
 }
 
@@ -70,7 +86,8 @@ where
     fn branch_label(&mut self, label_idx: usize) -> Result<(), Self::Error> {
         // JAL x0, label — unconditional jump, discard return addr into x0
         self.writer.jal_label(
-            self.ctx, self.arch,
+            self.ctx,
+            self.arch,
             &riscv_reg(Reg(0)),
             RiscvLabel::Indexed { idx: label_idx },
         )
@@ -79,7 +96,8 @@ where
     // RISC-V: beq reg, x0, label — natural two-register form
     fn branch_zero_label(&mut self, reg_n: u8, label_idx: usize) -> Result<(), Self::Error> {
         self.writer.bcond_label(
-            self.ctx, self.arch,
+            self.ctx,
+            self.arch,
             ConditionCode::EQ,
             &riscv_reg(Reg(reg_n)),
             &riscv_reg(Reg(0)), // x0 = zero register
@@ -89,26 +107,46 @@ where
 
     fn branch_reg(&mut self, reg_n: u8) -> Result<(), Self::Error> {
         // JALR x0, reg, 0 — indirect jump, discard return addr into x0
-        self.writer.jalr(self.ctx, self.arch, &riscv_reg(Reg(0)), &riscv_reg(Reg(reg_n)), 0)
+        self.writer.jalr(
+            self.ctx,
+            self.arch,
+            &riscv_reg(Reg(0)),
+            &riscv_reg(Reg(reg_n)),
+            0,
+        )
     }
 
     // JALR ra, reg, 0 — indirect call, return addr into ra (Reg(1)); the
     // callee's `ret` (`jalr x0, ra, 0`) returns here.
     fn call_reg(&mut self, reg_n: u8) -> Result<(), Self::Error> {
-        self.writer.jalr(self.ctx, self.arch, &riscv_reg(Reg(1)), &riscv_reg(Reg(reg_n)), 0)
+        self.writer.jalr(
+            self.ctx,
+            self.arch,
+            &riscv_reg(Reg(1)),
+            &riscv_reg(Reg(reg_n)),
+            0,
+        )
     }
 
     fn place_label(&mut self, label_idx: usize) -> Result<(), Self::Error> {
-        self.writer.set_label(self.ctx, self.arch, RiscvLabel::Indexed { idx: label_idx })
+        self.writer
+            .set_label(self.ctx, self.arch, RiscvLabel::Indexed { idx: label_idx })
     }
 
     // RISC-V: addi reg, reg, -1
     fn reg_decrement(&mut self, reg_n: u8) -> Result<(), Self::Error> {
-        self.writer.addi(self.ctx, self.arch, &riscv_reg(Reg(reg_n)), &riscv_reg(Reg(reg_n)), -1)
+        self.writer.addi(
+            self.ctx,
+            self.arch,
+            &riscv_reg(Reg(reg_n)),
+            &riscv_reg(Reg(reg_n)),
+            -1,
+        )
     }
 
     fn load_u64_imm(&mut self, dest: u8, imm: u64) -> Result<(), Self::Error> {
-        self.writer.li(self.ctx, self.arch, &riscv_reg(Reg(dest)), imm)
+        self.writer
+            .li(self.ctx, self.arch, &riscv_reg(Reg(dest)), imm)
     }
 
     // RISC-V: ld s2, 0(ptr); addi s2, s2, 1; sd s2, 0(ptr)
@@ -116,7 +154,8 @@ where
         let s2 = Reg(self.scratch2);
         let mem = riscv_mem_base(Reg(ptr_reg));
         self.writer.ld(self.ctx, self.arch, &riscv_reg(s2), &mem)?;
-        self.writer.addi(self.ctx, self.arch, &riscv_reg(s2), &riscv_reg(s2), 1)?;
+        self.writer
+            .addi(self.ctx, self.arch, &riscv_reg(s2), &riscv_reg(s2), 1)?;
         self.writer.sd(self.ctx, self.arch, &riscv_reg(s2), &mem)
     }
 
@@ -128,20 +167,28 @@ where
     fn load_probe_base(&mut self, dest: u8, base_off: i32) -> Result<(), Self::Error> {
         match self.probe_base {
             ProbeBase::CtxSlot => self.writer.ld(
-                self.ctx, self.arch,
+                self.ctx,
+                self.arch,
                 &riscv_reg(Reg(dest)),
                 &riscv_mem_base_disp(Reg::CTX, base_off),
             ),
             // mv dest, r  (addi dest, r, 0)
             ProbeBase::Reg(r) => {
                 if r != dest {
-                    self.writer.addi(self.ctx, self.arch, &riscv_reg(Reg(dest)), &riscv_reg(Reg(r)), 0)?;
+                    self.writer.addi(
+                        self.ctx,
+                        self.arch,
+                        &riscv_reg(Reg(dest)),
+                        &riscv_reg(Reg(r)),
+                        0,
+                    )?;
                 }
                 Ok(())
             }
             // fp = Reg(8) (s0); mid-function frame slot.
             ProbeBase::FrameSlot(disp) => self.writer.ld(
-                self.ctx, self.arch,
+                self.ctx,
+                self.arch,
                 &riscv_reg(Reg(dest)),
                 &riscv_mem_base_disp(Reg(8), disp),
             ),
@@ -153,12 +200,18 @@ where
         let s2 = Reg(self.scratch2);
         let mem = riscv_mem_base_disp(Reg(ptr_reg), disp);
         self.writer.ld(self.ctx, self.arch, &riscv_reg(s2), &mem)?;
-        self.writer.addi(self.ctx, self.arch, &riscv_reg(s2), &riscv_reg(s2), 1)?;
+        self.writer
+            .addi(self.ctx, self.arch, &riscv_reg(s2), &riscv_reg(s2), 1)?;
         self.writer.sd(self.ctx, self.arch, &riscv_reg(s2), &mem)
     }
 
     fn load_mem64_disp(&mut self, dest: u8, src: u8, disp: i32) -> Result<(), Self::Error> {
-        self.writer.ld(self.ctx, self.arch, &riscv_reg(Reg(dest)), &riscv_mem_base_disp(Reg(src), disp))
+        self.writer.ld(
+            self.ctx,
+            self.arch,
+            &riscv_reg(Reg(dest)),
+            &riscv_mem_base_disp(Reg(src), disp),
+        )
     }
 }
 
@@ -180,10 +233,11 @@ pub struct RegAllocW<'a, W, Context> {
     >,
 }
 
-impl<'a, W, Context> portal_solutions_blitz_codegen::regalloc_frontend::RegAllocWriter<
-    portal_solutions_asm_riscv64::regalloc::RegKind,
-    32,
-> for RegAllocW<'a, W, Context>
+impl<'a, W, Context>
+    portal_solutions_blitz_codegen::regalloc_frontend::RegAllocWriter<
+        portal_solutions_asm_riscv64::regalloc::RegKind,
+        32,
+    > for RegAllocW<'a, W, Context>
 where
     W: WriterCore<Context> + Writer<RiscvLabel, Context>,
 {
@@ -223,7 +277,9 @@ where
 
     fn emit_regalloc_cmds(
         &mut self,
-        cmds: alloc::vec::Vec<portal_solutions_asm_regalloc::Cmd<portal_solutions_asm_riscv64::regalloc::RegKind>>,
+        cmds: alloc::vec::Vec<
+            portal_solutions_asm_regalloc::Cmd<portal_solutions_asm_riscv64::regalloc::RegKind>,
+        >,
     ) -> Result<(), Self::Error> {
         crate::naive::emit_cmds(self.writer, self.ctx, self.arch, cmds.into_iter())
     }
@@ -234,19 +290,26 @@ where
 /// `If`/`BrIf` arms used before this was extracted.
 const COND_SCRATCH: Reg = Reg(10);
 
-impl<'a, W, Context> portal_solutions_blitz_codegen::control_flow::ControlFlowWriter for RegAllocW<'a, W, Context>
+impl<'a, W, Context> portal_solutions_blitz_codegen::control_flow::ControlFlowWriter
+    for RegAllocW<'a, W, Context>
 where
     W: WriterCore<Context> + Writer<RiscvLabel, Context>,
 {
     type Error = W::Error;
 
     fn branch_label(&mut self, label_idx: usize) -> Result<(), Self::Error> {
-        self.writer.jal_label(self.ctx, self.arch, &riscv_reg(Reg(0)), RiscvLabel::Indexed { idx: label_idx })
+        self.writer.jal_label(
+            self.ctx,
+            self.arch,
+            &riscv_reg(Reg(0)),
+            RiscvLabel::Indexed { idx: label_idx },
+        )
     }
 
     fn branch_zero_label(&mut self, reg_n: u8, label_idx: usize) -> Result<(), Self::Error> {
         self.writer.bcond_label(
-            self.ctx, self.arch,
+            self.ctx,
+            self.arch,
             ConditionCode::EQ,
             &riscv_reg(Reg(reg_n)),
             &riscv_reg(Reg(0)),
@@ -255,7 +318,8 @@ where
     }
 
     fn place_label(&mut self, label_idx: usize) -> Result<(), Self::Error> {
-        self.writer.set_label(self.ctx, self.arch, RiscvLabel::Indexed { idx: label_idx })
+        self.writer
+            .set_label(self.ctx, self.arch, RiscvLabel::Indexed { idx: label_idx })
     }
 
     // Flush any register-held operand-stack values to memory and reset TOS,
@@ -274,8 +338,19 @@ where
     // immediately after `flush`, which guarantees it's there rather than
     // live in a register) via `ld tmp, [sp]; addi sp, sp, 8`.
     fn pop_cond(&mut self) -> Result<u8, Self::Error> {
-        self.writer.ld(self.ctx, self.arch, &riscv_reg(COND_SCRATCH), &riscv_mem_base(Reg(2)))?;
-        self.writer.addi(self.ctx, self.arch, &riscv_reg(Reg(2)), &riscv_reg(Reg(2)), 8)?;
+        self.writer.ld(
+            self.ctx,
+            self.arch,
+            &riscv_reg(COND_SCRATCH),
+            &riscv_mem_base(Reg(2)),
+        )?;
+        self.writer.addi(
+            self.ctx,
+            self.arch,
+            &riscv_reg(Reg(2)),
+            &riscv_reg(Reg(2)),
+            8,
+        )?;
         Ok(COND_SCRATCH.0)
     }
 }

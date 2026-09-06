@@ -248,6 +248,8 @@ struct SpecModule {
     /// A table exists whose element type is not plain `funcref` (typed tables
     /// need function-references/GC — phase 4).
     typed_table: bool,
+    /// Any function body or function signature uses f32/f64 (riscv64 gate).
+    uses_floats: bool,
     /// The module imports the `spectest` host module (or anything else).
     imports_host: bool,
     /// Per-global init info, in global-index order (imports first).
@@ -260,11 +262,109 @@ struct SpecModule {
     native_fn_results: Vec<usize>,
 }
 
+/// Does this operator involve f32/f64? (Used to gate float-less backends.)
+fn uses_float_op(op: &wasmparser::Operator<'_>) -> bool {
+    use wasmparser::Operator;
+    matches!(
+        op,
+        Operator::F32Const { .. }
+            | Operator::F64Const { .. }
+            | Operator::F32Load { .. }
+            | Operator::F64Load { .. }
+            | Operator::F32Store { .. }
+            | Operator::F64Store { .. }
+    ) || matches!(
+        op,
+        Operator::F32Add
+            | Operator::F32Sub
+            | Operator::F32Mul
+            | Operator::F32Div
+            | Operator::F32Min
+            | Operator::F32Max
+            | Operator::F32Sqrt
+            | Operator::F32Abs
+            | Operator::F32Neg
+            | Operator::F32Ceil
+            | Operator::F32Floor
+            | Operator::F32Trunc
+            | Operator::F32Nearest
+            | Operator::F32Copysign
+            | Operator::F64Add
+            | Operator::F64Sub
+            | Operator::F64Mul
+            | Operator::F64Div
+            | Operator::F64Min
+            | Operator::F64Max
+            | Operator::F64Sqrt
+            | Operator::F64Abs
+            | Operator::F64Neg
+            | Operator::F64Ceil
+            | Operator::F64Floor
+            | Operator::F64Trunc
+            | Operator::F64Nearest
+            | Operator::F64Copysign
+            | Operator::I32TruncF32S
+            | Operator::I32TruncF32U
+            | Operator::I32TruncF64S
+            | Operator::I32TruncF64U
+            | Operator::I64TruncF32S
+            | Operator::I64TruncF32U
+            | Operator::I64TruncF64S
+            | Operator::I64TruncF64U
+            | Operator::I32TruncSatF32S
+            | Operator::I32TruncSatF32U
+            | Operator::I32TruncSatF64S
+            | Operator::I32TruncSatF64U
+            | Operator::I64TruncSatF32S
+            | Operator::I64TruncSatF32U
+            | Operator::I64TruncSatF64S
+            | Operator::I64TruncSatF64U
+            | Operator::F32ConvertI32S
+            | Operator::F32ConvertI32U
+            | Operator::F32ConvertI64S
+            | Operator::F32ConvertI64U
+            | Operator::F32DemoteF64
+            | Operator::F64ConvertI32S
+            | Operator::F64ConvertI32U
+            | Operator::F64ConvertI64S
+            | Operator::F64ConvertI64U
+            | Operator::F64PromoteF32
+            | Operator::I32ReinterpretF32
+            | Operator::I64ReinterpretF64
+            | Operator::F32ReinterpretI32
+            | Operator::F64ReinterpretI64
+            | Operator::Select
+    ) || matches!(op, Operator::TypedSelect { .. })
+        || float_cmp_op(op)
+}
+
+/// Float comparison operators (F32*/F64* cmp forms).
+fn float_cmp_op(op: &wasmparser::Operator<'_>) -> bool {
+    use wasmparser::Operator::*;
+    matches!(
+        op,
+        F32Eq
+            | F32Ne
+            | F32Lt
+            | F32Gt
+            | F32Le
+            | F32Ge
+            | F64Eq
+            | F64Ne
+            | F64Lt
+            | F64Gt
+            | F64Le
+            | F64Ge
+    )
+}
+
 /// Extract module structure from binary wasm bytes.
 fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
     use wasmparser::{Payload, TypeRef};
     let mut fn_type_indices: Vec<u32> = Vec::new();
     let mut type_results: Vec<usize> = Vec::new();
+    let mut sig_float_types: Vec<wasmparser::FuncType> = Vec::new();
+    let mut float_ops_in_bodies = false;
     let mut m = SpecModule {
         wasm: wasm.to_vec(),
         func_imports: Vec::new(),
@@ -273,6 +373,7 @@ fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
         data_segments: Vec::new(),
         memory_pages: None,
         typed_table: false,
+        uses_floats: false,
         imports_host: false,
         global_inits: Vec::new(),
         js: String::new(),
@@ -337,6 +438,7 @@ fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
                         if let wasmparser::CompositeInnerType::Func(ft) =
                             subtype.composite_type.inner
                         {
+                            sig_float_types.push(ft.clone());
                             type_results.push(ft.results().len());
                         }
                     }
@@ -402,6 +504,16 @@ fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
                     }
                 }
             }
+            Payload::CodeSectionEntry(body) => {
+                // Scan for float operators (riscv64 gate).
+                let mut reader = body.get_operators_reader().unwrap();
+                while let Ok(op) = reader.read() {
+                    if uses_float_op(&op) {
+                        float_ops_in_bodies = true;
+                        break;
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -409,6 +521,15 @@ fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
         .iter()
         .map(|&ti| type_results.get(ti as usize).copied().unwrap_or(1))
         .collect();
+    // Float usage: signatures (params/results) plus any float operator in
+    // a code body. Backends without float support (riscv64) gate on this.
+    let sig_floats = sig_float_types.iter().any(|ft| {
+        ft.params()
+            .iter()
+            .chain(ft.results().iter())
+            .any(|v| matches!(v, wasmparser::ValType::F32 | wasmparser::ValType::F64))
+    });
+    m.uses_floats = sig_floats || float_ops_in_bodies;
     Ok(m)
 }
 
@@ -870,7 +991,7 @@ fn load_current_module(runner: &mut Runner) -> Result<(), String> {
             });
             Ok(())
         }
-        Backend::NativeX86 | Backend::NativeAArch64 => {
+        Backend::NativeX86 | Backend::NativeAArch64 | Backend::NativeRiscv64 => {
             if runner.native_module.is_none() {
                 let m = runner.modules.last().ok_or("no current module")?;
                 let bin = compile_native_module(m, runner.backend)?;
@@ -914,6 +1035,7 @@ fn compile_native_module(
     let arch = match backend {
         Backend::NativeX86 => native_exec::NativeArch::X86_64,
         Backend::NativeAArch64 => native_exec::NativeArch::AArch64,
+        Backend::NativeRiscv64 => native_exec::NativeArch::Riscv64,
         _ => unreachable!("compile_native_module: non-native backend"),
     };
     native_exec::compile_module(&m.wasm, arch, &m.func_imports, mem_pages, &gvals).map_err(|e| {
@@ -959,9 +1081,12 @@ fn run_directive(
                     }
                     blitz_compile_c(&wasm).map(|c| m.c_body = c)
                 }
-                Backend::NativeX86 | Backend::NativeAArch64 => {
+                Backend::NativeX86 | Backend::NativeAArch64 | Backend::NativeRiscv64 => {
                     if m.typed_table {
                         return Verdict::Skip("typed table unsupported in native scope");
+                    }
+                    if runner.backend == Backend::NativeRiscv64 && m.uses_floats {
+                        return Verdict::Skip("floats unsupported in riscv64 native scope");
                     }
                     if m.func_imports.iter().any(|(mo, _)| mo != "spectest") {
                         return Verdict::Skip("non-spectest imports unsupported in native scope");
@@ -989,6 +1114,7 @@ fn run_directive(
                     // fail-soft as skips with the synthesis reason.
                     runner.modules.push(SpecModule {
                         native_fn_results: Vec::new(),
+                        uses_floats: false,
                         wasm: Vec::new(),
                         func_imports: Vec::new(),
                         exported_funcs: Vec::new(),
@@ -1390,7 +1516,7 @@ fn execute_action(
     match backend {
         Backend::Js => execute_action_js(runner, action, &exports),
         Backend::C => execute_action_c(runner, action, &exports),
-        Backend::NativeX86 | Backend::NativeAArch64 => {
+        Backend::NativeX86 | Backend::NativeAArch64 | Backend::NativeRiscv64 => {
             execute_action_native(runner, action, &exports)
         }
     }
@@ -1405,6 +1531,7 @@ fn execute_action_native(
     let native_arch = match runner.backend {
         Backend::NativeX86 => native_exec::NativeArch::X86_64,
         Backend::NativeAArch64 => native_exec::NativeArch::AArch64,
+        Backend::NativeRiscv64 => native_exec::NativeArch::Riscv64,
         _ => unreachable!("execute_action_native: non-native backend"),
     };
     let (fn_idx, args): (u32, Vec<Val>) = match action {
@@ -1644,6 +1771,7 @@ pub fn run_wast_file_backend(
                     Backend::C => "c",
                     Backend::NativeX86 => "native-x86",
                     Backend::NativeAArch64 => "native-aarch64",
+                    Backend::NativeRiscv64 => "native-riscv64",
                 };
                 if baseline.contains(&file, idx, backend_key) {
                     fail_known.push(idx);
@@ -1676,6 +1804,9 @@ pub enum Backend {
     NativeX86,
     /// Same runtime, AArch64 machine code (phase C).
     NativeAArch64,
+    /// Same runtime, RISC-V 64 machine code (phase C). No float support
+    /// in the backend, so float-using files skip at synthesis.
+    NativeRiscv64,
 }
 
 /// Compatibility wrapper for the phase-1 JS entry point.
