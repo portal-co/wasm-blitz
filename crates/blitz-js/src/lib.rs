@@ -183,6 +183,11 @@ enum Frame {
     /// `TryTable` acts like `Block` for branching (`br N` exits forward).
     /// Stores the catch clauses so they can be emitted at the matching `End`.
     TryTable(BlockType, alloc::vec::Vec<portal_solutions_blitz_common::wasm_encoder::Catch>),
+    /// The implicit function-level label. `br N` with `N ==` stack depth
+    /// targets this frame: it is a `return` carrying the function's results.
+    /// Present only while a body is open (pushed at `StartBody` semantics,
+    /// popped at `EndBody` — see `on_mach`).
+    Function(BlockType),
 }
 
 /// Trait for writing JavaScript code for WASM operations.
@@ -416,7 +421,10 @@ pub trait JsWrite: Write {
                     write!(self, "{{stack=stack.slice(-{param_count});continue l{idx};}}")?;
                 }
             }
-            _ => todo!(),
+            Frame::Function(_) => {
+                // Branch to the function label = return the top `rets` values.
+                return write!(self, "{{return stack.slice(-rets);}}");
+            }
         };
         Ok(())
     }
@@ -454,6 +462,151 @@ pub trait JsWrite: Write {
             Instruction::I64Eqz | Instruction::I32Eqz => {
                 push(state, self, &format_args!("({}===0n?1n:0n)", pop!(state)))
             }
+            // Equality / comparison: sign-interpret for S variants, unsigned mask for U.
+            Instruction::I32Eq | Instruction::I64Eq => push(
+                state,
+                self,
+                &format_args!("({}==={}?1n:0n)", pop!(state), pop!(state)),
+            ),
+            Instruction::I32Ne | Instruction::I64Ne => push(
+                state,
+                self,
+                &format_args!("({}!=={}?1n:0n)", pop!(state), pop!(state)),
+            ),
+            Instruction::I32LtS => push(
+                state,
+                self,
+                // Pop order: rhs first; compare lhs OP rhs => first slot is lhs.
+                &format_args!("(toInt({},32)>toInt({},32)?1n:0n)", pop!(state), pop!(state)),
+            ),
+            Instruction::I64LtS => push(
+                state,
+                self,
+                &format_args!("(toInt({},64)>toInt({},64)?1n:0n)", pop!(state), pop!(state)),
+            ),
+            Instruction::I32LtU | Instruction::I64LtU => push(
+                state,
+                self,
+                &format_args!("((a={},b={})=>BigInt(b<a?1:0))()", pop!(state), pop!(state)),
+            ),
+            Instruction::I32GtS => push(
+                state,
+                self,
+                &format_args!("(toInt({},32)>toInt({},32)?1n:0n)", pop!(state), pop!(state)),
+            ),
+            Instruction::I64GtS => push(
+                state,
+                self,
+                &format_args!("(toInt({},64)>toInt({},64)?1n:0n)", pop!(state), pop!(state)),
+            ),
+            Instruction::I32GtU | Instruction::I64GtU => push(
+                state,
+                self,
+                &format_args!("((a={},b={})=>BigInt(b>a?1:0))()", pop!(state), pop!(state)),
+            ),
+            Instruction::I32LeS => push(
+                state,
+                self,
+                &format_args!("(toInt({},32)>=toInt({},32)?1n:0n)", pop!(state), pop!(state)),
+            ),
+            Instruction::I64LeS => push(
+                state,
+                self,
+                &format_args!("(toInt({},64)>=toInt({},64)?1n:0n)", pop!(state), pop!(state)),
+            ),
+            Instruction::I32LeU | Instruction::I64LeU => push(
+                state,
+                self,
+                &format_args!("((a={},b={})=>BigInt(b<=a?1:0))()", pop!(state), pop!(state)),
+            ),
+            Instruction::I32GeS => push(
+                state,
+                self,
+                &format_args!("(toInt({},32)<=toInt({},32)?1n:0n)", pop!(state), pop!(state)),
+            ),
+            Instruction::I64GeS => push(
+                state,
+                self,
+                &format_args!("(toInt({},64)<=toInt({},64)?1n:0n)", pop!(state), pop!(state)),
+            ),
+            Instruction::I32GeU | Instruction::I64GeU => push(
+                state,
+                self,
+                &format_args!("((a={},b={})=>BigInt(b>=a?1:0))()", pop!(state), pop!(state)),
+            ),
+            // Bitwise ops work on the unsigned BigInt representations directly.
+            Instruction::I32And => push(
+                state,
+                self,
+                &format_args!("(({}&{})&mask32)()", pop!(state), pop!(state)),
+            ),
+            Instruction::I32Or => push(
+                state,
+                self,
+                &format_args!("(({}|{})&mask32)()", pop!(state), pop!(state)),
+            ),
+            Instruction::I32Xor => push(
+                state,
+                self,
+                &format_args!("(({}^{})&mask32)()", pop!(state), pop!(state)),
+            ),
+            Instruction::I64And => push(
+                state,
+                self,
+                &format_args!("(({}&{})&mask64)()", pop!(state), pop!(state)),
+            ),
+            Instruction::I64Or => push(
+                state,
+                self,
+                &format_args!("(({}|{})&mask64)()", pop!(state), pop!(state)),
+            ),
+            Instruction::I64Xor => push(
+                state,
+                self,
+                &format_args!("(({}^{})&mask64)()", pop!(state), pop!(state)),
+            ),
+            Instruction::I32Clz => push(
+                state,
+                self,
+                &format_args!("BigInt(32-Math.clz32(Number({})))", pop!(state)),
+            ),
+            Instruction::I32Ctz => push(
+                state,
+                self,
+                &format_args!("BigInt(32-Math.clz32(Number({})&Number(-{})))", pop!(state), pop!(state)),
+            ),
+            Instruction::I32Popcnt => push(
+                state,
+                self,
+                &format_args!("BigInt(__popcnt32(Number({})))", pop!(state)),
+            ),
+            Instruction::I64Clz => push(
+                state,
+                self,
+                &format_args!("BigInt(64-Math.clz32(Number({})))", pop!(state)),
+            ),
+            Instruction::I64Ctz => push(
+                state,
+                self,
+                &format_args!("BigInt(64-Math.clz32(Number({})&Number(-{})))", pop!(state), pop!(state)),
+            ),
+            Instruction::I64Popcnt => push(
+                state,
+                self,
+                &format_args!("BigInt(__popcnt64({}))", pop!(state)),
+            ),
+            // Stack discipline: drop a value; nop is nothing.
+            Instruction::Drop => {
+                pop!(state);
+                Ok(())
+            }
+            Instruction::Nop => Ok(()),
+            Instruction::Unreachable => write!(self, "throw __wasm_trap('unreachable')"),
+            Instruction::Select => push(
+                state,
+                self,
+                &format_args!("(({}, {}, {}) => {} !== 0n ? {} : {})()", pop!(state), pop!(state), pop!(state), format_args!("{{let c={}}}", ""), pop!(state), pop!(state)),
+            ),
             Instruction::I32Add => push(
                 state,
                 self,
@@ -478,20 +631,20 @@ pub trait JsWrite: Write {
             Instruction::I32DivU => push(
                 state,
                 self,
-                &format_args!("((a={},b={})=>(b/a)&mask32)()", pop!(state), pop!(state)),
+                &format_args!("__udiv({}, {}, 32)", pop!(state), pop!(state)),
             ),
             // BUG FIX: swap operands.
             Instruction::I32RemU => push(
                 state,
                 self,
-                &format_args!("((a={},b={})=>(b%a)&mask32)()", pop!(state), pop!(state)),
+                &format_args!("__urem({}, {}, 32)", pop!(state), pop!(state)),
             ),
             // BUG FIX: swap operands; also added missing ,32 to toUint.
             Instruction::I32DivS => push(
                 state,
                 self,
                 &format_args!(
-                    "((a=toInt({},32),b=toInt({},32))=>toUint((b/a)&mask32,32))()",
+                    "__idivS(toInt({},32), toInt({},32), 32)",
                     pop!(state),
                     pop!(state)
                 ),
@@ -500,11 +653,7 @@ pub trait JsWrite: Write {
             Instruction::I32RemS => push(
                 state,
                 self,
-                &format_args!(
-                    "((a=toInt({},32),b=toInt({},32))=>toUint((b%a)&mask32,32))()",
-                    pop!(state),
-                    pop!(state)
-                ),
+                &format_args!("__srem(toInt({},32), toInt({},32), 32)", pop!(state), pop!(state)),
             ),
             // BUG FIX: a=shift-count (rhs, first pop) modulo 32; b=value (lhs, second pop).
             Instruction::I32Shl => push(
@@ -582,33 +731,25 @@ pub trait JsWrite: Write {
             Instruction::I64DivU => push(
                 state,
                 self,
-                &format_args!("((a={},b={})=>(b/a)&mask64)()", pop!(state), pop!(state)),
+                &format_args!("__udiv({}, {}, 64)", pop!(state), pop!(state)),
             ),
             // BUG FIX: b%a = lhs%rhs.
             Instruction::I64RemU => push(
                 state,
                 self,
-                &format_args!("((a={},b={})=>(b%a)&mask64)()", pop!(state), pop!(state)),
+                &format_args!("__urem({}, {}, 64)", pop!(state), pop!(state)),
             ),
             // BUG FIX: swap operands; also add missing ,64 to toUint.
             Instruction::I64DivS => push(
                 state,
                 self,
-                &format_args!(
-                    "((a=toInt({},64),b=toInt({},64))=>toUint((b/a)&mask64,64))()",
-                    pop!(state),
-                    pop!(state)
-                ),
+                &format_args!("__idivS(toInt({},64), toInt({},64), 64)", pop!(state), pop!(state)),
             ),
             // BUG FIX: swap operands; also add missing ,64 to toUint.
             Instruction::I64RemS => push(
                 state,
                 self,
-                &format_args!(
-                    "((a=toInt({},64),b=toInt({},64))=>toUint((b%a)&mask64,64))()",
-                    pop!(state),
-                    pop!(state)
-                ),
+                &format_args!("__srem(toInt({},64), toInt({},64), 64)", pop!(state), pop!(state)),
             ),
             // BUG FIX: a=shift-count (rhs, first pop) modulo 64; b=value (lhs, second pop).
             Instruction::I64Shl => push(
@@ -661,6 +802,344 @@ pub trait JsWrite: Write {
                     pop!(state)
                 ),
             ),
+            // Wrap / extend / sign-extension ops.
+            Instruction::I32WrapI64 => push(
+                state,
+                self,
+                &format_args!("({}&mask32)", pop!(state)),
+            ),
+            Instruction::I64ExtendI32S => push(
+                state,
+                self,
+                &format_args!("toInt({},32)&mask64", pop!(state)),
+            ),
+            Instruction::I64ExtendI32U => push(
+                state,
+                self,
+                &format_args!("({}&mask32)", pop!(state)),
+            ),
+            Instruction::I32Extend8S => push(
+                state,
+                self,
+                &format_args!("toInt({},8)&mask32", pop!(state)),
+            ),
+            Instruction::I32Extend16S => push(
+                state,
+                self,
+                &format_args!("toInt({},16)&mask32", pop!(state)),
+            ),
+            Instruction::I64Extend8S => push(
+                state,
+                self,
+                &format_args!("toInt({},8)&mask64", pop!(state)),
+            ),
+            Instruction::I64Extend16S => push(
+                state,
+                self,
+                &format_args!("toInt({},16)&mask64", pop!(state)),
+            ),
+            Instruction::I64Extend32S => push(
+                state,
+                self,
+                &format_args!("toInt({},32)&mask64", pop!(state)),
+            ),
+            // Float constants: reinterpret the exact bit pattern so the JS value
+            // is bit-exact with the spec test data.
+            // Float constants: reinterpret the exact bit pattern so the JS value
+            // is bit-exact with the spec test data. Floats ride the wasm stack
+            // as JS numbers; bit-exactness is restored via the DataView helpers
+            // (`__f32bitsOf`/`__f64bitsOf` take a u32/u64 pattern, return a number).
+            Instruction::F32Const(f) => {
+                push(state, self, &format_args!("__f32bitsOf({})", f.bits()))
+            }
+            Instruction::F64Const(f) => {
+                push(state, self, &format_args!("__f64bitsOf({}n)", f.bits()))
+            }
+            // Float ops. Floats ride the wasm stack as JS numbers (f32 ops are
+            // computed in f64 then rounded to f32 via Math.fround).
+            Instruction::F32Abs => push(
+                state,
+                self,
+                &format_args!("Math.fround(Math.abs({}))", pop!(state)),
+            ),
+            Instruction::F32Neg => push(
+                state,
+                self,
+                &format_args!("Math.fround(-{})", pop!(state)),
+            ),
+            Instruction::F32Ceil => push(
+                state,
+                self,
+                &format_args!("Math.fround(Math.ceil({}))", pop!(state)),
+            ),
+            Instruction::F32Floor => push(
+                state,
+                self,
+                &format_args!("Math.fround(Math.floor({}))", pop!(state)),
+            ),
+            Instruction::F32Trunc => push(
+                state,
+                self,
+                &format_args!("Math.fround(Math.trunc({}))", pop!(state)),
+            ),
+            Instruction::F32Nearest => push(
+                state,
+                self,
+                &format_args!("Math.fround(__nearest({}))", pop!(state)),
+            ),
+            Instruction::F32Sqrt => push(
+                state,
+                self,
+                &format_args!("Math.fround(Math.sqrt({}))", pop!(state)),
+            ),
+            Instruction::F32Add => push(
+                state,
+                self,
+                &format_args!("Math.fround({}+{})", pop!(state), pop!(state)),
+            ),
+            Instruction::F32Sub => push(
+                state,
+                self,
+                &format_args!("Math.fround({}-{})", pop!(state), pop!(state)),
+            ),
+            Instruction::F32Mul => push(
+                state,
+                self,
+                &format_args!("Math.fround({}*{})", pop!(state), pop!(state)),
+            ),
+            Instruction::F32Div => push(
+                state,
+                self,
+                &format_args!("Math.fround({}/{})", pop!(state), pop!(state)),
+            ),
+            Instruction::F32Min => push(
+                state,
+                self,
+                &format_args!("__fmin({},{});", pop!(state), pop!(state)),
+            ),
+            Instruction::F32Max => push(
+                state,
+                self,
+                &format_args!("__fmax({},{});", pop!(state), pop!(state)),
+            ),
+            Instruction::F32Copysign => push(
+                state,
+                self,
+                &format_args!("__copysign32({},{})", pop!(state), pop!(state)),
+            ),
+            Instruction::F64Abs => push(
+                state,
+                self,
+                &format_args!("Math.abs({})", pop!(state)),
+            ),
+            Instruction::F64Neg => push(
+                state,
+                self,
+                &format_args!("(-{})", pop!(state)),
+            ),
+            Instruction::F64Ceil => push(
+                state,
+                self,
+                &format_args!("Math.ceil({})", pop!(state)),
+            ),
+            Instruction::F64Floor => push(
+                state,
+                self,
+                &format_args!("Math.floor({})", pop!(state)),
+            ),
+            Instruction::F64Trunc => push(
+                state,
+                self,
+                &format_args!("Math.trunc({})", pop!(state)),
+            ),
+            Instruction::F64Nearest => push(
+                state,
+                self,
+                &format_args!("__nearest({})", pop!(state)),
+            ),
+            Instruction::F64Sqrt => push(
+                state,
+                self,
+                &format_args!("Math.sqrt({})", pop!(state)),
+            ),
+            Instruction::F64Add => push(
+                state,
+                self,
+                &format_args!("({}+{})", pop!(state), pop!(state)),
+            ),
+            Instruction::F64Sub => push(
+                state,
+                self,
+                &format_args!("({}-{})", pop!(state), pop!(state)),
+            ),
+            Instruction::F64Mul => push(
+                state,
+                self,
+                &format_args!("({}*{})", pop!(state), pop!(state)),
+            ),
+            Instruction::F64Div => push(
+                state,
+                self,
+                &format_args!("({}/{})", pop!(state), pop!(state)),
+            ),
+            Instruction::F64Min => push(
+                state,
+                self,
+                &format_args!("__fmin({},{});", pop!(state), pop!(state)),
+            ),
+            Instruction::F64Max => push(
+                state,
+                self,
+                &format_args!("__fmax({},{});", pop!(state), pop!(state)),
+            ),
+            Instruction::F64Copysign => push(
+                state,
+                self,
+                &format_args!("__copysign64({},{})", pop!(state), pop!(state)),
+            ),
+            // Float comparisons (result 1n/0n on the BigInt wasm stack).
+            Instruction::F32Eq | Instruction::F64Eq => push(
+                state,
+                self,
+                &format_args!("({}==={}?1n:0n)", pop!(state), pop!(state)),
+            ),
+            Instruction::F32Ne | Instruction::F64Ne => push(
+                state,
+                self,
+                &format_args!("({}!=={}?1n:0n)", pop!(state), pop!(state)),
+            ),
+            Instruction::F32Lt | Instruction::F64Lt => push(
+                state,
+                self,
+                &format_args!("({}<{}?1n:0n)", pop!(state), pop!(state)),
+            ),
+            Instruction::F32Gt | Instruction::F64Gt => push(
+                state,
+                self,
+                &format_args!("({}>{}?1n:0n)", pop!(state), pop!(state)),
+            ),
+            Instruction::F32Le | Instruction::F64Le => push(
+                state,
+                self,
+                &format_args!("({}<={}?1n:0n)", pop!(state), pop!(state)),
+            ),
+            Instruction::F32Ge | Instruction::F64Ge => push(
+                state,
+                self,
+                &format_args!("({}>={}?1n:0n)", pop!(state), pop!(state)),
+            ),
+            // Conversions: int <-> float. Traps (trunc out-of-range/NaN) are
+            // spec-critical; raise __wasm_trap for them.
+            Instruction::F32ConvertI32S => push(
+                state,
+                self,
+                &format_args!("Math.fround(Number(toInt({},32)))", pop!(state)),
+            ),
+            Instruction::F32ConvertI32U => push(
+                state,
+                self,
+                &format_args!("Math.fround(Number({}&mask32))", pop!(state)),
+            ),
+            Instruction::F32ConvertI64S => push(
+                state,
+                self,
+                &format_args!("Math.fround(Number(toInt({},64)))", pop!(state)),
+            ),
+            Instruction::F32ConvertI64U => push(
+                state,
+                self,
+                &format_args!("Math.fround(Number(__u64ToF64({})))", pop!(state)),
+            ),
+            Instruction::F64ConvertI32S => push(
+                state,
+                self,
+                &format_args!("Number(toInt({},32))", pop!(state)),
+            ),
+            Instruction::F64ConvertI32U => push(
+                state,
+                self,
+                &format_args!("Number({}&mask32)", pop!(state)),
+            ),
+            Instruction::F64ConvertI64S => push(
+                state,
+                self,
+                &format_args!("Number(toInt({},64))", pop!(state)),
+            ),
+            Instruction::F64ConvertI64U => push(
+                state,
+                self,
+                &format_args!("__u64ToF64({})", pop!(state)),
+            ),
+            Instruction::F32DemoteF64 => push(
+                state,
+                self,
+                &format_args!("Math.fround({})", pop!(state)),
+            ),
+            Instruction::F64PromoteF32 => push(
+                state,
+                self,
+                &format_args!("({})", pop!(state)),
+            ),
+            Instruction::I32TruncF32S => push(
+                state,
+                self,
+                &format_args!("__truncS({},32,Math.fround)", pop!(state)),
+            ),
+            Instruction::I32TruncF32U => push(
+                state,
+                self,
+                &format_args!("__truncU({},32,Math.fround)", pop!(state)),
+            ),
+            Instruction::I32TruncF64S => push(
+                state,
+                self,
+                &format_args!("__truncS({},32,x=>x)", pop!(state)),
+            ),
+            Instruction::I32TruncF64U => push(
+                state,
+                self,
+                &format_args!("__truncU({},32,x=>x)", pop!(state)),
+            ),
+            Instruction::I64TruncF32S => push(
+                state,
+                self,
+                &format_args!("__truncS({},64,Math.fround)", pop!(state)),
+            ),
+            Instruction::I64TruncF32U => push(
+                state,
+                self,
+                &format_args!("__truncU({},64,Math.fround)", pop!(state)),
+            ),
+            Instruction::I64TruncF64S => push(
+                state,
+                self,
+                &format_args!("__truncS({},64,x=>x)", pop!(state)),
+            ),
+            Instruction::I64TruncF64U => push(
+                state,
+                self,
+                &format_args!("__truncU({},64,x=>x)", pop!(state)),
+            ),
+            Instruction::I32ReinterpretF32 => push(
+                state,
+                self,
+                &format_args!("BigInt(__f32bits({}))", pop!(state)),
+            ),
+            Instruction::I64ReinterpretF64 => push(
+                state,
+                self,
+                &format_args!("__f64bits({})", pop!(state)),
+            ),
+            Instruction::F32ReinterpretI32 => push(
+                state,
+                self,
+                &format_args!("__f32bitsOf(Number({}))", pop!(state)),
+            ),
+            Instruction::F64ReinterpretI64 => push(
+                state,
+                self,
+                &format_args!("__f64bitsOf({})", pop!(state)),
+            ),
             //
             Instruction::Return => {
                 write!(
@@ -706,6 +1185,14 @@ pub trait JsWrite: Write {
             }
             Instruction::LocalGet(local_index) => {
                 push(state, self, &format_args!("locals[{local_index}]"))
+            }
+            // Globals: module-scope `$g_N` BigInt slots (i32/i64). Float globals
+            // are unsupported at synthesis level and rejected before codegen.
+            Instruction::GlobalGet(global_index) => {
+                push(state, self, &format_args!("$g_{global_index}"))
+            }
+            Instruction::GlobalSet(global_index) => {
+                write!(self, "$g_{global_index}={}", pop!(state))
             }
             // BUG FIX: was `locals[{local_index}=` — missing `]` before `=`.
             Instruction::LocalSet(local_index) => {
@@ -807,6 +1294,11 @@ pub trait JsWrite: Write {
                     None => return Ok(()),
                 };
                 match s {
+                    Frame::Function(_) => {
+                        // Function-level end: nothing to close; the function
+                        // body's closing brace is emitted by EndBody.
+                        return Ok(());
+                    }
                     Frame::Block(blockty) => {
                         write!(self, "break;")?;
                         if let Some(o) = state.opt() {
@@ -844,6 +1336,14 @@ pub trait JsWrite: Write {
                         }
                     }
                     Frame::TryTable(..) => unreachable!("TryTable handled before pop"),
+                    Frame::Function(_) => {
+                        // The function-level label frame: already consumed by
+                        // the `stack.pop()` above; the function's closing brace
+                        // is emitted by EndBody. Reset opt depth to zero.
+                        if let Some(o) = state.opt() {
+                            o.lock().depth = 0;
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -971,6 +1471,34 @@ pub trait JsWrite: Write {
                 write!(self, "((v={},a={})=>__wasm_dv({mem}).setUint32(Number(a)+{off},Number(v)&0xffffffff,true))()",
                     pop!(state), pop!(state))
             }
+            // Float stores / loads: bytes go through DataView float accessors so
+            // the stored bits are exact.
+            Instruction::F32Store(memarg) => {
+                let off = memarg.offset;
+                let mem = memarg.memory_index;
+                write!(self, "((v={},a={})=>__wasm_dv({mem}).setFloat32(Number(a)+{off},v,true))()",
+                    pop!(state), pop!(state))
+            }
+            Instruction::F64Store(memarg) => {
+                let off = memarg.offset;
+                let mem = memarg.memory_index;
+                write!(self, "((v={},a={})=>__wasm_dv({mem}).setFloat64(Number(a)+{off},v,true))()",
+                    pop!(state), pop!(state))
+            }
+            Instruction::F32Load(memarg) => {
+                let off = memarg.offset;
+                let mem = memarg.memory_index;
+                push(state, self, &format_args!(
+                    "__wasm_dv({mem}).getFloat32(Number({})+{off},true)", pop!(state)
+                ))
+            }
+            Instruction::F64Load(memarg) => {
+                let off = memarg.offset;
+                let mem = memarg.memory_index;
+                push(state, self, &format_args!(
+                    "__wasm_dv({mem}).getFloat64(Number({})+{off},true)", pop!(state)
+                ))
+            }
             // ---- memory.size / memory.grow ----------------------------------
             Instruction::MemorySize(mem) => {
                 push(state, self, &format_args!("BigInt(__wasm_mb({mem}).byteLength/65536)"))
@@ -1068,6 +1596,9 @@ pub trait JsWrite: Write {
             MachOperator::StartFn { id, data } => {
                 let id = *id + func_imports.len() as u32;
                 state.promise_close_stack.clear();
+                // Push the implicit function-level branch label so `br` can
+                // target the function itself (early return).
+                state.stack.push(Frame::Function(BlockType::FunctionType(0)));
                 write!(
                     self,
                     "
@@ -1122,6 +1653,12 @@ pub trait JsWrite: Write {
                 Ok(())
             }
             MachOperator::EndBody => {
+                // Pop the implicit function-level branch label. The function's
+                // final `End` may already have popped it (DCE order / explicit
+                // end handling) — accept both shapes.
+                if let Some(Frame::Function(_)) = state.stack.last() {
+                    state.stack.pop();
+                }
                 // Close promise-mode continuations innermost-first: each call
                 // opened `const $cont_K=(val)=>{...` and left it open for the
                 // remainder of the function.
@@ -1166,7 +1703,18 @@ const JS_MULTI_MEM_HELPERS: &str = "var $mems=[];var $mem_dvs=[];\
 /// the generated JavaScript module scope.
 pub fn js_module_preamble(w: &mut (dyn Write + '_)) -> core::fmt::Result {
     write!(w, "var $mem=new Uint8Array(0);var $mem_dv=new DataView($mem.buffer);")?;
-    write!(w, "{JS_MULTI_MEM_HELPERS}")
+    write!(w, "{JS_MULTI_MEM_HELPERS}")?;
+    // Spec-exact integer division/remainder helpers (trap on div/0 and
+    // INT_MIN/-1); used by the Div/Rem instruction arms.
+    write!(w,
+        "function __udiv(a,b,bits){{if(a===0n)throw {{__wasm_trap:true,message:'integer divide by zero'}};return BigInt.asUintN(bits,b/a);}}")?;
+    write!(w,
+        "function __urem(a,b,bits){{if(a===0n)throw {{__wasm_trap:true,message:'integer divide by zero'}};return BigInt.asUintN(bits,b%a);}}")?;
+    write!(w,
+        "function __idivS(a,b,bits){{if(a===0n)throw {{__wasm_trap:true,message:'integer divide by zero'}};const min=-(2n**BigInt(bits-1));if(b===min&&a===-1n)throw {{__wasm_trap:true,message:'integer overflow'}};return BigInt.asUintN(bits,b/a);}}")?;
+    write!(w,
+        "function __srem(a,b,bits){{if(a===0n)throw {{__wasm_trap:true,message:'integer divide by zero'}};return BigInt.asUintN(bits,b%a);}}")?;
+    Ok(())
 }
 
 /// Emit module-level globals required for linear memory access (ES module).

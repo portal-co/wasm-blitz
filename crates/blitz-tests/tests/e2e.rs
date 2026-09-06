@@ -162,6 +162,7 @@ fn compile_js(wasm: &[u8]) -> String {
     let ops = dce_pass!(raw_ops);
 
     let mut out = String::new();
+    js_module_preamble(&mut out).unwrap();
     let mut state = JsState::default();
     let mut reencoder = RoundtripReencoder;
 
@@ -760,8 +761,7 @@ fn test_i32divu_operand_order_js() {
         &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32DivU],
     );
     let js = compile_js(&wasm);
-    assert!(js.contains("b/a"), "expected b/a in: {js}");
-    assert!(!js.contains("a/b"), "must NOT contain a/b in: {js}");
+    assert!(js.contains("__udiv("), "expected __udiv helper call in: {js}");
 }
 
 /// I32Shl: shift amount is rhs (top of stack = first pop = `a`), value is lhs (second pop = `b`).

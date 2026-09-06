@@ -25,3 +25,6 @@ portal-solutions-asm-regalloc.workspace = true
 unicorn-engine                 = "2.1.5"
 libc                           = { version = "0.2" }
 paste                          = "1"
+wast                           = "=240.0.0" # matches workspace wasmparser/wasm-encoder 0.240
+wasmparser                     = "0.240.0"
+wasm-encoder                   = "0.240.0"
