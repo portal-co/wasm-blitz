@@ -870,10 +870,10 @@ fn load_current_module(runner: &mut Runner) -> Result<(), String> {
             });
             Ok(())
         }
-        Backend::NativeX86 => {
+        Backend::NativeX86 | Backend::NativeAArch64 => {
             if runner.native_module.is_none() {
                 let m = runner.modules.last().ok_or("no current module")?;
-                let bin = compile_native_module(m)?;
+                let bin = compile_native_module(m, runner.backend)?;
                 runner.native_module = Some(bin);
             }
             Ok(())
@@ -883,7 +883,10 @@ fn load_current_module(runner: &mut Runner) -> Result<(), String> {
 
 /// Compile a SpecModule to a native blob (phase A/B). Spectest imports are
 /// mapped to sentinel slots; everything else rejects. Errors become skips.
-fn compile_native_module(m: &SpecModule) -> Result<native_exec::NativeBinary, String> {
+fn compile_native_module(
+    m: &SpecModule,
+    backend: Backend,
+) -> Result<native_exec::NativeBinary, String> {
     // Resolve globals: i32/i64 consts seed __wasm_globals; spectest i32/i64
     // globals = 666 (666.6's bit pattern is not representable for i64 slots,
     // and float globals in the phase-1 file set are not native-supported).
@@ -908,16 +911,16 @@ fn compile_native_module(m: &SpecModule) -> Result<native_exec::NativeBinary, St
         return Err(reason);
     }
     let mem_pages = m.memory_pages;
-    native_exec::compile_module(
-        &m.wasm,
-        native_exec::NativeArch::X86_64,
-        &m.func_imports,
-        mem_pages,
-        &gvals,
-    )
-    .map_err(|e| match e {
-        native_exec::CompileError::Unsupported(r) => r,
-        native_exec::CompileError::Internal(r) => format!("native internal: {r}"),
+    let arch = match backend {
+        Backend::NativeX86 => native_exec::NativeArch::X86_64,
+        Backend::NativeAArch64 => native_exec::NativeArch::AArch64,
+        _ => unreachable!("compile_native_module: non-native backend"),
+    };
+    native_exec::compile_module(&m.wasm, arch, &m.func_imports, mem_pages, &gvals).map_err(|e| {
+        match e {
+            native_exec::CompileError::Unsupported(r) => r,
+            native_exec::CompileError::Internal(r) => format!("native internal: {r}"),
+        }
     })
 }
 
@@ -956,14 +959,14 @@ fn run_directive(
                     }
                     blitz_compile_c(&wasm).map(|c| m.c_body = c)
                 }
-                Backend::NativeX86 => {
+                Backend::NativeX86 | Backend::NativeAArch64 => {
                     if m.typed_table {
                         return Verdict::Skip("typed table unsupported in native scope");
                     }
                     if m.func_imports.iter().any(|(mo, _)| mo != "spectest") {
                         return Verdict::Skip("non-spectest imports unsupported in native scope");
                     }
-                    compile_native_module(&m).map(|bin| {
+                    compile_native_module(&m, runner.backend).map(|bin| {
                         runner.native_module = Some(bin);
                     })
                 }
@@ -1387,7 +1390,9 @@ fn execute_action(
     match backend {
         Backend::Js => execute_action_js(runner, action, &exports),
         Backend::C => execute_action_c(runner, action, &exports),
-        Backend::NativeX86 => execute_action_native(runner, action, &exports),
+        Backend::NativeX86 | Backend::NativeAArch64 => {
+            execute_action_native(runner, action, &exports)
+        }
     }
 }
 
@@ -1397,6 +1402,11 @@ fn execute_action_native(
     action: &Action,
     exports: &[(String, u32)],
 ) -> Result<Vec<(char, String)>, ExecError> {
+    let native_arch = match runner.backend {
+        Backend::NativeX86 => native_exec::NativeArch::X86_64,
+        Backend::NativeAArch64 => native_exec::NativeArch::AArch64,
+        _ => unreachable!("execute_action_native: non-native backend"),
+    };
     let (fn_idx, args): (u32, Vec<Val>) = match action {
         Action::Invoke { export, args } => {
             let Some((_, idx)) = exports.iter().find(|(n, _)| n == export) else {
@@ -1450,7 +1460,7 @@ fn execute_action_native(
         })
         .unwrap_or(1);
     match native_exec::run_module(
-        native_exec::NativeArch::X86_64,
+        native_arch,
         bin,
         bin.fn_entries
             .get(local_idx as usize)
@@ -1633,6 +1643,7 @@ pub fn run_wast_file_backend(
                     Backend::Js => "js",
                     Backend::C => "c",
                     Backend::NativeX86 => "native-x86",
+                    Backend::NativeAArch64 => "native-aarch64",
                 };
                 if baseline.contains(&file, idx, backend_key) {
                     fail_known.push(idx);
@@ -1660,9 +1671,11 @@ pub enum Backend {
     Js,
     /// C backend compiled with the host C compiler, one process per invoke.
     C,
-    /// Native backend executed under Unicorn (phase A/B of
-    /// docs/native-spectests-plan.md). Currently x86-64 only.
+    /// Native backend executed under Unicorn (phases A–C of
+    /// docs/native-spectests-plan.md).
     NativeX86,
+    /// Same runtime, AArch64 machine code (phase C).
+    NativeAArch64,
 }
 
 /// Compatibility wrapper for the phase-1 JS entry point.

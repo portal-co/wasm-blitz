@@ -44,7 +44,7 @@ const CODE_SIZE: u64 = 0x4_0000;
 pub const STACK_BASE: u64 = 0x2000_0000;
 const STACK_SIZE: u64 = 0x4_0000;
 pub const MEM_BASE: u64 = 0x3000_0000;
-const SENTINEL_BASE: u64 = 0x4010_0000;
+const SENTINEL_BASE: u64 = 0x1100_0000;
 const SENTINEL_SLOT: u64 = 16;
 const MAX_SENTINEL_SLOTS: usize = 256;
 const MAX_IMPORT_ARGS: usize = 8;
@@ -342,8 +342,184 @@ pub fn compile_module(
                 globals_off,
             })
         }
-        NativeArch::AArch64 | NativeArch::Riscv64 => Err(CompileError::Internal(format!(
-            "{arch:?}: phase A covers x86-64 only (aarch64/riscv64 land in phases B/C)"
+        NativeArch::AArch64 => {
+            use portal_solutions_asm_aarch64::out::arg::{ArgKind, MemArgKind};
+            use portal_solutions_asm_aarch64::out::{
+                Writer as _, WriterCore as _,
+                bin::{AArch64Writer, AsmRelocKind},
+            };
+            use portal_solutions_blitz_aarch64::{AArch64Arch, AArch64Label, naive, sysv};
+            use portal_solutions_blitz_common::wasm_encoder::reencode::RoundtripReencoder;
+
+            let mut out = AArch64Writer::<AArch64Label>::new();
+            let mut ctx = ();
+            let arch_cfg = AArch64Arch::default();
+            // Reserve one instruction word at the current offset: a harmless
+            // NOP (`mov x31-rf?, 0` is not encodable; use `mov x9, #0` style
+            // MOVZ) that gets overwritten post-assembly for trampoline/data
+            // slots. mov_imm with value 0 emits MOVZ X9, #0 (4 bytes).
+            macro_rules! reserve_word {
+                () => {{
+                    let x9 = MemArgKind::NoMem(ArgKind::Reg {
+                        reg: portal_solutions_blitz_common::asm::Reg(9),
+                        size: portal_pc_asm_common::types::mem::MemorySize::_64,
+                    });
+                    out.mov_imm(&mut ctx, arch_cfg, &x9, 0)
+                        .map_err(|e| internal(e.to_string()))?
+                }};
+            }
+            let mut state = naive::State::default();
+            state.call_abi = naive::CallAbi::AllStack;
+            state.call_params = call_params;
+            state.call_results = call_results;
+            state.sig_params = sig_params;
+            state.sig_results = sig_results;
+            state.n_imports = import_count;
+            if mem_pages.is_some() {
+                state.mem_base = naive::MemBase::WasmMemSymbol;
+            }
+            let mut reencoder = RoundtripReencoder;
+            for op in ops {
+                let op = op.map_err(|e| internal(format!("mach op: {e}")))?;
+                sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                    &mut out,
+                    &mut ctx,
+                    arch_cfg,
+                    &mut state,
+                    &func_imports,
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .map_err(|e| unsupported(format!("aarch64 emit: {e:?}")))?;
+            }
+
+            // AArch64 external references materialize via ADRP+ADD pairs that
+            // are external-only (set_label panics on them), so the stub/data
+            // area is appended AFTER codegen and the ADRP/ADD relocations are
+            // patched by hand to point into it.
+            let (bytes, labels, relocs) = out.into_parts_with_relocs();
+            let mut patched = bytes;
+
+            // Layout after the module code: a 4-byte `B` trampoline per
+            // function symbol (jumps to its sentinel slot), then the runtime
+            // data area (__wasm_mem_pages, __wasm_mem, __wasm_globals, …).
+            // Data symbols resolve DIRECTLY to their data-area cell; there
+            // are no separate stub cells for them.
+            let mut stub_off: HashMap<String, usize> = HashMap::new();
+            let mut names: Vec<String> = Vec::new();
+            for r in &relocs {
+                if let AArch64Label::External { name } = &r.label {
+                    if !stub_off.contains_key(name) {
+                        names.push(name.clone());
+                    }
+                }
+            }
+            let is_data = |n: &str| DATA_SYMBOLS.contains(&n);
+            let mut cursor = patched.len();
+            for name in &names {
+                cursor = (cursor + 3) & !3; // 4-align every trampoline
+                stub_off.insert(name.clone(), cursor);
+                cursor += 4;
+            }
+            // The runtime data area starts at the next 8-aligned offset; its
+            // internal layout matches `data_area` (8 bytes per DATA_SYMBOLS
+            // entry in order, then the globals array).
+            let data_start = (cursor + 7) & !7;
+            for (i, sym) in DATA_SYMBOLS.iter().enumerate() {
+                stub_off.insert((*sym).to_string(), data_start + i * 8);
+            }
+
+            // Patch every ADRP+ADD pair to `CODE_BASE + stub_off[name]`.
+            for r in &relocs {
+                let name = match &r.label {
+                    AArch64Label::External { name } => name,
+                    other => return Err(internal(format!("non-external reloc {other:?}"))),
+                };
+                let target = CODE_BASE + stub_off[name] as u64;
+                let off = r.byte_offset;
+                let orig = u32::from_le_bytes(patched[off..off + 4].try_into().unwrap());
+                match r.kind {
+                    AsmRelocKind::A64AdrpPage21 => {
+                        // ADRP Xd: imm21 = page delta (pc-relative), immlo in
+                        // bits [30:29], immhi in bits [23:5]; rd in bits [4:0].
+                        let pc = CODE_BASE + off as u64;
+                        let delta_pages = ((target & !0xFFF) as i64 - (pc & !0xFFF) as i64) / 4096;
+                        let imm21 = (delta_pages as u32) & 0x001F_FFFF;
+                        let immlo = imm21 & 0x3;
+                        let immhi = (imm21 >> 2) & 0x7_FFFF;
+                        let word = 0x9000_0000u32 | (immlo << 29) | (immhi << 5) | (orig & 0x1F);
+                        patched[off..off + 4].copy_from_slice(&word.to_le_bytes());
+                    }
+                    AsmRelocKind::A64AddAbsLo12 => {
+                        // ADD Xd, Xn, #lo12: imm12 in bits [21:10],
+                        // rn in bits [9:5], rd in bits [4:0].
+                        let imm12 = (target & 0xFFF) as u32;
+                        let word = 0x9100_0000u32 | (imm12 << 10) | (orig & 0x3FF);
+                        patched[off..off + 4].copy_from_slice(&word.to_le_bytes());
+                    }
+                    other => return Err(internal(format!("unexpected reloc kind {other:?}"))),
+                }
+            }
+            // Build the stub region bytes: `B` trampolines for function
+            // symbols (each lands on its sentinel slot).
+            let mut stub_bytes = vec![0u8; data_start - patched.len()];
+            for name in &names {
+                if is_data(name) {
+                    continue;
+                }
+                let k = slot_of[name];
+                let off = stub_off[name];
+                let target = SENTINEL_BASE + (k as u64) * SENTINEL_SLOT;
+                // AArch64 B: imm26 is relative to the branch instruction's
+                // own address (no +4).
+                let pc = CODE_BASE + off as u64;
+                let delta = target as i64 - pc as i64;
+                let imm26 = ((delta / 4) as u32) & 0x03FF_FFFF;
+                let word = (0x1400_0000u32 | imm26).to_le_bytes();
+                stub_bytes[off - patched.len()..off - patched.len() + 4].copy_from_slice(&word);
+            }
+            patched.extend_from_slice(&stub_bytes);
+
+            // Per-function entries and data-area bytes.
+            let n_fns = (0..)
+                .map_while(|i| {
+                    labels
+                        .get(&AArch64Label::Indexed {
+                            idx: i + 0x8000_0000,
+                        })
+                        .copied()
+                })
+                .count();
+            let mut fn_entries = Vec::with_capacity(n_fns);
+            for i in 0..n_fns {
+                let off = *labels
+                    .get(&AArch64Label::Indexed {
+                        idx: i + 0x8000_0000,
+                    })
+                    .ok_or_else(|| internal(format!("missing fn {i} label")))?;
+                fn_entries.push(off as u64);
+            }
+            let entry = *labels
+                .get(&AArch64Label::Indexed { idx: 0x8000_0000 })
+                .ok_or_else(|| internal("missing entry label".into()))?;
+            let globals_words = 1024usize.max(global_inits.len().next_multiple_of(1024));
+            let (databytes, mem_pages_off, mem_ptr_off, globals_off) =
+                data_area(data_start, mem_pages, global_inits, globals_words);
+            patched.extend_from_slice(&databytes);
+
+            Ok(NativeBinary {
+                code: patched,
+                entry_off: entry as u64,
+                fn_entries,
+                slot_imports: targets,
+                mem_pages_off,
+                mem_ptr_off,
+                globals_off,
+            })
+        }
+        NativeArch::Riscv64 => Err(CompileError::Internal(format!(
+            "{arch:?}: riscv64 lands in phase C step 2"
         ))),
     }
 }

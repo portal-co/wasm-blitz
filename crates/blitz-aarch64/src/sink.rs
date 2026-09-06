@@ -5,26 +5,35 @@
 //! `AArch64WasmSink::<SysVAbi>::new(arch)` or `AArch64WasmSink::<LfiAbi>::new(arch)`
 //! for other calling conventions.
 
-use core::ops::{Deref, DerefMut};
 use core::convert::Infallible;
 use core::marker::PhantomData;
+use core::ops::{Deref, DerefMut};
+use portal_solutions_blitz_common::asm::Reg;
 use portal_solutions_blitz_common::{
     HandleOpError,
     ops::MachOperator,
-    sink::{WaxHandle, WasmSink},
+    sink::{WasmSink, WaxHandle},
 };
-use portal_solutions_blitz_common::asm::Reg;
-use wax_core::build::{AmbientSink, InstructionSink, OperatorSink};
 use wasm_encoder::{FuncType, Instruction, reencode::RoundtripReencoder};
 use wasmparser::Operator;
+use wax_core::build::{AmbientSink, InstructionSink, OperatorSink};
 
-use crate::{AArch64Arch, AArch64Label, naive};
 use crate::abi::{NaiveAbi, SysVAbi};
 use crate::lfi::{LfiAbi, LfiWriterExt};
 use crate::sysv::SysVWriterExt;
+use crate::{AArch64Arch, AArch64Label, naive};
 
 /// AAPCS64 argument registers: X0–X7.
-const AARCH64_ARG_REGS: [Reg; 8] = [Reg(0), Reg(1), Reg(2), Reg(3), Reg(4), Reg(5), Reg(6), Reg(7)];
+const AARCH64_ARG_REGS: [Reg; 8] = [
+    Reg(0),
+    Reg(1),
+    Reg(2),
+    Reg(3),
+    Reg(4),
+    Reg(5),
+    Reg(6),
+    Reg(7),
+];
 /// Scratch register for ambient label loads (T0 = X9, caller-saved, not an arg reg).
 const T0: Reg = Reg(9);
 
@@ -77,13 +86,22 @@ where
         ctx: &mut WaxHandle<W, AsmCtx>,
         op: &Operator<'_>,
     ) -> Result<(), HandleOpError<Infallible>> {
-        let imports_owned: alloc::vec::Vec<(alloc::string::String, alloc::string::String)> =
-            self.0.func_imports.iter().map(|(m, n)| (m.clone(), n.clone())).collect();
-        let imports: alloc::vec::Vec<(&str, &str)> =
-            imports_owned.iter().map(|(m, n)| (m.as_str(), n.as_str())).collect();
+        let imports_owned: alloc::vec::Vec<(alloc::string::String, alloc::string::String)> = self
+            .0
+            .func_imports
+            .iter()
+            .map(|(m, n)| (m.clone(), n.clone()))
+            .collect();
+        let imports: alloc::vec::Vec<(&str, &str)> = imports_owned
+            .iter()
+            .map(|(m, n)| (m.as_str(), n.as_str()))
+            .collect();
         let sigs_owned: alloc::vec::Vec<_> = self.0.sigs.clone();
         let tags_owned: alloc::vec::Vec<u32> = self.0.tags.clone();
-        let mach = MachOperator::Operator { op: Some(op.clone()), annot: () };
+        let mach = MachOperator::Operator {
+            op: Some(op.clone()),
+            annot: (),
+        };
         ctx.writer.handle_op(
             &mut ctx.asm_ctx,
             self.0.arch,
@@ -109,13 +127,22 @@ where
         ctx: &mut WaxHandle<W, AsmCtx>,
         insn: &Instruction<'_>,
     ) -> Result<(), HandleOpError<Infallible>> {
-        let imports_owned: alloc::vec::Vec<(alloc::string::String, alloc::string::String)> =
-            self.0.func_imports.iter().map(|(m, n)| (m.clone(), n.clone())).collect();
-        let imports: alloc::vec::Vec<(&str, &str)> =
-            imports_owned.iter().map(|(m, n)| (m.as_str(), n.as_str())).collect();
+        let imports_owned: alloc::vec::Vec<(alloc::string::String, alloc::string::String)> = self
+            .0
+            .func_imports
+            .iter()
+            .map(|(m, n)| (m.clone(), n.clone()))
+            .collect();
+        let imports: alloc::vec::Vec<(&str, &str)> = imports_owned
+            .iter()
+            .map(|(m, n)| (m.as_str(), n.as_str()))
+            .collect();
         let sigs_owned: alloc::vec::Vec<_> = self.0.sigs.clone();
         let tags_owned: alloc::vec::Vec<u32> = self.0.tags.clone();
-        let mach = MachOperator::Instruction { op: insn.clone(), annot: () };
+        let mach = MachOperator::Instruction {
+            op: insn.clone(),
+            annot: (),
+        };
         ctx.writer.handle_op(
             &mut ctx.asm_ctx,
             self.0.arch,
@@ -128,10 +155,14 @@ where
             self.0.target,
         )
     }
-    fn as_ambient_sink(&mut self) -> Option<&mut (dyn AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>> + '_)> {
+    fn as_ambient_sink(
+        &mut self,
+    ) -> Option<&mut (dyn AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>> + '_)> {
         Some(self)
     }
-    fn has_ambient_sink(&self) -> bool { true }
+    fn has_ambient_sink(&self) -> bool {
+        true
+    }
 }
 
 impl<W, AsmCtx> AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>>
@@ -140,29 +171,82 @@ where
     W: naive::WriterExt<AsmCtx>,
     HandleOpError<Infallible>: From<W::Error>,
 {
-    fn push_ambient_addr(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
-        crate::load_label_addr(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
-        ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, T0).map_err(HandleOpError::from)
+    fn push_ambient_addr(
+        &mut self,
+        ctx: &mut WaxHandle<W, AsmCtx>,
+        name: &str,
+    ) -> Result<(), HandleOpError<Infallible>> {
+        crate::load_label_addr(
+            &mut ctx.writer,
+            &mut ctx.asm_ctx,
+            self.0.arch,
+            &T0,
+            AArch64Label::Ambient { name: name.into() },
+        )
+        .map_err(HandleOpError::from)?;
+        ctx.writer
+            .wasm_push(&mut ctx.asm_ctx, self.0.arch, T0)
+            .map_err(HandleOpError::from)
     }
-    fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
+    fn call_ambient(
+        &mut self,
+        ctx: &mut WaxHandle<W, AsmCtx>,
+        name: &str,
+        sig: &FuncType,
+    ) -> Result<(), HandleOpError<Infallible>> {
         let n_params = sig.params().len();
         let n_results = sig.results().len();
         for i in (0..n_params.min(8)).rev() {
-            ctx.writer.wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i]).map_err(HandleOpError::from)?;
+            ctx.writer
+                .wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i])
+                .map_err(HandleOpError::from)?;
         }
-        crate::load_label_addr(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
-        ctx.writer.bl(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)?;
-        if n_results > 1 { ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(1)).map_err(HandleOpError::from)?; }
-        if n_results > 0 { ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(0)).map_err(HandleOpError::from)?; }
+        crate::load_label_addr(
+            &mut ctx.writer,
+            &mut ctx.asm_ctx,
+            self.0.arch,
+            &T0,
+            AArch64Label::Ambient { name: name.into() },
+        )
+        .map_err(HandleOpError::from)?;
+        ctx.writer
+            .bl(&mut ctx.asm_ctx, self.0.arch, &T0)
+            .map_err(HandleOpError::from)?;
+        if n_results > 1 {
+            ctx.writer
+                .wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(1))
+                .map_err(HandleOpError::from)?;
+        }
+        if n_results > 0 {
+            ctx.writer
+                .wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(0))
+                .map_err(HandleOpError::from)?;
+        }
         Ok(())
     }
-    fn jump_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
+    fn jump_ambient(
+        &mut self,
+        ctx: &mut WaxHandle<W, AsmCtx>,
+        name: &str,
+        sig: &FuncType,
+    ) -> Result<(), HandleOpError<Infallible>> {
         let n_params = sig.params().len();
         for i in (0..n_params.min(8)).rev() {
-            ctx.writer.wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i]).map_err(HandleOpError::from)?;
+            ctx.writer
+                .wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i])
+                .map_err(HandleOpError::from)?;
         }
-        crate::load_label_addr(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
-        ctx.writer.br(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)
+        crate::load_label_addr(
+            &mut ctx.writer,
+            &mut ctx.asm_ctx,
+            self.0.arch,
+            &T0,
+            AArch64Label::Ambient { name: name.into() },
+        )
+        .map_err(HandleOpError::from)?;
+        ctx.writer
+            .br(&mut ctx.asm_ctx, self.0.arch, &T0)
+            .map_err(HandleOpError::from)
     }
 }
 
@@ -181,11 +265,20 @@ where
         ctx: &mut WaxHandle<W, AsmCtx>,
         op: &Operator<'_>,
     ) -> Result<(), HandleOpError<Infallible>> {
-        let imports_owned: alloc::vec::Vec<(alloc::string::String, alloc::string::String)> =
-            self.0.func_imports.iter().map(|(m, n)| (m.clone(), n.clone())).collect();
-        let imports: alloc::vec::Vec<(&str, &str)> =
-            imports_owned.iter().map(|(m, n)| (m.as_str(), n.as_str())).collect();
-        let mach = MachOperator::Operator { op: Some(op.clone()), annot: () };
+        let imports_owned: alloc::vec::Vec<(alloc::string::String, alloc::string::String)> = self
+            .0
+            .func_imports
+            .iter()
+            .map(|(m, n)| (m.clone(), n.clone()))
+            .collect();
+        let imports: alloc::vec::Vec<(&str, &str)> = imports_owned
+            .iter()
+            .map(|(m, n)| (m.as_str(), n.as_str()))
+            .collect();
+        let mach = MachOperator::Operator {
+            op: Some(op.clone()),
+            annot: (),
+        };
         ctx.writer.sysv_handle_op(
             &mut ctx.asm_ctx,
             self.0.arch,
@@ -209,11 +302,20 @@ where
         ctx: &mut WaxHandle<W, AsmCtx>,
         insn: &Instruction<'_>,
     ) -> Result<(), HandleOpError<Infallible>> {
-        let imports_owned: alloc::vec::Vec<(alloc::string::String, alloc::string::String)> =
-            self.0.func_imports.iter().map(|(m, n)| (m.clone(), n.clone())).collect();
-        let imports: alloc::vec::Vec<(&str, &str)> =
-            imports_owned.iter().map(|(m, n)| (m.as_str(), n.as_str())).collect();
-        let mach = MachOperator::Instruction { op: insn.clone(), annot: () };
+        let imports_owned: alloc::vec::Vec<(alloc::string::String, alloc::string::String)> = self
+            .0
+            .func_imports
+            .iter()
+            .map(|(m, n)| (m.clone(), n.clone()))
+            .collect();
+        let imports: alloc::vec::Vec<(&str, &str)> = imports_owned
+            .iter()
+            .map(|(m, n)| (m.as_str(), n.as_str()))
+            .collect();
+        let mach = MachOperator::Instruction {
+            op: insn.clone(),
+            annot: (),
+        };
         ctx.writer.sysv_handle_op(
             &mut ctx.asm_ctx,
             self.0.arch,
@@ -224,10 +326,14 @@ where
             self.0.target,
         )
     }
-    fn as_ambient_sink(&mut self) -> Option<&mut (dyn AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>> + '_)> {
+    fn as_ambient_sink(
+        &mut self,
+    ) -> Option<&mut (dyn AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>> + '_)> {
         Some(self)
     }
-    fn has_ambient_sink(&self) -> bool { true }
+    fn has_ambient_sink(&self) -> bool {
+        true
+    }
 }
 
 impl<W, AsmCtx> AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>>
@@ -236,29 +342,82 @@ where
     W: SysVWriterExt<AsmCtx>,
     HandleOpError<Infallible>: From<W::Error>,
 {
-    fn push_ambient_addr(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
-        crate::load_label_addr(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
-        ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, T0).map_err(HandleOpError::from)
+    fn push_ambient_addr(
+        &mut self,
+        ctx: &mut WaxHandle<W, AsmCtx>,
+        name: &str,
+    ) -> Result<(), HandleOpError<Infallible>> {
+        crate::load_label_addr(
+            &mut ctx.writer,
+            &mut ctx.asm_ctx,
+            self.0.arch,
+            &T0,
+            AArch64Label::Ambient { name: name.into() },
+        )
+        .map_err(HandleOpError::from)?;
+        ctx.writer
+            .wasm_push(&mut ctx.asm_ctx, self.0.arch, T0)
+            .map_err(HandleOpError::from)
     }
-    fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
+    fn call_ambient(
+        &mut self,
+        ctx: &mut WaxHandle<W, AsmCtx>,
+        name: &str,
+        sig: &FuncType,
+    ) -> Result<(), HandleOpError<Infallible>> {
         let n_params = sig.params().len();
         let n_results = sig.results().len();
         for i in (0..n_params.min(8)).rev() {
-            ctx.writer.wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i]).map_err(HandleOpError::from)?;
+            ctx.writer
+                .wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i])
+                .map_err(HandleOpError::from)?;
         }
-        crate::load_label_addr(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
-        ctx.writer.bl(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)?;
-        if n_results > 1 { ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(1)).map_err(HandleOpError::from)?; }
-        if n_results > 0 { ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(0)).map_err(HandleOpError::from)?; }
+        crate::load_label_addr(
+            &mut ctx.writer,
+            &mut ctx.asm_ctx,
+            self.0.arch,
+            &T0,
+            AArch64Label::Ambient { name: name.into() },
+        )
+        .map_err(HandleOpError::from)?;
+        ctx.writer
+            .bl(&mut ctx.asm_ctx, self.0.arch, &T0)
+            .map_err(HandleOpError::from)?;
+        if n_results > 1 {
+            ctx.writer
+                .wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(1))
+                .map_err(HandleOpError::from)?;
+        }
+        if n_results > 0 {
+            ctx.writer
+                .wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(0))
+                .map_err(HandleOpError::from)?;
+        }
         Ok(())
     }
-    fn jump_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
+    fn jump_ambient(
+        &mut self,
+        ctx: &mut WaxHandle<W, AsmCtx>,
+        name: &str,
+        sig: &FuncType,
+    ) -> Result<(), HandleOpError<Infallible>> {
         let n_params = sig.params().len();
         for i in (0..n_params.min(8)).rev() {
-            ctx.writer.wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i]).map_err(HandleOpError::from)?;
+            ctx.writer
+                .wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i])
+                .map_err(HandleOpError::from)?;
         }
-        crate::load_label_addr(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
-        ctx.writer.br(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)
+        crate::load_label_addr(
+            &mut ctx.writer,
+            &mut ctx.asm_ctx,
+            self.0.arch,
+            &T0,
+            AArch64Label::Ambient { name: name.into() },
+        )
+        .map_err(HandleOpError::from)?;
+        ctx.writer
+            .br(&mut ctx.asm_ctx, self.0.arch, &T0)
+            .map_err(HandleOpError::from)
     }
 }
 
@@ -277,13 +436,22 @@ where
         ctx: &mut WaxHandle<W, AsmCtx>,
         op: &Operator<'_>,
     ) -> Result<(), HandleOpError<Infallible>> {
-        let imports_owned: alloc::vec::Vec<(alloc::string::String, alloc::string::String)> =
-            self.0.func_imports.iter().map(|(m, n)| (m.clone(), n.clone())).collect();
-        let imports: alloc::vec::Vec<(&str, &str)> =
-            imports_owned.iter().map(|(m, n)| (m.as_str(), n.as_str())).collect();
+        let imports_owned: alloc::vec::Vec<(alloc::string::String, alloc::string::String)> = self
+            .0
+            .func_imports
+            .iter()
+            .map(|(m, n)| (m.clone(), n.clone()))
+            .collect();
+        let imports: alloc::vec::Vec<(&str, &str)> = imports_owned
+            .iter()
+            .map(|(m, n)| (m.as_str(), n.as_str()))
+            .collect();
         let sigs_owned: alloc::vec::Vec<_> = self.0.sigs.clone();
         let tags_owned: alloc::vec::Vec<u32> = self.0.tags.clone();
-        let mach = MachOperator::Operator { op: Some(op.clone()), annot: () };
+        let mach = MachOperator::Operator {
+            op: Some(op.clone()),
+            annot: (),
+        };
         ctx.writer.lfi_handle_op(
             &mut ctx.asm_ctx,
             self.0.arch,
@@ -309,13 +477,22 @@ where
         ctx: &mut WaxHandle<W, AsmCtx>,
         insn: &Instruction<'_>,
     ) -> Result<(), HandleOpError<Infallible>> {
-        let imports_owned: alloc::vec::Vec<(alloc::string::String, alloc::string::String)> =
-            self.0.func_imports.iter().map(|(m, n)| (m.clone(), n.clone())).collect();
-        let imports: alloc::vec::Vec<(&str, &str)> =
-            imports_owned.iter().map(|(m, n)| (m.as_str(), n.as_str())).collect();
+        let imports_owned: alloc::vec::Vec<(alloc::string::String, alloc::string::String)> = self
+            .0
+            .func_imports
+            .iter()
+            .map(|(m, n)| (m.clone(), n.clone()))
+            .collect();
+        let imports: alloc::vec::Vec<(&str, &str)> = imports_owned
+            .iter()
+            .map(|(m, n)| (m.as_str(), n.as_str()))
+            .collect();
         let sigs_owned: alloc::vec::Vec<_> = self.0.sigs.clone();
         let tags_owned: alloc::vec::Vec<u32> = self.0.tags.clone();
-        let mach = MachOperator::Instruction { op: insn.clone(), annot: () };
+        let mach = MachOperator::Instruction {
+            op: insn.clone(),
+            annot: (),
+        };
         ctx.writer.lfi_handle_op(
             &mut ctx.asm_ctx,
             self.0.arch,
@@ -328,10 +505,14 @@ where
             self.0.target,
         )
     }
-    fn as_ambient_sink(&mut self) -> Option<&mut (dyn AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>> + '_)> {
+    fn as_ambient_sink(
+        &mut self,
+    ) -> Option<&mut (dyn AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>> + '_)> {
         Some(self)
     }
-    fn has_ambient_sink(&self) -> bool { true }
+    fn has_ambient_sink(&self) -> bool {
+        true
+    }
 }
 
 impl<W, AsmCtx> AmbientSink<WaxHandle<W, AsmCtx>, HandleOpError<Infallible>>
@@ -340,28 +521,81 @@ where
     W: LfiWriterExt<AsmCtx>,
     HandleOpError<Infallible>: From<W::Error>,
 {
-    fn push_ambient_addr(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str) -> Result<(), HandleOpError<Infallible>> {
-        crate::load_label_addr(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
-        ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, T0).map_err(HandleOpError::from)
+    fn push_ambient_addr(
+        &mut self,
+        ctx: &mut WaxHandle<W, AsmCtx>,
+        name: &str,
+    ) -> Result<(), HandleOpError<Infallible>> {
+        crate::load_label_addr(
+            &mut ctx.writer,
+            &mut ctx.asm_ctx,
+            self.0.arch,
+            &T0,
+            AArch64Label::Ambient { name: name.into() },
+        )
+        .map_err(HandleOpError::from)?;
+        ctx.writer
+            .wasm_push(&mut ctx.asm_ctx, self.0.arch, T0)
+            .map_err(HandleOpError::from)
     }
-    fn call_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
+    fn call_ambient(
+        &mut self,
+        ctx: &mut WaxHandle<W, AsmCtx>,
+        name: &str,
+        sig: &FuncType,
+    ) -> Result<(), HandleOpError<Infallible>> {
         let n_params = sig.params().len();
         let n_results = sig.results().len();
         for i in (0..n_params.min(8)).rev() {
-            ctx.writer.wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i]).map_err(HandleOpError::from)?;
+            ctx.writer
+                .wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i])
+                .map_err(HandleOpError::from)?;
         }
-        crate::load_label_addr(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
-        ctx.writer.bl(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)?;
-        if n_results > 1 { ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(1)).map_err(HandleOpError::from)?; }
-        if n_results > 0 { ctx.writer.wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(0)).map_err(HandleOpError::from)?; }
+        crate::load_label_addr(
+            &mut ctx.writer,
+            &mut ctx.asm_ctx,
+            self.0.arch,
+            &T0,
+            AArch64Label::Ambient { name: name.into() },
+        )
+        .map_err(HandleOpError::from)?;
+        ctx.writer
+            .bl(&mut ctx.asm_ctx, self.0.arch, &T0)
+            .map_err(HandleOpError::from)?;
+        if n_results > 1 {
+            ctx.writer
+                .wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(1))
+                .map_err(HandleOpError::from)?;
+        }
+        if n_results > 0 {
+            ctx.writer
+                .wasm_push(&mut ctx.asm_ctx, self.0.arch, Reg(0))
+                .map_err(HandleOpError::from)?;
+        }
         Ok(())
     }
-    fn jump_ambient(&mut self, ctx: &mut WaxHandle<W, AsmCtx>, name: &str, sig: &FuncType) -> Result<(), HandleOpError<Infallible>> {
+    fn jump_ambient(
+        &mut self,
+        ctx: &mut WaxHandle<W, AsmCtx>,
+        name: &str,
+        sig: &FuncType,
+    ) -> Result<(), HandleOpError<Infallible>> {
         let n_params = sig.params().len();
         for i in (0..n_params.min(8)).rev() {
-            ctx.writer.wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i]).map_err(HandleOpError::from)?;
+            ctx.writer
+                .wasm_pop(&mut ctx.asm_ctx, self.0.arch, AARCH64_ARG_REGS[i])
+                .map_err(HandleOpError::from)?;
         }
-        crate::load_label_addr(&mut ctx.writer, &mut ctx.asm_ctx, self.0.arch, &T0, AArch64Label::Ambient { name: name.into() }).map_err(HandleOpError::from)?;
-        ctx.writer.br(&mut ctx.asm_ctx, self.0.arch, &T0).map_err(HandleOpError::from)
+        crate::load_label_addr(
+            &mut ctx.writer,
+            &mut ctx.asm_ctx,
+            self.0.arch,
+            &T0,
+            AArch64Label::Ambient { name: name.into() },
+        )
+        .map_err(HandleOpError::from)?;
+        ctx.writer
+            .br(&mut ctx.asm_ctx, self.0.arch, &T0)
+            .map_err(HandleOpError::from)
     }
 }

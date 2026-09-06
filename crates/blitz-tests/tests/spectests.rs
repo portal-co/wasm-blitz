@@ -200,7 +200,10 @@ fn native_smoke_import_service() {
     module.section(&code);
     let wasm = module.finish();
 
-    for arch in [spec::native_exec::NativeArch::X86_64] {
+    for arch in [
+        spec::native_exec::NativeArch::X86_64,
+        spec::native_exec::NativeArch::AArch64,
+    ] {
         let bin = spec::native_exec::compile_module(
             &wasm,
             arch,
@@ -284,7 +287,10 @@ fn native_smoke_import_called() {
     module.section(&code);
     let wasm = module.finish();
 
-    for arch in [spec::native_exec::NativeArch::X86_64] {
+    for arch in [
+        spec::native_exec::NativeArch::X86_64,
+        spec::native_exec::NativeArch::AArch64,
+    ] {
         let bin = spec::native_exec::compile_module(
             &wasm,
             arch,
@@ -374,14 +380,14 @@ fn native_smoke_unreachable_trap() {
 
 // ---- Native backend spectests (Unicorn x86-64; phase B) ---------------------
 
-fn run_phase1_native(file: &str) {
+fn run_phase1_native(file: &str, backend: spec::Backend) {
     let log = spec::Logger::from_env();
     let Some(dir) = spec_dir() else {
         eprintln!("skipping spectests: no spec suite found (set BLITZ_SPEC_DIR)");
         return;
     };
     let path = dir.join("test/core").join(format!("{file}.wast"));
-    let result = spec::run_wast_file_backend(&path, &log, baseline(), spec::Backend::NativeX86);
+    let result = spec::run_wast_file_backend(&path, &log, baseline(), backend);
     assert!(
         result.fail_new.is_empty(),
         "[native] {file}: {} new failing assertion(s) at {:?} (pass={}, known={}, skip={})",
@@ -398,7 +404,13 @@ macro_rules! spectest_native {
         $(
             #[test]
             fn $name() {
-                run_phase1_native($file);
+                run_phase1_native($file, spec::Backend::NativeX86);
+            }
+            paste::paste! {
+                #[test]
+                fn [<$name _aarch64>]() {
+                    run_phase1_native($file, spec::Backend::NativeAArch64);
+                }
             }
         )*
     };

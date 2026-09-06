@@ -10,24 +10,27 @@
 
 extern crate alloc;
 
-use portal_solutions_asm_aarch64::{
-    out::{
-        arg::{AddressingMode, ArgKind, MemArgKind},
-        Writer, WriterCore,
-    },
-    AArch64Arch, ConditionCode, RegisterClass,
-};
 use portal_pc_asm_common::types::mem::MemorySize;
+use portal_solutions_asm_aarch64::{
+    AArch64Arch, ConditionCode, RegisterClass,
+    out::{
+        Writer, WriterCore,
+        arg::{AddressingMode, ArgKind, MemArgKind},
+    },
+};
 use portal_solutions_blitz_common::{
     abi::BackendAbi,
     asm::Reg,
     ops::{FnData, MachOperator},
-    wasm_encoder::{Catch, FuncType, Instruction, reencode::{self as reencode, Reencode}},
+    wasm_encoder::{
+        Catch, FuncType, Instruction,
+        reencode::{self as reencode, Reencode},
+    },
 };
 
 use crate::AArch64Label;
-use crate::naive::WriterExt as NaiveWriterExt;
 pub use crate::naive::State;
+use crate::naive::WriterExt as NaiveWriterExt;
 
 // ── LFI reserved registers ────────────────────────────────────────────────────
 
@@ -51,14 +54,23 @@ pub struct LfiAbi;
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn reg(r: Reg) -> MemArgKind {
-    MemArgKind::NoMem(ArgKind::Reg { reg: r, size: MemorySize::_64 })
+    MemArgKind::NoMem(ArgKind::Reg {
+        reg: r,
+        size: MemorySize::_64,
+    })
 }
 fn reg32(r: Reg) -> MemArgKind {
-    MemArgKind::NoMem(ArgKind::Reg { reg: r, size: MemorySize::_32 })
+    MemArgKind::NoMem(ArgKind::Reg {
+        reg: r,
+        size: MemorySize::_32,
+    })
 }
 fn mem_disp(base: Reg, disp: i32, size: MemorySize) -> MemArgKind {
     MemArgKind::Mem {
-        base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
+        base: ArgKind::Reg {
+            reg: base,
+            size: MemorySize::_64,
+        },
         offset: None,
         disp,
         size,
@@ -68,7 +80,10 @@ fn mem_disp(base: Reg, disp: i32, size: MemorySize) -> MemArgKind {
 }
 fn mem_pre(base: Reg, disp: i32) -> MemArgKind {
     MemArgKind::Mem {
-        base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
+        base: ArgKind::Reg {
+            reg: base,
+            size: MemorySize::_64,
+        },
         offset: None,
         disp,
         size: MemorySize::_64,
@@ -99,7 +114,13 @@ fn lfi_sub_sp<W: WriterCore<Context>, Context>(
     arch: AArch64Arch,
     n: u64,
 ) -> Result<(), W::Error> {
-    w.sub(ctx, arch, &reg(T0), &reg(SP), &MemArgKind::NoMem(ArgKind::Lit(n)))?;
+    w.sub(
+        ctx,
+        arch,
+        &reg(T0),
+        &reg(SP),
+        &MemArgKind::NoMem(ArgKind::Lit(n)),
+    )?;
     w.add_uxtw(ctx, arch, &reg(SP), &reg(RBASE), &reg32(T0))
 }
 
@@ -114,14 +135,23 @@ fn lfi_epilogue<W: WriterCore<Context> + Writer<crate::AArch64Label, Context>, C
     // add sp, x27, w29, uxtw  — LFI-compliant restore of SP from FP
     w.add_uxtw(ctx, arch, &reg(SP), &reg(RBASE), &reg32(FP))?;
     // ldp x29, x30, [sp], #16  — restore callee-saved regs, post-increment SP
-    w.ldp(ctx, arch, &reg(FP), &reg(LR), &MemArgKind::Mem {
-        base: ArgKind::Reg { reg: SP, size: MemorySize::_64 },
-        offset: None,
-        disp: 16,
-        size: MemorySize::_64,
-        reg_class: RegisterClass::Gpr,
-        mode: AddressingMode::PostIndex,
-    })?;
+    w.ldp(
+        ctx,
+        arch,
+        &reg(FP),
+        &reg(LR),
+        &MemArgKind::Mem {
+            base: ArgKind::Reg {
+                reg: SP,
+                size: MemorySize::_64,
+            },
+            offset: None,
+            disp: 16,
+            size: MemorySize::_64,
+            reg_class: RegisterClass::Gpr,
+            mode: AddressingMode::PostIndex,
+        },
+    )?;
     // LFI requires x30 to be "guarded" before ret: add x30, x27, w30, uxtw
     // This re-sandboxes x30 after restoring it from the stack.
     w.add_uxtw(ctx, arch, &reg(LR), &reg(RBASE), &reg32(LR))?;
@@ -135,7 +165,10 @@ where
     W: LfiWriterExt<Context>,
 {
     type Error = W::Error;
-    type State<'s> = State<'s> where Self: 's;
+    type State<'s>
+        = State<'s>
+    where
+        Self: 's;
     type Arch = AArch64Arch;
 
     fn emit_prologue(
@@ -159,7 +192,10 @@ where
         if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW::new(w, ctx, arch, T1.0);
             portal_solutions_blitz_codegen::emit_probe_site(
-                &mut bw, cfg.table_base_off, 0, T0.0,
+                &mut bw,
+                cfg.table_base_off,
+                0,
+                T0.0,
                 portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
                 &mut state.label_index,
             )?;
@@ -184,11 +220,19 @@ where
     ) -> Result<(), W::Error> {
         w.mov_imm(ctx, arch, &reg(T0), 0)?;
         state.local_count += 1;
-        w.str(ctx, arch, &reg(T0), &mem_disp(FP, -((state.local_count as i32) * 8), MemorySize::_64))
+        w.str(
+            ctx,
+            arch,
+            &reg(T0),
+            &mem_disp(FP, -((state.local_count as i32) * 8), MemorySize::_64),
+        )
     }
 
     fn emit_start_body(
-        _w: &mut W, _ctx: &mut Context, _arch: AArch64Arch, _state: &mut State<'_>,
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: AArch64Arch,
+        _state: &mut State<'_>,
     ) -> Result<(), W::Error> {
         Ok(())
     }
@@ -255,22 +299,36 @@ where
     }
 
     fn emit_throw(
-        _w: &mut W, _ctx: &mut Context, _arch: AArch64Arch, _state: &mut State<'_>,
-        _tag_index: u32, _arity: u32,
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: AArch64Arch,
+        _state: &mut State<'_>,
+        _tag_index: u32,
+        _arity: u32,
     ) -> Result<(), W::Error> {
         todo!("LFI aarch64 emit_throw")
     }
 
     fn emit_try_table_start(
-        _w: &mut W, _ctx: &mut Context, _arch: AArch64Arch, _state: &mut State<'_>,
-        _catches: &[Catch], _sigs: &[FuncType], _tags: &[u32],
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: AArch64Arch,
+        _state: &mut State<'_>,
+        _catches: &[Catch],
+        _sigs: &[FuncType],
+        _tags: &[u32],
     ) -> Result<(), W::Error> {
         todo!("LFI aarch64 emit_try_table_start")
     }
 
     fn emit_try_table_end(
-        _w: &mut W, _ctx: &mut Context, _arch: AArch64Arch, _state: &mut State<'_>,
-        _catches: &[Catch], _sigs: &[FuncType], _tags: &[u32],
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: AArch64Arch,
+        _state: &mut State<'_>,
+        _catches: &[Catch],
+        _sigs: &[FuncType],
+        _tags: &[u32],
     ) -> Result<(), W::Error> {
         todo!("LFI aarch64 emit_try_table_end")
     }
@@ -350,26 +408,46 @@ where
             Instruction::I64Load(m) => {
                 self.wasm_pop(ctx, arch, T0)?;
                 lfi_addr(self, ctx, arch)?; // add x28, x27, w9, uxtw
-                self.ldr(ctx, arch, &reg(T1), &mem_disp(ADDR, m.offset as i32, MemorySize::_64))?;
+                self.ldr(
+                    ctx,
+                    arch,
+                    &reg(T1),
+                    &mem_disp(ADDR, m.offset as i32, MemorySize::_64),
+                )?;
                 self.wasm_push(ctx, arch, T1)
             }
             Instruction::I32Load(m) => {
                 self.wasm_pop(ctx, arch, T0)?;
                 lfi_addr(self, ctx, arch)?;
-                self.ldr(ctx, arch, &reg32(T1), &mem_disp(ADDR, m.offset as i32, MemorySize::_32))?;
+                self.ldr(
+                    ctx,
+                    arch,
+                    &reg32(T1),
+                    &mem_disp(ADDR, m.offset as i32, MemorySize::_32),
+                )?;
                 self.uxt(ctx, arch, &reg(T1), &reg32(T1))?;
                 self.wasm_push(ctx, arch, T1)
             }
             Instruction::F64Load(m) => {
                 self.wasm_pop(ctx, arch, T0)?;
                 lfi_addr(self, ctx, arch)?;
-                self.ldr(ctx, arch, &reg(T1), &mem_disp(ADDR, m.offset as i32, MemorySize::_64))?;
+                self.ldr(
+                    ctx,
+                    arch,
+                    &reg(T1),
+                    &mem_disp(ADDR, m.offset as i32, MemorySize::_64),
+                )?;
                 self.wasm_push(ctx, arch, T1)
             }
             Instruction::F32Load(m) => {
                 self.wasm_pop(ctx, arch, T0)?;
                 lfi_addr(self, ctx, arch)?;
-                self.ldr(ctx, arch, &reg32(T1), &mem_disp(ADDR, m.offset as i32, MemorySize::_32))?;
+                self.ldr(
+                    ctx,
+                    arch,
+                    &reg32(T1),
+                    &mem_disp(ADDR, m.offset as i32, MemorySize::_32),
+                )?;
                 self.uxt(ctx, arch, &reg(T1), &reg32(T1))?;
                 self.wasm_push(ctx, arch, T1)
             }
@@ -379,13 +457,23 @@ where
                 self.wasm_pop(ctx, arch, T1)?; // value
                 self.wasm_pop(ctx, arch, T0)?; // address
                 lfi_addr(self, ctx, arch)?;
-                self.str(ctx, arch, &reg(T1), &mem_disp(ADDR, m.offset as i32, MemorySize::_64))
+                self.str(
+                    ctx,
+                    arch,
+                    &reg(T1),
+                    &mem_disp(ADDR, m.offset as i32, MemorySize::_64),
+                )
             }
             Instruction::I32Store(m) | Instruction::F32Store(m) => {
                 self.wasm_pop(ctx, arch, T1)?;
                 self.wasm_pop(ctx, arch, T0)?;
                 lfi_addr(self, ctx, arch)?;
-                self.str(ctx, arch, &reg32(T1), &mem_disp(ADDR, m.offset as i32, MemorySize::_32))
+                self.str(
+                    ctx,
+                    arch,
+                    &reg32(T1),
+                    &mem_disp(ADDR, m.offset as i32, MemorySize::_32),
+                )
             }
 
             // ── LFI-compliant return ──────────────────────────────────────────
@@ -419,16 +507,22 @@ where
                 state.control_depth = data.control_depth;
                 state.probes = data.probes;
                 state.next_probe_id = 1;
-                self.set_label(ctx, arch, AArch64Label::Func { r#fn: *id }).map_err(Err::from)?;
+                self.set_label(ctx, arch, AArch64Label::Func { r#fn: *id })
+                    .map_err(Err::from)?;
                 if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW::new(self, ctx, arch, T1.0);
                     portal_solutions_blitz_codegen::emit_probe_site(
-                        &mut bw, cfg.table_base_off, 0, T0.0,
+                        &mut bw,
+                        cfg.table_base_off,
+                        0,
+                        T0.0,
                         portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
                         &mut state.label_index,
-                    ).map_err(Err::from)?;
+                    )
+                    .map_err(Err::from)?;
                 }
-                self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16)).map_err(Err::from)?;
+                self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16))
+                    .map_err(Err::from)?;
                 self.mov(ctx, arch, &reg(FP), &reg(SP)).map_err(Err::from)?;
                 let locals = state.local_count as i64 + state.control_depth as i64 * 2 + 2;
                 if locals > 0 {
@@ -436,17 +530,28 @@ where
                 }
                 Ok(())
             }
-            MachOperator::Instruction { op: insn, .. } => {
-                self.lfi_handle_insn(ctx, arch, state, func_imports, sigs, tags, insn, target)
-                    .map_err(Err::from)
-            }
-            MachOperator::Operator { op: Some(op_wasm), .. } => {
+            MachOperator::Instruction { op: insn, .. } => self
+                .lfi_handle_insn(ctx, arch, state, func_imports, sigs, tags, insn, target)
+                .map_err(Err::from),
+            MachOperator::Operator {
+                op: Some(op_wasm), ..
+            } => {
                 let insn = rewriter.instruction(op_wasm.clone())?;
                 self.lfi_handle_insn(ctx, arch, state, func_imports, sigs, tags, &insn, target)
                     .map_err(Err::from)
             }
             // Remaining variants delegate to naive.
-            other => self.handle_op::<E, Err>(ctx, arch, state, func_imports, sigs, tags, other, rewriter, target),
+            other => self.handle_op::<E, Err>(
+                ctx,
+                arch,
+                state,
+                func_imports,
+                sigs,
+                tags,
+                other,
+                rewriter,
+                target,
+            ),
         }
     }
 }

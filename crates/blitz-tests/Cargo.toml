@@ -17,6 +17,7 @@ portal-solutions-blitz-arm     = { path = "../blitz-arm" }
 portal-solutions-blitz-i686    = { path = "../blitz-i686" }
 portal-solutions-asm-x86-64    = { version = "0.1.0", git = "https://github.com/portal-co/asm-arch.git", features = ["iced"] }
 portal-solutions-asm-aarch64   = { version = "0.1.0", git = "https://github.com/portal-co/asm-arch.git", features = ["bin-backend"] }
+portal-pc-asm-common           = { workspace = true }
 portal-solutions-asm-riscv64   = { version = "0.1.0", git = "https://github.com/portal-co/asm-arch.git", features = ["rv-asm-backend", "regalloc-integration"] }
 portal-solutions-asm-riscv32   = { workspace = true, features = ["alloc", "regalloc-integration"] }
 portal-solutions-asm-arm       = { workspace = true, features = ["alloc"] }

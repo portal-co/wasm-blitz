@@ -90,15 +90,15 @@ impl Display for AArch64Label {
 pub trait Label: portal_solutions_blitz_common::Label<AArch64Label> {}
 impl<T: portal_solutions_blitz_common::Label<AArch64Label> + ?Sized> Label for T {}
 
-/// [`blitz_codegen::BlitzWriter`] implementation for AArch64.
-pub mod codegen;
-/// Naive code generation implementation.
-pub mod naive;
-/// System V (AAPCS64) ABI code generation.
-pub mod sysv;
 /// BackendAbi implementations for AArch64.
 pub mod abi;
+/// [`blitz_codegen::BlitzWriter`] implementation for AArch64.
+pub mod codegen;
 /// LFI-compliant sandboxed code generation for AArch64.
 pub mod lfi;
+/// Naive code generation implementation.
+pub mod naive;
 /// `wax-core` `InstructionSink` / `OperatorSink` impls for the AArch64 backend.
 pub mod sink;
+/// System V (AAPCS64) ABI code generation.
+pub mod sysv;

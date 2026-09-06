@@ -486,3 +486,495 @@ idx = 91
 backend = "native-x86"
 reason = "x86-64 native: f32/f64 store address computation FETCH_UNMAPPED in float mixing"
 
+[[entries]]
+file = "block"
+idx = 19
+backend = "native-aarch64"
+reason = "aarch64 native: multi-value br carries and as-memory.grow-value (memory.grow sentinel), same class as x86-64"
+
+[[entries]]
+file = "block"
+idx = 20
+backend = "native-aarch64"
+reason = "aarch64 native: multi-value br carries and as-memory.grow-value (memory.grow sentinel), same class as x86-64"
+
+[[entries]]
+file = "block"
+idx = 21
+backend = "native-aarch64"
+reason = "aarch64 native: multi-value br carries and as-memory.grow-value (memory.grow sentinel), same class as x86-64"
+
+[[entries]]
+file = "block"
+idx = 24
+backend = "native-aarch64"
+reason = "aarch64 native: multi-value br carries and as-memory.grow-value (memory.grow sentinel), same class as x86-64"
+
+[[entries]]
+file = "block"
+idx = 32
+backend = "native-aarch64"
+reason = "aarch64 native: multi-value br carries and as-memory.grow-value (memory.grow sentinel), same class as x86-64"
+
+[[entries]]
+file = "block"
+idx = 33
+backend = "native-aarch64"
+reason = "aarch64 native: multi-value br carries and as-memory.grow-value (memory.grow sentinel), same class as x86-64"
+
+[[entries]]
+file = "block"
+idx = 42
+backend = "native-aarch64"
+reason = "aarch64 native: multi-value br carries and as-memory.grow-value (memory.grow sentinel), same class as x86-64"
+
+[[entries]]
+file = "br"
+idx = 13
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result/multi-value br returns wrong values (same class as x86-64)"
+
+[[entries]]
+file = "br"
+idx = 29
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result/multi-value br returns wrong values (same class as x86-64)"
+
+[[entries]]
+file = "br"
+idx = 71
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result/multi-value br returns wrong values (same class as x86-64)"
+
+[[entries]]
+file = "br"
+idx = 74
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result/multi-value br returns wrong values (same class as x86-64)"
+
+[[entries]]
+file = "br"
+idx = 76
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result/multi-value br returns wrong values (same class as x86-64)"
+
+[[entries]]
+file = "br_if"
+idx = 78
+backend = "native-aarch64"
+reason = "aarch64 native: deep/nested br_if depths miscompile (same class as x86-64)"
+
+[[entries]]
+file = "br_if"
+idx = 84
+backend = "native-aarch64"
+reason = "aarch64 native: deep/nested br_if depths miscompile (same class as x86-64)"
+
+[[entries]]
+file = "br_if"
+idx = 88
+backend = "native-aarch64"
+reason = "aarch64 native: deep/nested br_if depths miscompile (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 9
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 11
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 12
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 43
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 44
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 45
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 46
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 47
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 53
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 54
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 71
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 72
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 73
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 93
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 94
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 110
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 111
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 112
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 113
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 114
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 115
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 116
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 118
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 120
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 122
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "loop"
+idx = 16
+backend = "native-aarch64"
+reason = "aarch64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 17
+backend = "native-aarch64"
+reason = "aarch64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 18
+backend = "native-aarch64"
+reason = "aarch64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 21
+backend = "native-aarch64"
+reason = "aarch64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 29
+backend = "native-aarch64"
+reason = "aarch64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 30
+backend = "native-aarch64"
+reason = "aarch64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 39
+backend = "native-aarch64"
+reason = "aarch64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 78
+backend = "native-aarch64"
+reason = "aarch64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "fac"
+idx = 6
+backend = "native-aarch64"
+reason = "aarch64 native: assert_exhaustion stack-overflow case not classified as 'call stack exhausted'"
+
+[[entries]]
+file = "stack"
+idx = 5
+backend = "native-aarch64"
+reason = "aarch64 native: globals-not-persisting between invokes (same as C backend pattern)"
+
+[[entries]]
+file = "int_exprs"
+idx = 1
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 26
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 27
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 28
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 29
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 31
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 32
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 33
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 34
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 41
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 44
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 47
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 48
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 49
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 50
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 106
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 107
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "call"
+idx = 5
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 14
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 15
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 16
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 17
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 19
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 20
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 52
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 53
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 57
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 64
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "left-to-right"
+idx = 56
+backend = "native-aarch64"
+reason = "aarch64 native: f32/f64 mixing FETCH_UNMAPPED (same class as x86-64)"
+
+[[entries]]
+file = "left-to-right"
+idx = 57
+backend = "native-aarch64"
+reason = "aarch64 native: f32/f64 mixing FETCH_UNMAPPED (same class as x86-64)"
+
+[[entries]]
+file = "left-to-right"
+idx = 90
+backend = "native-aarch64"
+reason = "aarch64 native: f32/f64 mixing FETCH_UNMAPPED (same class as x86-64)"
+
+[[entries]]
+file = "left-to-right"
+idx = 91
+backend = "native-aarch64"
+reason = "aarch64 native: f32/f64 mixing FETCH_UNMAPPED (same class as x86-64)"
+
