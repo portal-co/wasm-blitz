@@ -256,11 +256,15 @@ struct SpecModule {
     js: String,
     /// Compilation produced by blitz (C source body).
     c_body: String,
+    /// Result count per WASM function index (native driver).
+    native_fn_results: Vec<usize>,
 }
 
 /// Extract module structure from binary wasm bytes.
 fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
     use wasmparser::{Payload, TypeRef};
+    let mut fn_type_indices: Vec<u32> = Vec::new();
+    let mut type_results: Vec<usize> = Vec::new();
     let mut m = SpecModule {
         wasm: wasm.to_vec(),
         func_imports: Vec::new(),
@@ -273,6 +277,7 @@ fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
         global_inits: Vec::new(),
         js: String::new(),
         c_body: String::new(),
+        native_fn_results: Vec::new(),
     };
     for payload in wasmparser::Parser::new(0).parse_all(wasm) {
         let payload = payload.map_err(|e| format!("wasmparser: {e}"))?;
@@ -280,10 +285,12 @@ fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
             Payload::ImportSection(reader) => {
                 for imp in reader {
                     let imp = imp.map_err(|e| format!("import: {e}"))?;
-                    if let TypeRef::Func(_) = imp.ty {
+                    if let TypeRef::Func(ty_idx) = imp.ty {
                         m.func_imports
                             .push((imp.module.to_string(), imp.name.to_string()));
+                        fn_type_indices.push(ty_idx);
                     }
+                    // (global imports handled below)
                     if let TypeRef::Global(gty) = imp.ty {
                         // Global imports: only spectest i32/i64 globals are supported.
                         if imp.module == "spectest"
@@ -322,6 +329,21 @@ fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
                         }
                         _ => {}
                     }
+                }
+            }
+            wasmparser::Payload::TypeSection(reader) => {
+                for group in reader {
+                    for subtype in group.map_err(|e| format!("type: {e}"))?.into_types() {
+                        if let wasmparser::CompositeInnerType::Func(ft) = subtype.composite_type.inner
+                        {
+                            type_results.push(ft.results().len());
+                        }
+                    }
+                }
+            }
+            Payload::FunctionSection(reader) => {
+                for ty_idx in reader {
+                    fn_type_indices.push(ty_idx.map_err(|e| format!("func section: {e}"))?);
                 }
             }
             Payload::TableSection(reader) => {
@@ -382,6 +404,10 @@ fn inspect_module(wasm: &[u8]) -> Result<SpecModule, String> {
             _ => {}
         }
     }
+    m.native_fn_results = fn_type_indices
+        .iter()
+        .map(|&ti| type_results.get(ti as usize).copied().unwrap_or(1))
+        .collect();
     Ok(m)
 }
 
@@ -781,6 +807,8 @@ struct Runner {
     backend: Backend,
     /// C backend: the full compiled C source of the current module.
     c_module: Option<CSpecModule>,
+    /// Compiled native blob (Backend::NativeX86).
+    native_module: Option<native_exec::NativeBinary>,
 }
 
 impl Runner {
@@ -841,7 +869,53 @@ fn load_current_module(runner: &mut Runner) -> Result<(), String> {
             });
             Ok(())
         }
+        Backend::NativeX86 => {
+            if runner.native_module.is_none() {
+                let m = runner.modules.last().ok_or("no current module")?;
+                let bin = compile_native_module(m)?;
+                runner.native_module = Some(bin);
+            }
+            Ok(())
+        }
     }
+}
+
+/// Compile a SpecModule to a native blob (phase A/B). Spectest imports are
+/// mapped to sentinel slots; everything else rejects. Errors become skips.
+fn compile_native_module(m: &SpecModule) -> Result<native_exec::NativeBinary, String> {
+    // Resolve globals: i32/i64 consts seed __wasm_globals; spectest i32/i64
+    // globals = 666 (666.6's bit pattern is not representable for i64 slots,
+    // and float globals in the phase-1 file set are not native-supported).
+    let mut gvals: Vec<u64> = Vec::new();
+    let mut unsupported: Option<String> = None;
+    for g in &m.global_inits {
+        match g {
+            GlobalInit::I32(v) => gvals.push(*v as u32 as u64),
+            GlobalInit::I64(v) => gvals.push(*v as u64),
+            GlobalInit::Spectest(name) => {
+                if name == "global_i32" || name == "global_i64" {
+                    gvals.push(666);
+                } else {
+                    unsupported = Some(format!("spectest global {name} unsupported in native scope"));
+                }
+            }
+        }
+    }
+    if let Some(reason) = unsupported {
+        return Err(reason);
+    }
+    let mem_pages = m.memory_pages;
+    native_exec::compile_module(
+        &m.wasm,
+        native_exec::NativeArch::X86_64,
+        &m.func_imports,
+        mem_pages,
+        &gvals,
+    )
+    .map_err(|e| match e {
+        native_exec::CompileError::Unsupported(r) => r,
+        native_exec::CompileError::Internal(r) => format!("native internal: {r}"),
+    })
 }
 
 /// Run one directive against a runner; returns a verdict per logical check.
@@ -879,6 +953,17 @@ fn run_directive(
                     }
                     blitz_compile_c(&wasm).map(|c| m.c_body = c)
                 }
+                Backend::NativeX86 => {
+                    if m.typed_table {
+                        return Verdict::Skip("typed table unsupported in native scope");
+                    }
+                    if m.func_imports.iter().any(|(mo, _)| mo != "spectest") {
+                        return Verdict::Skip("non-spectest imports unsupported in native scope");
+                    }
+                    compile_native_module(&m).map(|bin| {
+                        runner.native_module = Some(bin);
+                    })
+                }
             };
             match synth {
                 Ok(()) => {
@@ -897,6 +982,7 @@ fn run_directive(
                     // Push a placeholder module so later assertions against it
                     // fail-soft as skips with the synthesis reason.
                     runner.modules.push(SpecModule {
+                        native_fn_results: Vec::new(),
                         wasm: Vec::new(),
                         func_imports: Vec::new(),
                         exported_funcs: Vec::new(),
@@ -1298,6 +1384,96 @@ fn execute_action(
     match backend {
         Backend::Js => execute_action_js(runner, action, &exports),
         Backend::C => execute_action_c(runner, action, &exports),
+        Backend::NativeX86 => execute_action_native(runner, action, &exports),
+    }
+}
+
+/// Execute one action against the compiled native blob under Unicorn.
+fn execute_action_native(
+    runner: &mut Runner,
+    action: &Action,
+    exports: &[(String, u32)],
+) -> Result<Vec<(char, String)>, ExecError> {
+    let (fn_idx, args): (u32, Vec<Val>) = match action {
+        Action::Invoke { export, args } => {
+            let Some((_, idx)) = exports.iter().find(|(n, _)| n == export) else {
+                return Err(ExecError::Failed(format!("export {export:?} not found")));
+            };
+            (*idx, args.clone())
+        }
+        Action::Get { .. } => {
+            return Err(ExecError::Failed(
+                "global export read unsupported in phase 1".into(),
+            ));
+        }
+    };
+    let bin = runner
+        .native_module
+        .as_ref()
+        .ok_or_else(|| ExecError::Failed("no native module".into()))?;
+    // WASM fn index -> local index (imports precede locals).
+    let import_count = runner
+        .current()
+        .map(|m| m.func_imports.len() as u32)
+        .unwrap_or(0);
+    if fn_idx < import_count {
+        return Err(ExecError::Failed("cannot invoke an import".into()));
+    }
+    let local_idx = fn_idx - import_count;
+    let native_args: Vec<u64> = args
+        .iter()
+        .map(|a| match a {
+            Val::I32(v) => *v as u32 as u64,
+            Val::I64(v) => *v as u64,
+            Val::F32(bits) => *bits as u64,
+            Val::F64(bits) => *bits,
+        })
+        .collect();
+    let cap: u64 = std::env::var("BLITZ_SPEC_NATIVE_CAP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100_000_000);
+    // spectest import dispatch: print* are no-ops; results empty.
+    let mut host = |_slot: usize, _args: &[u64]| -> Result<Vec<u64>, String> {
+        Ok(vec![])
+    };
+    // Result count for the invoked function: 0 results => return no wire
+    // values (the native blob leaves garbage in RAX for void fns).
+    let nrets: usize = runner
+        .current()
+        .map(|m| m.native_fn_results.get(fn_idx as usize).copied().unwrap_or(1))
+        .unwrap_or(1);
+    match native_exec::run_module(
+        native_exec::NativeArch::X86_64,
+        bin,
+        bin.fn_entries
+            .get(local_idx as usize)
+            .copied()
+            .ok_or_else(|| {
+                ExecError::Failed(format!("no fn entry for local index {local_idx}"))
+            })?,
+        &native_args,
+        nrets,
+        cap,
+        &mut host,
+    ) {
+        native_exec::RunOutcome::ReturnedMulti(values) => {
+            // Wire tag: 'i' with the raw 64-bit value; check_expected
+            // compares i32 on the low 32 bits and i64 on the full value.
+            if nrets == 0 {
+                Ok(vec![])
+            } else {
+                Ok(values.into_iter().map(|v| ('i', format!("{v}"))).collect())
+            }
+        }
+        native_exec::RunOutcome::Returned(v) => {
+            if nrets == 0 {
+                Ok(vec![])
+            } else {
+                Ok(vec![('i', format!("{v}"))])
+            }
+        }
+        native_exec::RunOutcome::Trapped(msg) => Err(ExecError::Trap(msg)),
     }
 }
 
@@ -1414,6 +1590,7 @@ pub fn run_wast_file_backend(
         current_load_err: None,
         backend,
         c_module: None,
+        native_module: None,
     };
 
     let buf = match ParseBuffer::new(&source) {
@@ -1474,6 +1651,9 @@ pub enum Backend {
     Js,
     /// C backend compiled with the host C compiler, one process per invoke.
     C,
+    /// Native backend executed under Unicorn (phase A/B of
+    /// docs/native-spectests-plan.md). Currently x86-64 only.
+    NativeX86,
 }
 
 /// Compatibility wrapper for the phase-1 JS entry point.
@@ -1501,7 +1681,6 @@ fn execute_action_c(
             ));
         }
     };
-    let _ = nrets;
 
     let seq = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
@@ -1584,92 +1763,4 @@ fn execute_action_c(
     Ok(results)
 }
 
-/// Run a wast file through the native (Unicorn) backends.
-///
-/// Phase-3 scope: only pure-i64 modules (no memory/globals/tables/imports)
-/// are compiled via the AllStack backends and executed under Unicorn.
-/// Every non-qualifying assertion is a counted skip. Compilation failures
-/// from unsupported instructions become skips (found-by-fuzzing candidates),
-/// but execution mismatches are real failures.
-pub fn run_wast_file_native(path: &Path, baseline: &Baseline, log: &Logger) -> FileResult {
-    let _ = log;
-    let file = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("<unknown>")
-        .to_string();
-    let source = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(_) => {
-            return FileResult {
-                file,
-                pass: 0,
-                fail_known: vec![],
-                fail_new: vec![usize::MAX],
-                skip: 0,
-            };
-        }
-    };
-    let mut pass = 0u32;
-    let mut skip = 0u32;
-    let fail_new: Vec<usize> = Vec::new();
-    let fail_known: Vec<usize> = Vec::new();
 
-    let Ok(buf) = ParseBuffer::new(&source) else {
-        return FileResult {
-            file,
-            pass,
-            fail_known,
-            fail_new: vec![0],
-            skip,
-        };
-    };
-    let Ok(mut wast) = parser::parse::<wast::Wast<'_>>(&buf) else {
-        return FileResult {
-            file,
-            pass,
-            fail_known,
-            fail_new: vec![0],
-            skip,
-        };
-    };
-
-    for (idx, directive) in wast.directives.iter_mut().enumerate() {
-        match directive {
-            WastDirective::Module(qw) => {
-                let wasm = qw.encode().map_err(|e| e.to_string());
-                let wasm = match wasm {
-                    Ok(w) => w,
-                    Err(_) => {
-                        skip += 1;
-                        continue;
-                    }
-                };
-                match native::inspect_native(&wasm) {
-                    Ok(_) => {
-                        // Eligible; actual codegen+Unicorn execution reuses the
-                        // e2e AllStack helpers (native module compile is wired
-                        // in e2e.rs `compile_allstack_binary`).
-                        pass += 1;
-                    }
-                    Err(_) => skip += 1,
-                }
-            }
-            WastDirective::AssertReturn { .. } | WastDirective::AssertTrap { .. } => {
-                // Invocation results require Unicorn host plumbing; eligibility
-                // was checked at the module directive above.
-                skip += 1;
-            }
-            _ => skip += 1,
-        }
-        let _ = idx;
-    }
-
-    FileResult {
-        file,
-        pass,
-        fail_known,
-        fail_new,
-        skip,
-    }
-}

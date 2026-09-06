@@ -224,12 +224,16 @@ fn native_smoke_import_service() {
                 &bin,
                 bin.entry_off,
                 &[0x1234_5678],
+                1,
                 10_000_000,
                 &mut host,
             );
             match outcome {
                 spec::native_exec::RunOutcome::Returned(v) => {
                     assert_eq!(v as u32, 0x1234_5678);
+                }
+                spec::native_exec::RunOutcome::ReturnedMulti(_) => {
+                    panic!("single-result invoke returned multi");
                 }
                 spec::native_exec::RunOutcome::Trapped(e) => {
                     panic!("{arch:?} trapped: {e}")
@@ -303,12 +307,16 @@ fn native_smoke_import_called() {
                 &bin,
                 bin.entry_off,
                 &[0x1234_5678],
+                1,
                 10_000_000,
                 &mut host,
             );
             match outcome {
                 spec::native_exec::RunOutcome::Returned(v) => {
                     assert_eq!(v, 77, "code after the import call must run");
+                }
+                spec::native_exec::RunOutcome::ReturnedMulti(mut vs) => {
+                    assert_eq!(vs.remove(0), 77, "code after the import call must run");
                 }
                 spec::native_exec::RunOutcome::Trapped(e) => {
                     panic!("{arch:?} trapped: {e}")
@@ -350,27 +358,64 @@ fn native_smoke_unreachable_trap() {
     let bin = spec::native_exec::compile_module(&wasm, arch, &[], None, &[])
         .unwrap_or_else(|e| panic!("compile failed: {e:?}"));
     let mut host = |_slot: usize, _args: &[u64]| -> Result<Vec<u64>, String> { Ok(vec![]) };
-    match spec::native_exec::run_module(arch, &bin, bin.entry_off, &[], 10_000_000, &mut host) {
-        spec::native_exec::RunOutcome::Trapped(msg) => {
-            eprintln!("[unreachable] trap message: {msg}");
-        }
+    match spec::native_exec::run_module(arch, &bin, bin.entry_off, &[], 1, 10_000_000, &mut host) {
+        spec::native_exec::RunOutcome::Trapped(_) => {}
         spec::native_exec::RunOutcome::Returned(v) => {
             panic!("unreachable must trap, returned {v}");
+        }
+        spec::native_exec::RunOutcome::ReturnedMulti(_) => {
+            panic!("unreachable returned values");
         }
     }
 }
 
-#[test]
-fn native_pure_i64_subset() {
+// ---- Native backend spectests (Unicorn x86-64; phase B) ---------------------
+
+fn run_phase1_native(file: &str) {
     let log = spec::Logger::from_env();
     let Some(dir) = spec_dir() else {
-        eprintln!("skipping native spectests: no spec suite found");
+        eprintln!("skipping spectests: no spec suite found (set BLITZ_SPEC_DIR)");
         return;
     };
-    let result = spec::run_wast_file_native(&dir.join("test/core/fac.wast"), baseline(), &log);
+    let path = dir.join("test/core").join(format!("{file}.wast"));
+    let result = spec::run_wast_file_backend(&path, &log, baseline(), spec::Backend::NativeX86);
     assert!(
         result.fail_new.is_empty(),
-        "[native] fac: new failures at {:?}",
-        result.fail_new
+        "[native] {file}: {} new failing assertion(s) at {:?} (pass={}, known={}, skip={})",
+        result.fail_new.len(),
+        result.fail_new,
+        result.pass,
+        result.fail_known.len(),
+        result.skip
     );
+}
+
+macro_rules! spectest_native {
+    ($($name:ident => $file:expr),* $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                run_phase1_native($file);
+            }
+        )*
+    };
+}
+
+spectest_native! {
+    native_const => "const",
+    native_local_get => "local_get",
+    native_block => "block",
+    native_loop => "loop",
+    native_if => "if",
+    native_br => "br",
+    native_br_if => "br_if",
+    native_br_table => "br_table",
+    native_call => "call",
+    native_labels => "labels",
+    native_forward => "forward",
+    native_fac => "fac",
+    native_stack => "stack",
+    native_int_exprs => "int_exprs",
+    native_int_literals => "int_literals",
+    native_left_to_right => "left-to-right",
 }

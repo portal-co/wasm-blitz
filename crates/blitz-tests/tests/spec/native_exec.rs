@@ -62,6 +62,8 @@ pub struct NativeBinary {
     pub code: Vec<u8>,
     /// Byte offset of the AllStack entry function (local fn 0).
     pub entry_off: u64,
+    /// Byte offset of every local function (local fn i at fn_entries[i]).
+    pub fn_entries: Vec<u64>,
     /// Sentinel slot → import index (`None` = trap sentinel).
     pub slot_imports: Vec<Option<usize>>,
     /// Blob offset of `__wasm_mem_pages` (u32), if memory is enabled.
@@ -297,6 +299,17 @@ pub fn compile_module(
             if let Some(r) = relocs.first() {
                 return Err(unsupported(format!("unresolved external symbol {r:?}")));
             }
+            // Collect per-function entries: fn 0..n are labeled Func{fn}.
+            let n_fns = (0..)
+                .map_while(|i| labels.get(&X64Label::Func { r#fn: i }).copied())
+                .count() as usize;
+            let mut fn_entries = Vec::with_capacity(n_fns);
+            for i in 0..n_fns {
+                let off = *labels
+                    .get(&X64Label::Func { r#fn: i as u32 })
+                    .ok_or_else(|| internal(format!("missing fn {i} label")))?;
+                fn_entries.push(off as u64);
+            }
             let entry = *labels
                 .get(&X64Label::Func { r#fn: 0 })
                 .ok_or_else(|| internal("missing entry label".into()))?;
@@ -322,6 +335,7 @@ pub fn compile_module(
             Ok(NativeBinary {
                 code,
                 entry_off: entry as u64,
+                fn_entries,
                 slot_imports: targets,
                 mem_pages_off,
                 mem_ptr_off,
@@ -364,9 +378,48 @@ fn data_area(
 pub enum RunOutcome {
     /// Value of the architecture's return register (RAX/X0/A0).
     Returned(u64),
+    /// Multi-result: return register plus results read off the guest stack.
+    ReturnedMulti(Vec<u64>),
     /// A guest trap: unreachable, memory fault, unsupported runtime symbol,
     /// or host dispatch error.
     Trapped(String),
+}
+
+/// Read `n` extra results from the guest stack after an AllStack return.
+/// The SysV epilogue leaves results at [rsp], first result at the LOWEST
+/// address (pushed last: RA was pushed above them by `ret`'s pop).
+fn read_stack_results<D>(
+    uc: &mut Unicorn<'_, D>,
+    arch: NativeArch,
+    n: usize,
+) -> Vec<u64> {
+    if n == 0 {
+        return vec![];
+    }
+    let sp = match arch {
+        NativeArch::X86_64 => {
+            use unicorn_engine::RegisterX86;
+            uc.reg_read(RegisterX86::RSP).unwrap()
+        }
+        NativeArch::AArch64 => {
+            use unicorn_engine::RegisterARM64;
+            uc.reg_read(RegisterARM64::SP).unwrap()
+        }
+        NativeArch::Riscv64 => {
+            use unicorn_engine::RegisterRISCV;
+            uc.reg_read(RegisterRISCV::SP).unwrap()
+        }
+    };
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut b = [0u8; 8];
+        if uc.mem_read(sp + (i as u64) * 8, &mut b).is_ok() {
+            out.push(u64::from_le_bytes(b));
+        } else {
+            out.push(0);
+        }
+    }
+    out
 }
 
 /// Dispatch an import: `(import_index, args) -> results (0 or 1)`.
@@ -399,6 +452,7 @@ pub fn run_module(
     bin: &NativeBinary,
     entry_off: u64,
     args: &[u64],
+    nrets: usize,
     cap: u64,
     host: &mut HostDispatch<'_>,
 ) -> RunOutcome {
@@ -505,7 +559,13 @@ pub fn run_module(
                 SENTINEL_BASE + 0x1000,
                 move |uc, addr, _size| sentinel_hook(uc, addr, arch, &sh),
             );
-            drive(&mut uc, arch, &shared, bin, entry_off, cap, host)
+            match drive(&mut uc, arch, &shared, bin, entry_off, cap, host) {
+                RunOutcome::Returned(v) => {
+                    let extra = read_stack_results(&mut uc, arch, nrets.saturating_sub(1));
+                    RunOutcome::ReturnedMulti(std::iter::once(v).chain(extra).collect())
+                }
+                other => other,
+            }
         }
         NativeArch::AArch64 => {
             use unicorn_engine::RegisterARM64;
@@ -534,7 +594,13 @@ pub fn run_module(
                 SENTINEL_BASE + 0x1000,
                 move |uc, addr, _size| sentinel_hook(uc, addr, arch, &sh),
             );
-            drive(&mut uc, arch, &shared, bin, entry_off, cap, host)
+            match drive(&mut uc, arch, &shared, bin, entry_off, cap, host) {
+                RunOutcome::Returned(v) => {
+                    let extra = read_stack_results(&mut uc, arch, nrets.saturating_sub(1));
+                    RunOutcome::ReturnedMulti(std::iter::once(v).chain(extra).collect())
+                }
+                other => other,
+            }
         }
         NativeArch::Riscv64 => {
             use unicorn_engine::RegisterRISCV;
@@ -562,7 +628,13 @@ pub fn run_module(
                 SENTINEL_BASE + 0x1000,
                 move |uc, addr, _size| sentinel_hook(uc, addr, arch, &sh),
             );
-            drive(&mut uc, arch, &shared, bin, entry_off, cap, host)
+            match drive(&mut uc, arch, &shared, bin, entry_off, cap, host) {
+                RunOutcome::Returned(v) => {
+                    let extra = read_stack_results(&mut uc, arch, nrets.saturating_sub(1));
+                    RunOutcome::ReturnedMulti(std::iter::once(v).chain(extra).collect())
+                }
+                other => other,
+            }
         }
     }
 }
@@ -638,6 +710,9 @@ fn sentinel_hook<D>(
     arch: NativeArch,
     shared: &Arc<Mutex<Shared>>,
 ) {
+    if !(SENTINEL_BASE..SENTINEL_BASE + 0x1000).contains(&addr) {
+        return; // range hook misfire guard
+    }
     let slot = ((addr - SENTINEL_BASE) / SENTINEL_SLOT) as usize;
     let ra = match arch {
         NativeArch::X86_64 => {

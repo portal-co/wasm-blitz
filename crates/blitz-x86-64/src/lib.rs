@@ -82,15 +82,15 @@ impl<T: portal_solutions_blitz_common::Label<X64Label> + ?Sized> Label for T {}
 pub mod abi;
 pub mod codegen;
 pub mod fast;
-pub mod regalloc_core;
-pub mod sysv;
-/// Naive code generation implementation.
-///
-/// Contains the naive (straightforward) code generation strategy for x86-64.
-pub mod naive;
 /// LFI-compliant sandboxed code generation.
 ///
 /// Generates x86-64 code that passes `lfi-verify --arch x64`.
 pub mod lfi;
+/// Naive code generation implementation.
+///
+/// Contains the naive (straightforward) code generation strategy for x86-64.
+pub mod naive;
+pub mod regalloc_core;
 /// `wax-core` `InstructionSink` / `OperatorSink` impls for the x86-64 backend.
 pub mod sink;
+pub mod sysv;

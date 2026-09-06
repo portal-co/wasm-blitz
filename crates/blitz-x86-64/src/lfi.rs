@@ -8,20 +8,23 @@
 
 extern crate alloc;
 
-use portal_solutions_asm_x86_64::{RegisterClass, X64Arch};
 use portal_solutions_asm_x86_64::out::arg::{ArgKind, MemArgKind, Segment};
 use portal_solutions_asm_x86_64::out::{Writer, WriterCore};
+use portal_solutions_asm_x86_64::{RegisterClass, X64Arch};
 use portal_solutions_blitz_common::{
     abi::BackendAbi,
     asm::Reg,
     asm::common::mem::MemorySize,
     ops::{FnData, MachOperator},
-    wasm_encoder::{Catch, FuncType, Instruction, reencode::{self as reencode, Reencode}},
+    wasm_encoder::{
+        Catch, FuncType, Instruction,
+        reencode::{self as reencode, Reencode},
+    },
 };
 
-use crate::{X64Label, RSP};
-use crate::naive::WriterExt as NaiveWriterExt;
 pub use crate::naive::State;
+use crate::naive::WriterExt as NaiveWriterExt;
+use crate::{RSP, X64Label};
 
 /// Reserved register: r14 (sandbox base, never written).
 const R14: Reg = Reg(14);
@@ -40,7 +43,10 @@ where
     W: LfiWriterExt<Context>,
 {
     type Error = W::Error;
-    type State<'s> = State<'s> where Self: 's;
+    type State<'s>
+        = State<'s>
+    where
+        Self: 's;
     type Arch = X64Arch;
 
     fn emit_prologue(
@@ -94,7 +100,10 @@ where
         if let Some(cfg) = state.probes.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW::new(w, ctx, arch);
             portal_solutions_blitz_codegen::emit_probe_site(
-                &mut bw, cfg.table_base_off, 0, 2,
+                &mut bw,
+                cfg.table_base_off,
+                0,
+                2,
                 portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
                 &mut state.label_index,
             )?;
@@ -131,17 +140,33 @@ where
         n: u32,
     ) -> Result<(), W::Error> {
         w.xchg(ctx, arch, &RSP, &Reg::CTX)?;
-        w.lea(ctx, arch, &RSP, &MemArgKind::Mem {
-            base: RSP, offset: None,
-            disp: 0u32.wrapping_sub((n as isize * 8) as u32),
-            size: MemorySize::_64, reg_class: RegisterClass::Gpr, segment: Segment::None,
-        })?;
+        w.lea(
+            ctx,
+            arch,
+            &RSP,
+            &MemArgKind::Mem {
+                base: RSP,
+                offset: None,
+                disp: 0u32.wrapping_sub((n as isize * 8) as u32),
+                size: MemorySize::_64,
+                reg_class: RegisterClass::Gpr,
+                segment: Segment::None,
+            },
+        )?;
         w.pop(ctx, arch, &Reg(0))?;
-        w.lea(ctx, arch, &RSP, &MemArgKind::Mem {
-            base: RSP, offset: None,
-            disp: 0u32.wrapping_sub(((n as isize + 1) * 8) as u32),
-            size: MemorySize::_64, reg_class: RegisterClass::Gpr, segment: Segment::None,
-        })?;
+        w.lea(
+            ctx,
+            arch,
+            &RSP,
+            &MemArgKind::Mem {
+                base: RSP,
+                offset: None,
+                disp: 0u32.wrapping_sub(((n as isize + 1) * 8) as u32),
+                size: MemorySize::_64,
+                reg_class: RegisterClass::Gpr,
+                segment: Segment::None,
+            },
+        )?;
         w.xchg(ctx, arch, &RSP, &Reg::CTX)?;
         w.push(ctx, arch, &Reg(0))
     }
@@ -155,17 +180,33 @@ where
     ) -> Result<(), W::Error> {
         w.pop(ctx, arch, &Reg(0))?;
         w.xchg(ctx, arch, &RSP, &Reg::CTX)?;
-        w.lea(ctx, arch, &RSP, &MemArgKind::Mem {
-            base: RSP, offset: None,
-            disp: 0u32.wrapping_sub(((n as isize + 1) * 8) as u32),
-            size: MemorySize::_64, reg_class: RegisterClass::Gpr, segment: Segment::None,
-        })?;
+        w.lea(
+            ctx,
+            arch,
+            &RSP,
+            &MemArgKind::Mem {
+                base: RSP,
+                offset: None,
+                disp: 0u32.wrapping_sub(((n as isize + 1) * 8) as u32),
+                size: MemorySize::_64,
+                reg_class: RegisterClass::Gpr,
+                segment: Segment::None,
+            },
+        )?;
         w.push(ctx, arch, &Reg(0))?;
-        w.lea(ctx, arch, &RSP, &MemArgKind::Mem {
-            base: RSP, offset: None,
-            disp: 0u32.wrapping_sub((n as isize * 8) as u32),
-            size: MemorySize::_64, reg_class: RegisterClass::Gpr, segment: Segment::None,
-        })?;
+        w.lea(
+            ctx,
+            arch,
+            &RSP,
+            &MemArgKind::Mem {
+                base: RSP,
+                offset: None,
+                disp: 0u32.wrapping_sub((n as isize * 8) as u32),
+                size: MemorySize::_64,
+                reg_class: RegisterClass::Gpr,
+                segment: Segment::None,
+            },
+        )?;
         w.xchg(ctx, arch, &RSP, &Reg::CTX)
     }
 
@@ -208,22 +249,36 @@ where
     }
 
     fn emit_throw(
-        _w: &mut W, _ctx: &mut Context, _arch: X64Arch, _state: &mut State<'_>,
-        _tag_index: u32, _arity: u32,
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: X64Arch,
+        _state: &mut State<'_>,
+        _tag_index: u32,
+        _arity: u32,
     ) -> Result<(), W::Error> {
         todo!("LFI emit_throw")
     }
 
     fn emit_try_table_start(
-        _w: &mut W, _ctx: &mut Context, _arch: X64Arch, _state: &mut State<'_>,
-        _catches: &[Catch], _sigs: &[FuncType], _tags: &[u32],
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: X64Arch,
+        _state: &mut State<'_>,
+        _catches: &[Catch],
+        _sigs: &[FuncType],
+        _tags: &[u32],
     ) -> Result<(), W::Error> {
         todo!("LFI emit_try_table_start")
     }
 
     fn emit_try_table_end(
-        _w: &mut W, _ctx: &mut Context, _arch: X64Arch, _state: &mut State<'_>,
-        _catches: &[Catch], _sigs: &[FuncType], _tags: &[u32],
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: X64Arch,
+        _state: &mut State<'_>,
+        _catches: &[Catch],
+        _sigs: &[FuncType],
+        _tags: &[u32],
     ) -> Result<(), W::Error> {
         todo!("LFI emit_try_table_end")
     }
@@ -237,11 +292,19 @@ where
         // Restore RSP to frame base (same as NaiveAbi).
         w.mov(ctx, arch, &Reg(1), &RSP)?;
         w.mov(ctx, arch, &Reg(0), &Reg::CTX)?;
-        w.lea(ctx, arch, &Reg(0), &MemArgKind::Mem {
-            base: Reg(0), offset: None,
-            disp: (state.local_count + 3 * 8) as u32,
-            size: MemorySize::_8, reg_class: RegisterClass::Gpr, segment: Segment::None,
-        })?;
+        w.lea(
+            ctx,
+            arch,
+            &Reg(0),
+            &MemArgKind::Mem {
+                base: Reg(0),
+                offset: None,
+                disp: (state.local_count + 3 * 8) as u32,
+                size: MemorySize::_8,
+                reg_class: RegisterClass::Gpr,
+                segment: Segment::None,
+            },
+        )?;
         lfi_set_rsp(w, ctx, arch, Reg(0))?; // mov esp, eax; or rsp, r14
         w.pop(ctx, arch, &Reg(0))?;
         w.xchg(ctx, arch, &Reg(0), &Reg::CTX)?;
@@ -278,10 +341,16 @@ fn lfi_set_rsp<W: WriterCore<Context>, Context>(
     arch: X64Arch,
     src_reg: Reg,
 ) -> Result<(), W::Error> {
-    let esp = MemArgKind::NoMem(ArgKind::Reg { reg: RSP, size: MemorySize::_32 });
-    let e_src = MemArgKind::NoMem(ArgKind::Reg { reg: src_reg, size: MemorySize::_32 });
-    w.mov(ctx, arch, &esp, &e_src)?;  // mov esp, eSRC
-    w.or(ctx, arch, &RSP, &R14)       // or rsp, r14
+    let esp = MemArgKind::NoMem(ArgKind::Reg {
+        reg: RSP,
+        size: MemorySize::_32,
+    });
+    let e_src = MemArgKind::NoMem(ArgKind::Reg {
+        reg: src_reg,
+        size: MemorySize::_32,
+    });
+    w.mov(ctx, arch, &esp, &e_src)?; // mov esp, eSRC
+    w.or(ctx, arch, &RSP, &R14) // or rsp, r14
 }
 
 /// Build a GS-segment memory operand with a 32-bit base register.
@@ -291,7 +360,10 @@ fn lfi_set_rsp<W: WriterCore<Context>, Context>(
 #[inline(always)]
 fn gs_mem(base_reg: Reg, disp: u64, size: MemorySize) -> MemArgKind<ArgKind> {
     MemArgKind::Mem {
-        base: ArgKind::Reg { reg: base_reg, size: MemorySize::_32 },
+        base: ArgKind::Reg {
+            reg: base_reg,
+            size: MemorySize::_32,
+        },
         offset: None,
         disp: disp as u32,
         size,
@@ -308,7 +380,10 @@ fn sandbox_addr<W: WriterCore<Context>, Context>(
     arch: X64Arch,
     reg: Reg,
 ) -> Result<(), W::Error> {
-    let e_reg = MemArgKind::NoMem(ArgKind::Reg { reg, size: MemorySize::_32 });
+    let e_reg = MemArgKind::NoMem(ArgKind::Reg {
+        reg,
+        size: MemorySize::_32,
+    });
     w.mov(ctx, arch, &e_reg, &e_reg)
 }
 
@@ -379,14 +454,21 @@ where
 
         self.lea_label(ctx, arch, &R11, lbl.clone())?;
         // jmp qword ptr [r14+0]
-        self.jmp(ctx, arch, &MemArgKind::Mem {
-            base: ArgKind::Reg { reg: R14, size: MemorySize::_64 },
-            offset: None,
-            disp: 0,
-            size: MemorySize::_64,
-            reg_class: RegisterClass::Gpr,
-            segment: Segment::None,
-        })?;
+        self.jmp(
+            ctx,
+            arch,
+            &MemArgKind::Mem {
+                base: ArgKind::Reg {
+                    reg: R14,
+                    size: MemorySize::_64,
+                },
+                offset: None,
+                disp: 0,
+                size: MemorySize::_64,
+                reg_class: RegisterClass::Gpr,
+                segment: Segment::None,
+            },
+        )?;
         self.set_label(ctx, arch, lbl)
     }
 
@@ -409,63 +491,107 @@ where
             Instruction::I64Load(m) => {
                 self.pop(ctx, arch, &Reg(0))?;
                 sandbox_addr(self, ctx, arch, Reg(0))?;
-                self.mov(ctx, arch, &Reg(0), &gs_mem(Reg(0), m.offset, MemorySize::_64))?;
+                self.mov(
+                    ctx,
+                    arch,
+                    &Reg(0),
+                    &gs_mem(Reg(0), m.offset, MemorySize::_64),
+                )?;
                 self.push(ctx, arch, &Reg(0))
             }
             Instruction::I32Load(m) => {
                 self.pop(ctx, arch, &Reg(0))?;
                 sandbox_addr(self, ctx, arch, Reg(0))?;
-                let eax = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 });
+                let eax = MemArgKind::NoMem(ArgKind::Reg {
+                    reg: Reg(0),
+                    size: MemorySize::_32,
+                });
                 self.mov(ctx, arch, &eax, &gs_mem(Reg(0), m.offset, MemorySize::_32))?;
                 self.push(ctx, arch, &Reg(0))
             }
             Instruction::F64Load(m) => {
                 self.pop(ctx, arch, &Reg(0))?;
                 sandbox_addr(self, ctx, arch, Reg(0))?;
-                self.mov(ctx, arch, &Reg(0), &gs_mem(Reg(0), m.offset, MemorySize::_64))?;
+                self.mov(
+                    ctx,
+                    arch,
+                    &Reg(0),
+                    &gs_mem(Reg(0), m.offset, MemorySize::_64),
+                )?;
                 self.push(ctx, arch, &Reg(0))
             }
             Instruction::F32Load(m) => {
                 self.pop(ctx, arch, &Reg(0))?;
                 sandbox_addr(self, ctx, arch, Reg(0))?;
-                let eax = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 });
+                let eax = MemArgKind::NoMem(ArgKind::Reg {
+                    reg: Reg(0),
+                    size: MemorySize::_32,
+                });
                 self.mov(ctx, arch, &eax, &gs_mem(Reg(0), m.offset, MemorySize::_32))?;
                 self.push(ctx, arch, &Reg(0))
             }
             Instruction::I64Load8S(m) | Instruction::I32Load8S(m) => {
                 self.pop(ctx, arch, &Reg(0))?;
                 sandbox_addr(self, ctx, arch, Reg(0))?;
-                self.movsx(ctx, arch, &Reg(0), &gs_mem(Reg(0), m.offset, MemorySize::_8))?;
+                self.movsx(
+                    ctx,
+                    arch,
+                    &Reg(0),
+                    &gs_mem(Reg(0), m.offset, MemorySize::_8),
+                )?;
                 self.push(ctx, arch, &Reg(0))
             }
             Instruction::I64Load8U(m) | Instruction::I32Load8U(m) => {
                 self.pop(ctx, arch, &Reg(0))?;
                 sandbox_addr(self, ctx, arch, Reg(0))?;
-                self.movzx(ctx, arch, &Reg(0), &gs_mem(Reg(0), m.offset, MemorySize::_8))?;
+                self.movzx(
+                    ctx,
+                    arch,
+                    &Reg(0),
+                    &gs_mem(Reg(0), m.offset, MemorySize::_8),
+                )?;
                 self.push(ctx, arch, &Reg(0))
             }
             Instruction::I64Load16S(m) | Instruction::I32Load16S(m) => {
                 self.pop(ctx, arch, &Reg(0))?;
                 sandbox_addr(self, ctx, arch, Reg(0))?;
-                self.movsx(ctx, arch, &Reg(0), &gs_mem(Reg(0), m.offset, MemorySize::_16))?;
+                self.movsx(
+                    ctx,
+                    arch,
+                    &Reg(0),
+                    &gs_mem(Reg(0), m.offset, MemorySize::_16),
+                )?;
                 self.push(ctx, arch, &Reg(0))
             }
             Instruction::I64Load16U(m) | Instruction::I32Load16U(m) => {
                 self.pop(ctx, arch, &Reg(0))?;
                 sandbox_addr(self, ctx, arch, Reg(0))?;
-                self.movzx(ctx, arch, &Reg(0), &gs_mem(Reg(0), m.offset, MemorySize::_16))?;
+                self.movzx(
+                    ctx,
+                    arch,
+                    &Reg(0),
+                    &gs_mem(Reg(0), m.offset, MemorySize::_16),
+                )?;
                 self.push(ctx, arch, &Reg(0))
             }
             Instruction::I64Load32S(m) => {
                 self.pop(ctx, arch, &Reg(0))?;
                 sandbox_addr(self, ctx, arch, Reg(0))?;
-                self.movsx(ctx, arch, &Reg(0), &gs_mem(Reg(0), m.offset, MemorySize::_32))?;
+                self.movsx(
+                    ctx,
+                    arch,
+                    &Reg(0),
+                    &gs_mem(Reg(0), m.offset, MemorySize::_32),
+                )?;
                 self.push(ctx, arch, &Reg(0))
             }
             Instruction::I64Load32U(m) => {
                 self.pop(ctx, arch, &Reg(0))?;
                 sandbox_addr(self, ctx, arch, Reg(0))?;
-                let eax = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 });
+                let eax = MemArgKind::NoMem(ArgKind::Reg {
+                    reg: Reg(0),
+                    size: MemorySize::_32,
+                });
                 self.mov(ctx, arch, &eax, &gs_mem(Reg(0), m.offset, MemorySize::_32))?;
                 self.push(ctx, arch, &Reg(0))
             }
@@ -475,34 +601,51 @@ where
                 self.pop(ctx, arch, &Reg(2))?;
                 self.pop(ctx, arch, &Reg(0))?;
                 sandbox_addr(self, ctx, arch, Reg(0))?;
-                self.mov(ctx, arch, &gs_mem(Reg(0), m.offset, MemorySize::_64), &Reg(2))
+                self.mov(
+                    ctx,
+                    arch,
+                    &gs_mem(Reg(0), m.offset, MemorySize::_64),
+                    &Reg(2),
+                )
             }
             Instruction::I32Store(m) | Instruction::F32Store(m) => {
                 self.pop(ctx, arch, &Reg(2))?;
                 self.pop(ctx, arch, &Reg(0))?;
                 sandbox_addr(self, ctx, arch, Reg(0))?;
-                let edx = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(2), size: MemorySize::_32 });
+                let edx = MemArgKind::NoMem(ArgKind::Reg {
+                    reg: Reg(2),
+                    size: MemorySize::_32,
+                });
                 self.mov(ctx, arch, &gs_mem(Reg(0), m.offset, MemorySize::_32), &edx)
             }
             Instruction::I64Store8(m) | Instruction::I32Store8(m) => {
                 self.pop(ctx, arch, &Reg(2))?;
                 self.pop(ctx, arch, &Reg(0))?;
                 sandbox_addr(self, ctx, arch, Reg(0))?;
-                let dl = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(2), size: MemorySize::_8 });
+                let dl = MemArgKind::NoMem(ArgKind::Reg {
+                    reg: Reg(2),
+                    size: MemorySize::_8,
+                });
                 self.mov(ctx, arch, &gs_mem(Reg(0), m.offset, MemorySize::_8), &dl)
             }
             Instruction::I64Store16(m) | Instruction::I32Store16(m) => {
                 self.pop(ctx, arch, &Reg(2))?;
                 self.pop(ctx, arch, &Reg(0))?;
                 sandbox_addr(self, ctx, arch, Reg(0))?;
-                let dx = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(2), size: MemorySize::_16 });
+                let dx = MemArgKind::NoMem(ArgKind::Reg {
+                    reg: Reg(2),
+                    size: MemorySize::_16,
+                });
                 self.mov(ctx, arch, &gs_mem(Reg(0), m.offset, MemorySize::_16), &dx)
             }
             Instruction::I64Store32(m) => {
                 self.pop(ctx, arch, &Reg(2))?;
                 self.pop(ctx, arch, &Reg(0))?;
                 sandbox_addr(self, ctx, arch, Reg(0))?;
-                let edx = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(2), size: MemorySize::_32 });
+                let edx = MemArgKind::NoMem(ArgKind::Reg {
+                    reg: Reg(2),
+                    size: MemorySize::_32,
+                });
                 self.mov(ctx, arch, &gs_mem(Reg(0), m.offset, MemorySize::_32), &edx)
             }
 
@@ -512,13 +655,19 @@ where
             Instruction::Return => {
                 self.mov(ctx, arch, &Reg(1), &RSP)?;
                 self.mov(ctx, arch, &Reg(0), &Reg::CTX)?;
-                self.lea(ctx, arch, &Reg(0), &MemArgKind::Mem {
-                    base: Reg(0), offset: None,
-                    disp: 0u32.wrapping_sub(8),
-                    size: MemorySize::_64,
-                    reg_class: RegisterClass::Gpr,
-                    segment: Segment::None,
-                })?;
+                self.lea(
+                    ctx,
+                    arch,
+                    &Reg(0),
+                    &MemArgKind::Mem {
+                        base: Reg(0),
+                        offset: None,
+                        disp: 0u32.wrapping_sub(8),
+                        size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
+                        segment: Segment::None,
+                    },
+                )?;
                 lfi_set_rsp(self, ctx, arch, Reg(0))?; // mov esp, eax; or rsp, r14
                 self.pop(ctx, arch, &Reg(0))?;
                 self.xchg(ctx, arch, &Reg(0), &Reg::CTX)?;
@@ -570,10 +719,12 @@ where
                             state.label_index - 1
                         }),
                     },
-                ).map_err(Err::from)?;
+                )
+                .map_err(Err::from)?;
                 state.body = target;
                 if let Some(idx) = state.body_labels.remove(&state.body) {
-                    self.set_label(ctx, arch, X64Label::Indexed { idx }).map_err(Err::from)?;
+                    self.set_label(ctx, arch, X64Label::Indexed { idx })
+                        .map_err(Err::from)?;
                 }
             }
         }
@@ -585,28 +736,51 @@ where
                 state.probes = data.probes;
                 self.align_to(ctx, arch, 32).map_err(Err::from)?;
                 self.pop(ctx, arch, &Reg(1)).map_err(Err::from)?;
-                self.lea(ctx, arch, &Reg(0), &MemArgKind::Mem {
-                    base: Reg(1), offset: None,
-                    disp: 0u32.wrapping_sub(data.num_params as u32),
-                    size: MemorySize::_64, reg_class: RegisterClass::Gpr, segment: Segment::None,
-                }).map_err(Err::from)?;
-                self.xchg(ctx, arch, &Reg(0), &Reg::CTX).map_err(Err::from)?;
-                self.set_label(ctx, arch, X64Label::Func { r#fn: *id }).map_err(Err::from)?;
+                self.lea(
+                    ctx,
+                    arch,
+                    &Reg(0),
+                    &MemArgKind::Mem {
+                        base: Reg(1),
+                        offset: None,
+                        disp: 0u32.wrapping_sub(data.num_params as u32),
+                        size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
+                        segment: Segment::None,
+                    },
+                )
+                .map_err(Err::from)?;
+                self.xchg(ctx, arch, &Reg(0), &Reg::CTX)
+                    .map_err(Err::from)?;
+                self.set_label(ctx, arch, X64Label::Func { r#fn: *id })
+                    .map_err(Err::from)?;
             }
             MachOperator::Instruction { op, .. } => {
-                self.lfi_instr(ctx, arch, state, func_imports, sigs, tags, op, target).map_err(Err::from)?;
+                self.lfi_instr(ctx, arch, state, func_imports, sigs, tags, op, target)
+                    .map_err(Err::from)?;
             }
             MachOperator::Operator { op, .. } => match op.as_ref() {
                 None => return Ok(()),
                 Some(raw_op) => {
                     let instr = rewriter.instruction(raw_op.clone())?;
-                    self.lfi_instr(ctx, arch, state, func_imports, sigs, tags, &instr, target).map_err(Err::from)?;
+                    self.lfi_instr(ctx, arch, state, func_imports, sigs, tags, &instr, target)
+                        .map_err(Err::from)?;
                 }
             },
             // Remaining MachOperator variants (Local, StartBody, EndBody, etc.)
             // are handled identically to naive — delegate through handle_op.
             other => {
-                self.handle_op::<E, Err>(ctx, arch, state, func_imports, sigs, tags, other, rewriter, target)?;
+                self.handle_op::<E, Err>(
+                    ctx,
+                    arch,
+                    state,
+                    func_imports,
+                    sigs,
+                    tags,
+                    other,
+                    rewriter,
+                    target,
+                )?;
             }
         }
         Ok(())
