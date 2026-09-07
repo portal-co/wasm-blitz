@@ -17,7 +17,10 @@ use alloc::vec::Vec;
 use portal_solutions_asm_regalloc::{Cmd, RegAlloc};
 use portal_solutions_asm_x86_64::{
     RegisterClass, X64Arch,
-    out::{Writer, WriterCore, arg::{ArgKind, MemArgKind}},
+    out::{
+        Writer, WriterCore,
+        arg::{ArgKind, MemArgKind},
+    },
     regalloc as x86_regalloc,
 };
 use portal_solutions_blitz_common::asm::{Reg, common::mem::MemorySize};
@@ -62,9 +65,16 @@ pub fn handle_op<W, Context>(
 where
     W: WriterCore<Context> + Writer<crate::X64Label, Context>,
 {
-    use portal_solutions_blitz_codegen::regalloc_frontend::{binop, push_const, push_local, pop_to_local};
+    use portal_solutions_blitz_codegen::regalloc_frontend::{
+        binop, pop_to_local, push_const, push_local,
+    };
 
-    let mut rw = crate::codegen::RegAllocW { writer, ctx, arch, regalloc };
+    let mut rw = crate::codegen::RegAllocW {
+        writer,
+        ctx,
+        arch,
+        regalloc,
+    };
     match op {
         Instruction::I32Const(v) => {
             let v = *v as u32 as u64;
@@ -91,12 +101,24 @@ where
         Instruction::I32Add | Instruction::I64Add => {
             let is32 = matches!(op, Instruction::I32Add);
             binop(&mut rw, x86_regalloc::RegKind::Int, |rw, dst, rhs| {
-                rw.writer.lea(rw.ctx, rw.arch, &Reg(dst), &MemArgKind::Mem {
-                    base: Reg(dst), offset: Some((Reg(rhs), 1)), disp: 0,
-                    size: MemorySize::_64, reg_class: RegisterClass::Gpr, segment: Default::default(),
-                })?;
+                rw.writer.lea(
+                    rw.ctx,
+                    rw.arch,
+                    &Reg(dst),
+                    &MemArgKind::Mem {
+                        base: Reg(dst),
+                        offset: Some((Reg(rhs), 1)),
+                        disp: 0,
+                        size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
+                    },
+                )?;
                 if is32 {
-                    let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(dst), size: MemorySize::_32 });
+                    let r = MemArgKind::NoMem(ArgKind::Reg {
+                        reg: Reg(dst),
+                        size: MemorySize::_32,
+                    });
                     rw.writer.mov(rw.ctx, rw.arch, &r, &r)?;
                 }
                 Ok(())
@@ -108,12 +130,24 @@ where
             binop(&mut rw, x86_regalloc::RegKind::Int, |rw, dst, rhs| {
                 // dst holds `a` (lhs), rhs holds `b`. ~b + a + 1 == a - b.
                 rw.writer.not(rw.ctx, rw.arch, &Reg(rhs))?;
-                rw.writer.lea(rw.ctx, rw.arch, &Reg(dst), &MemArgKind::Mem {
-                    base: Reg(dst), offset: Some((Reg(rhs), 1)), disp: 1,
-                    size: MemorySize::_64, reg_class: RegisterClass::Gpr, segment: Default::default(),
-                })?;
+                rw.writer.lea(
+                    rw.ctx,
+                    rw.arch,
+                    &Reg(dst),
+                    &MemArgKind::Mem {
+                        base: Reg(dst),
+                        offset: Some((Reg(rhs), 1)),
+                        disp: 1,
+                        size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
+                    },
+                )?;
                 if is32 {
-                    let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(dst), size: MemorySize::_32 });
+                    let r = MemArgKind::NoMem(ArgKind::Reg {
+                        reg: Reg(dst),
+                        size: MemorySize::_32,
+                    });
                     rw.writer.mov(rw.ctx, rw.arch, &r, &r)?;
                 }
                 Ok(())
@@ -145,7 +179,10 @@ where
             binop(&mut rw, x86_regalloc::RegKind::Int, |rw, dst, rhs| {
                 rw.writer.mul(rw.ctx, rw.arch, &Reg(dst), &Reg(rhs))?;
                 if is32 {
-                    let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(dst), size: MemorySize::_32 });
+                    let r = MemArgKind::NoMem(ArgKind::Reg {
+                        reg: Reg(dst),
+                        size: MemorySize::_32,
+                    });
                     rw.writer.mov(rw.ctx, rw.arch, &r, &r)?;
                 }
                 Ok(())

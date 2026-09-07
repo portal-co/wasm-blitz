@@ -69,6 +69,20 @@ This project is organized as a Cargo workspace with the following crates:
 
 ILP32 backends `blitz-riscv32`, `blitz-arm`, and `blitz-i686` are in progress (8-byte WASM value slots, 4-byte host pointers). See [docs/abi.md](docs/abi.md#ilp32-native-abis-32-bit-hosts).
 
+## Spec-test conformance
+
+The workspace runs the official [WebAssembly spec test suite](https://github.com/WebAssembly/spec) against the blitz backends via `crates/blitz-tests`:
+
+```bash
+git clone --depth 1 https://github.com/WebAssembly/spec target/spec   # or set BLITZ_SPEC_DIR
+cargo test -p portal-solutions-blitz-tests --test spectests
+```
+
+- One `#[test]` per (suite file x backend); backends: `js` (node), `c` (cc), `native` (Unicorn, pure-i64 subset).
+- Known failures are tracked in `crates/blitz-tests/tests/spec/baseline.toml` with a ratchet: new failures fail CI, stale entries also fail (baseline only shrinks). See `crates/blitz-tests/tests/spec/README.md`.
+- CI: `.github/workflows/spectests.yml` checks out the suite at a pinned commit; bumping the pin requires re-baselining.
+- Diagnostics: `PORTAL_LOG_JSON=1 PORTAL_LOG_BAT=1` (NDJSON), `BLITZ_SPEC_DUMP_JS=1` (dump generated JS).
+
 ## Building
 
 Build all crates in the workspace:

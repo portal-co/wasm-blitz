@@ -187,6 +187,9 @@ enum Frame {
     /// `TryTable` acts like `Block` for forward branching.
     /// Stores catch clauses for emission at the matching `End`.
     TryTable(BlockType, alloc::vec::Vec<portal_solutions_blitz_common::wasm_encoder::Catch>),
+    /// The implicit function-level label: `br` here returns the function's
+    /// results (like JS backend's Frame::Function).
+    Function,
 }
 
 // ---------------------------------------------------------------------------
@@ -408,6 +411,7 @@ pub trait CWrite: Write {
             Frame::Block(_) | Frame::If(_) => write!(self, "goto blk_e_{label};"),
             // BUG FIX vs JS: Loop branch is a *back*-edge (continue), not a break.
             Frame::Loop(_) => write!(self, "goto lp_s_{label};"),
+            Frame::Function => write!(self, "goto fn_ret_{label};"),
             // Exiting a try_table must clean up the setjmp depth counter.
             Frame::TryTable(_, _) => write!(self, "__wasm_exn_d--;goto blk_e_{label};"),
         }
@@ -490,7 +494,7 @@ pub trait CWrite: Write {
                 push(
                     state,
                     self,
-                    &format_args!("(uint64_t)(uint32_t)((uint32_t)tmp2/(uint32_t)tmp)"),
+                    &format_args!("(uint64_t)(uint32_t)__wasm_div_check0((uint64_t)tmp,(uint64_t)((uint32_t)tmp2/(uint32_t)tmp))"),
                 )
             }
             Instruction::I32RemU => {
@@ -498,7 +502,7 @@ pub trait CWrite: Write {
                 push(
                     state,
                     self,
-                    &format_args!("(uint64_t)(uint32_t)((uint32_t)tmp2%(uint32_t)tmp)"),
+                    &format_args!("(uint64_t)(uint32_t)__wasm_div_check0((uint64_t)tmp,(uint64_t)((uint32_t)tmp2%(uint32_t)tmp))"),
                 )
             }
             Instruction::I32DivS => {
@@ -506,7 +510,7 @@ pub trait CWrite: Write {
                 push(
                     state,
                     self,
-                    &format_args!("(uint64_t)(uint32_t)((int32_t)tmp2/(int32_t)tmp)"),
+                    &format_args!("(uint64_t)(uint32_t)__wasm_sdiv32((int32_t)tmp2,(int32_t)tmp)"),
                 )
             }
             Instruction::I32RemS => {
@@ -514,7 +518,7 @@ pub trait CWrite: Write {
                 push(
                     state,
                     self,
-                    &format_args!("(uint64_t)(uint32_t)((int32_t)tmp2%(int32_t)tmp)"),
+                    &format_args!("(uint64_t)(uint32_t)__wasm_srem32((int32_t)tmp2,(int32_t)tmp)"),
                 )
             }
             Instruction::I32Shl => {
@@ -589,18 +593,18 @@ pub trait CWrite: Write {
             }
             Instruction::I64DivU => {
                 write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
-                push(state, self, &format_args!("tmp2/tmp"))
+                push(state, self, &format_args!("__wasm_div_check0(tmp,tmp2/tmp)"))
             }
             Instruction::I64RemU => {
                 write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
-                push(state, self, &format_args!("tmp2%tmp"))
+                push(state, self, &format_args!("__wasm_div_check0(tmp,tmp2%tmp)"))
             }
             Instruction::I64DivS => {
                 write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
                 push(
                     state,
                     self,
-                    &format_args!("(uint64_t)((int64_t)tmp2/(int64_t)tmp)"),
+                    &format_args!("(uint64_t)__wasm_sdiv64((int64_t)tmp2,(int64_t)tmp)"),
                 )
             }
             Instruction::I64RemS => {
@@ -608,7 +612,7 @@ pub trait CWrite: Write {
                 push(
                     state,
                     self,
-                    &format_args!("(uint64_t)((int64_t)tmp2%(int64_t)tmp)"),
+                    &format_args!("(uint64_t)__wasm_srem64((int64_t)tmp2,(int64_t)tmp)"),
                 )
             }
             Instruction::I64Shl => {
@@ -643,6 +647,434 @@ pub trait CWrite: Write {
                     self,
                     &format_args!("(tmp2>>(tmp%64ull))|(tmp2<<(64ull-tmp%64ull))"),
                 )
+            }
+
+            // ---- comparisons: i32 signed ----------------------------------
+            Instruction::I32Eq => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)((uint32_t)tmp2==(uint32_t)tmp?1u:0u)"))
+            }
+            Instruction::I32Ne => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)((uint32_t)tmp2!=(uint32_t)tmp?1u:0u)"))
+            }
+            Instruction::I32LtS => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)((int32_t)tmp2<(int32_t)tmp?1u:0u)"))
+            }
+            Instruction::I32LtU => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)((uint32_t)tmp2<(uint32_t)tmp?1u:0u)"))
+            }
+            Instruction::I32GtS => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)((int32_t)tmp2>(int32_t)tmp?1u:0u)"))
+            }
+            Instruction::I32GtU => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)((uint32_t)tmp2>(uint32_t)tmp?1u:0u)"))
+            }
+            Instruction::I32LeS => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)((int32_t)tmp2<=(int32_t)tmp?1u:0u)"))
+            }
+            Instruction::I32LeU => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)((uint32_t)tmp2<=(uint32_t)tmp?1u:0u)"))
+            }
+            Instruction::I32GeS => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)((int32_t)tmp2>=(int32_t)tmp?1u:0u)"))
+            }
+            Instruction::I32GeU => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)((uint32_t)tmp2>=(uint32_t)tmp?1u:0u)"))
+            }
+
+            // ---- comparisons: i64 -----------------------------------------
+            Instruction::I64Eq => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)(tmp2==tmp?1ull:0ull)"))
+            }
+            Instruction::I64Ne => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)(tmp2!=tmp?1ull:0ull)"))
+            }
+            Instruction::I64LtS => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)((int64_t)tmp2<(int64_t)tmp?1ull:0ull)"))
+            }
+            Instruction::I64LtU => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)(tmp2<tmp?1ull:0ull)"))
+            }
+            Instruction::I64GtS => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)((int64_t)tmp2>(int64_t)tmp?1ull:0ull)"))
+            }
+            Instruction::I64GtU => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)(tmp2>tmp?1ull:0ull)"))
+            }
+            Instruction::I64LeS => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)((int64_t)tmp2<=(int64_t)tmp?1ull:0ull)"))
+            }
+            Instruction::I64LeU => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)(tmp2<=tmp?1ull:0ull)"))
+            }
+            Instruction::I64GeS => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)((int64_t)tmp2>=(int64_t)tmp?1ull:0ull)"))
+            }
+            Instruction::I64GeU => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)(tmp2>=tmp?1ull:0ull)"))
+            }
+
+            // ---- comparisons: floats (result on BigInt-style uint64 stack) --
+            Instruction::F32Eq => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)(*(float*)&tmp2==*(float*)&tmp?1ull:0ull)"))
+            }
+            Instruction::F32Ne => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)(*(float*)&tmp2!=*(float*)&tmp?1ull:0ull)"))
+            }
+            Instruction::F32Lt => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)(*(float*)&tmp2<*(float*)&tmp?1ull:0ull)"))
+            }
+            Instruction::F32Gt => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)(*(float*)&tmp2>*(float*)&tmp?1ull:0ull)"))
+            }
+            Instruction::F32Le => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)(*(float*)&tmp2<=*(float*)&tmp?1ull:0ull)"))
+            }
+            Instruction::F32Ge => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)(*(float*)&tmp2>=*(float*)&tmp?1ull:0ull)"))
+            }
+            Instruction::F64Eq => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)(*(double*)&tmp2==*(double*)&tmp?1ull:0ull)"))
+            }
+            Instruction::F64Ne => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)(*(double*)&tmp2!=*(double*)&tmp?1ull:0ull)"))
+            }
+            Instruction::F64Lt => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)(*(double*)&tmp2<*(double*)&tmp?1ull:0ull)"))
+            }
+            Instruction::F64Gt => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)(*(double*)&tmp2>*(double*)&tmp?1ull:0ull)"))
+            }
+            Instruction::F64Le => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)(*(double*)&tmp2<=*(double*)&tmp?1ull:0ull)"))
+            }
+            Instruction::F64Ge => {
+                write!(self, "tmp={};tmp2={};", pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(uint64_t)(*(double*)&tmp2>=*(double*)&tmp?1ull:0ull)"))
+            }
+
+            // ---- bitwise ----------------------------------------------------
+            Instruction::I32And => push(
+                state,
+                self,
+                &format_args!("(uint64_t)((uint32_t){}&(uint32_t){})", pop!(state), pop!(state)),
+            ),
+            Instruction::I32Or => push(
+                state,
+                self,
+                &format_args!("(uint64_t)((uint32_t){}|(uint32_t){})", pop!(state), pop!(state)),
+            ),
+            Instruction::I32Xor => push(
+                state,
+                self,
+                &format_args!("(uint64_t)((uint32_t){}^(uint32_t){})", pop!(state), pop!(state)),
+            ),
+            Instruction::I64And => push(
+                state,
+                self,
+                &format_args!("{}&{}", pop!(state), pop!(state)),
+            ),
+            Instruction::I64Or => push(
+                state,
+                self,
+                &format_args!("{}|{}", pop!(state), pop!(state)),
+            ),
+            Instruction::I64Xor => push(
+                state,
+                self,
+                &format_args!("{}^{}", pop!(state), pop!(state)),
+            ),
+
+            // ---- bit counting ------------------------------------------------
+            Instruction::I32Clz => push(
+                state,
+                self,
+                &format_args!("(uint64_t)(uint32_t)__builtin_clz((uint32_t){}|1u)", pop!(state)),
+            ),
+            Instruction::I32Ctz => push(
+                state,
+                self,
+                &format_args!("(uint64_t)(uint32_t)__builtin_ctz((uint32_t){}|1u)", pop!(state)),
+            ),
+            Instruction::I32Popcnt => push(
+                state,
+                self,
+                &format_args!("(uint64_t)(uint32_t)__builtin_popcount((uint32_t){})", pop!(state)),
+            ),
+            Instruction::I64Clz => push(
+                state,
+                self,
+                &format_args!("(uint64_t)__builtin_clzll({}|1ull)", pop!(state)),
+            ),
+            Instruction::I64Ctz => push(
+                state,
+                self,
+                &format_args!("(uint64_t)__builtin_ctzll({}|1ull)", pop!(state)),
+            ),
+            Instruction::I64Popcnt => push(
+                state,
+                self,
+                &format_args!("(uint64_t)__builtin_popcountll({})", pop!(state)),
+            ),
+
+            // ---- wrap / extend ------------------------------------------------
+            Instruction::I32WrapI64 => push(
+                state,
+                self,
+                &format_args!("(uint64_t)(uint32_t){}", pop!(state)),
+            ),
+            Instruction::I64ExtendI32S => push(
+                state,
+                self,
+                &format_args!("(uint64_t)(int64_t)(int32_t){}", pop!(state)),
+            ),
+            Instruction::I64ExtendI32U => push(
+                state,
+                self,
+                &format_args!("(uint64_t)(uint32_t){}", pop!(state)),
+            ),
+            Instruction::I32Extend8S => push(
+                state,
+                self,
+                &format_args!("(uint64_t)(uint32_t)(int32_t)(int8_t){}", pop!(state)),
+            ),
+            Instruction::I32Extend16S => push(
+                state,
+                self,
+                &format_args!("(uint64_t)(uint32_t)(int32_t)(int16_t){}", pop!(state)),
+            ),
+            Instruction::I64Extend8S => push(
+                state,
+                self,
+                &format_args!("(uint64_t)(int64_t)(int8_t){}", pop!(state)),
+            ),
+            Instruction::I64Extend16S => push(
+                state,
+                self,
+                &format_args!("(uint64_t)(int64_t)(int16_t){}", pop!(state)),
+            ),
+            Instruction::I64Extend32S => push(
+                state,
+                self,
+                &format_args!("(uint64_t)(int64_t)(int32_t){}", pop!(state)),
+            ),
+
+            // ---- reinterpret ---------------------------------------------------
+            Instruction::I32ReinterpretF32 => {
+                push(state, self, &format_args!("{}", pop!(state)))
+            }
+            Instruction::I64ReinterpretF64 => {
+                push(state, self, &format_args!("{}", pop!(state)))
+            }
+            Instruction::F32ReinterpretI32 => {
+                push(state, self, &format_args!("{}", pop!(state)))
+            }
+            Instruction::F64ReinterpretI64 => {
+                push(state, self, &format_args!("{}", pop!(state)))
+            }
+
+            // ---- stack discipline ---------------------------------------------
+            Instruction::Drop => {
+                pop!(state);
+                Ok(())
+            }
+            Instruction::Nop => Ok(()),
+            Instruction::Unreachable => write!(self, "fprintf(stderr,\"wasm trap: unreachable\\n\");abort()"),
+            Instruction::Select => {
+                write!(self, "tmp={};tmp2={};tmp3={};", pop!(state), pop!(state), pop!(state))?;
+                push(state, self, &format_args!("(tmp2!=0ull?tmp3:tmp)"))
+            }
+
+            // ---- globals --------------------------------------------------------
+            Instruction::GlobalGet(global_index) => {
+                push(state, self, &format_args!("__wasm_globals[{global_index}]"))
+            }
+            Instruction::GlobalSet(global_index) => {
+                write!(self, "__wasm_globals[{global_index}]={}", pop!(state))
+            }
+
+            // ---- float constants (bits stored raw on the uint64 stack) ------
+            Instruction::F32Const(f) => push(state, self, &format_args!("{}ull", f.bits())),
+            Instruction::F64Const(f) => push(state, self, &format_args!("{}ull", f.bits())),
+
+            // ---- float unary/binary ops (f32 via float; f64 via double) -----
+            Instruction::F32Neg => push(
+                state,
+                self,
+                &format_args!("(uint32_t){}^0x80000000ull", pop!(state)),
+            ),
+            Instruction::F32Abs => push(
+                state,
+                self,
+                &format_args!("(uint32_t){}&0x7fffffffull", pop!(state)),
+            ),
+            Instruction::F32Ceil => {
+                push(state, self, &format_args!("__f32unop(__wasm_ceilf_{}", pop!(state)))
+            }
+            Instruction::F32Floor => {
+                push(state, self, &format_args!("__f32unop(__wasm_floorf_{}", pop!(state)))
+            }
+            Instruction::F32Trunc => {
+                push(state, self, &format_args!("__f32unop(__wasm_truncf_{}", pop!(state)))
+            }
+            Instruction::F32Nearest => {
+                push(state, self, &format_args!("__f32nearest_b({}", pop!(state)))
+            }
+            Instruction::F32Sqrt => {
+                push(state, self, &format_args!("__f32unop(__wasm_sqrtf_{}", pop!(state)))
+            }
+            Instruction::F32Add => {
+                push(state, self, &format_args!("__f32add({},{}", pop!(state), pop!(state)))
+            }
+            Instruction::F32Sub => {
+                push(state, self, &format_args!("__f32sub({},{}", pop!(state), pop!(state)))
+            }
+            Instruction::F32Mul => {
+                push(state, self, &format_args!("__f32mul({},{}", pop!(state), pop!(state)))
+            }
+            Instruction::F32Div => {
+                push(state, self, &format_args!("__f32div({},{}", pop!(state), pop!(state)))
+            }
+            Instruction::F32Min => {
+                push(state, self, &format_args!("__f32min_b({},{}", pop!(state), pop!(state)))
+            }
+            Instruction::F32Max => {
+                push(state, self, &format_args!("__f32max_b({},{}", pop!(state), pop!(state)))
+            }
+            Instruction::F32Copysign => {
+                push(state, self, &format_args!("(({}&0x7fffffffull)|({}&0x80000000ull))", pop!(state), pop!(state)))
+            }
+            Instruction::F64Abs => push(
+                state,
+                self,
+                &format_args!("{}&0x7fffffffffffffffull", pop!(state)),
+            ),
+            Instruction::F64Neg => push(
+                state,
+                self,
+                &format_args!("{}^0x8000000000000000ull", pop!(state)),
+            ),
+            Instruction::F64Ceil => {
+                push(state, self, &format_args!("__f64unop(__wasm_ceil_{}", pop!(state)))
+            }
+            Instruction::F64Floor => {
+                push(state, self, &format_args!("__f64unop(__wasm_floor_{}", pop!(state)))
+            }
+            Instruction::F64Trunc => {
+                push(state, self, &format_args!("__f64unop(__wasm_trunc_{}", pop!(state)))
+            }
+            Instruction::F64Nearest => {
+                push(state, self, &format_args!("__f64nearest_b({}", pop!(state)))
+            }
+            Instruction::F64Sqrt => {
+                push(state, self, &format_args!("__f64unop(__wasm_sqrt_{}", pop!(state)))
+            }
+            Instruction::F64Add => {
+                push(state, self, &format_args!("__f64add({},{}", pop!(state), pop!(state)))
+            }
+            Instruction::F64Sub => {
+                push(state, self, &format_args!("__f64sub({},{}", pop!(state), pop!(state)))
+            }
+            Instruction::F64Mul => {
+                push(state, self, &format_args!("__f64mul({},{}", pop!(state), pop!(state)))
+            }
+            Instruction::F64Div => {
+                push(state, self, &format_args!("__f64div({},{}", pop!(state), pop!(state)))
+            }
+            Instruction::F64Min => {
+                push(state, self, &format_args!("__f64min_b({},{}", pop!(state), pop!(state)))
+            }
+            Instruction::F64Max => {
+                push(state, self, &format_args!("__f64max_b({},{}", pop!(state), pop!(state)))
+            }
+            Instruction::F64Copysign => {
+                push(state, self, &format_args!("(({}&0x7fffffffffffffffull)|({}&0x8000000000000000ull))", pop!(state), pop!(state)))
+            }
+
+            // ---- conversions -------------------------------------------------
+            Instruction::F32ConvertI32S => {
+                push(state, self, &format_args!("__i32ToF32({}", pop!(state)))
+            }
+            Instruction::F32ConvertI32U => {
+                push(state, self, &format_args!("__u32ToF32({}", pop!(state)))
+            }
+            Instruction::F32ConvertI64S => {
+                push(state, self, &format_args!("__i64ToF32({}", pop!(state)))
+            }
+            Instruction::F32ConvertI64U => {
+                push(state, self, &format_args!("__u64ToF32({}", pop!(state)))
+            }
+            Instruction::F64ConvertI32S => {
+                push(state, self, &format_args!("__i32ToF64({}", pop!(state)))
+            }
+            Instruction::F64ConvertI32U => {
+                push(state, self, &format_args!("__u32ToF64({}", pop!(state)))
+            }
+            Instruction::F64ConvertI64S => {
+                push(state, self, &format_args!("__i64ToF64({}", pop!(state)))
+            }
+            Instruction::F64ConvertI64U => {
+                push(state, self, &format_args!("__u64ToF64({}", pop!(state)))
+            }
+            Instruction::F32DemoteF64 => {
+                push(state, self, &format_args!("__f64ToF32({}", pop!(state)))
+            }
+            Instruction::F64PromoteF32 => {
+                push(state, self, &format_args!("__f32ToF64({}", pop!(state)))
+            }
+            Instruction::I32TruncF32S => {
+                push(state, self, &format_args!("__truncF32S({}", pop!(state)))
+            }
+            Instruction::I32TruncF32U => {
+                push(state, self, &format_args!("__truncF32U({}", pop!(state)))
+            }
+            Instruction::I32TruncF64S => {
+                push(state, self, &format_args!("__truncF64S({}", pop!(state)))
+            }
+            Instruction::I32TruncF64U => {
+                push(state, self, &format_args!("__truncF64U({}", pop!(state)))
+            }
+            Instruction::I64TruncF32S => {
+                push(state, self, &format_args!("__truncF32to64S({}", pop!(state)))
+            }
+            Instruction::I64TruncF32U => {
+                push(state, self, &format_args!("__truncF32to64U({}", pop!(state)))
+            }
+            Instruction::I64TruncF64S => {
+                push(state, self, &format_args!("__truncF64to64S({}", pop!(state)))
+            }
+            Instruction::I64TruncF64U => {
+                push(state, self, &format_args!("__truncF64to64U({}", pop!(state)))
             }
 
             // ---- control flow ---------------------------------------------
@@ -832,6 +1264,10 @@ pub trait CWrite: Write {
                         write!(self, "blk_e_{label}:;}}")
                     }
                     Frame::TryTable(..) => unreachable!("TryTable handled before pop"),
+                    Frame::Function => {
+                        // Function-level end; closing brace emitted at EndBody.
+                        return Ok(());
+                    }
                 }
             }
 
@@ -956,6 +1392,34 @@ pub trait CWrite: Write {
                 write!(self, "tmp={};tmp2={};*(uint32_t*)(__wasm_mb({mem}u)+(uint32_t)tmp2+{off}ull)=(uint32_t)tmp",
                     pop!(state), pop!(state))
             }
+            Instruction::F32Load(memarg) => {
+                let off = memarg.offset;
+                let mem = memarg.memory_index;
+                write!(self, "tmp={};", pop!(state))?;
+                push(state, self, &format_args!(
+                    "(uint64_t)(uint32_t)__wasm_f32_bits(__wasm_mb({mem}u)+(uint32_t)tmp+{off}ull)"
+                ))
+            }
+            Instruction::F64Load(memarg) => {
+                let off = memarg.offset;
+                let mem = memarg.memory_index;
+                write!(self, "tmp={};", pop!(state))?;
+                push(state, self, &format_args!(
+                    "__wasm_f64_bits(__wasm_mb({mem}u)+(uint32_t)tmp+{off}ull)"
+                ))
+            }
+            Instruction::F32Store(memarg) => {
+                let off = memarg.offset;
+                let mem = memarg.memory_index;
+                write!(self, "tmp={};tmp2={};__wasm_store_f32(__wasm_mb({mem}u)+(uint32_t)tmp2+{off}ull,(uint32_t)tmp)",
+                    pop!(state), pop!(state))
+            }
+            Instruction::F64Store(memarg) => {
+                let off = memarg.offset;
+                let mem = memarg.memory_index;
+                write!(self, "tmp={};tmp2={};__wasm_store_f64(__wasm_mb({mem}u)+(uint32_t)tmp2+{off}ull,tmp)",
+                    pop!(state), pop!(state))
+            }
             // ---- memory.size / memory.grow ----------------------------------
             Instruction::MemorySize(mem) => {
                 push(state, self, &format_args!("(uint64_t)*__wasm_mp({mem}u)"))
@@ -1055,6 +1519,7 @@ pub trait CWrite: Write {
             MachOperator::StartFn { id, data } => {
                 // Offset by number of imports so function indices match Call sites.
                 let id = *id + func_imports.len() as u32;
+                state.stack.push(Frame::Function);
                 state.fn_id = id;
                 state.param_count = data.num_params;
                 state.ret_count = data.num_returns;
@@ -1087,7 +1552,7 @@ pub trait CWrite: Write {
                 let locals = state.local_count;
                 write!(
                     self,
-                    "static uint64_t*fn_{id}(uint64_t*restrict locals_in){{uint64_t locals_buf[{buf_sz}];memcpy(locals_buf,locals_in,{params}*sizeof(uint64_t));memset(locals_buf+{params},0,{locals}*sizeof(uint64_t));uint64_t*locals=locals_buf;uint64_t stack[WASM_STACK_SIZE];uint64_t tmp=0,tmp2=0,*tmp_locals=0;int sp=0;",
+                    "static uint64_t*fn_{id}(uint64_t*restrict locals_in){{uint64_t locals_buf[{buf_sz}];memcpy(locals_buf,locals_in,{params}*sizeof(uint64_t));memset(locals_buf+{params},0,{locals}*sizeof(uint64_t));uint64_t*locals=locals_buf;uint64_t stack[WASM_STACK_SIZE];uint64_t tmp=0,tmp2=0,tmp3=0,*tmp_locals=0;int sp=0;",
                     buf_sz = (params + locals).max(1),
                 )
             }
@@ -1111,11 +1576,17 @@ pub trait CWrite: Write {
             }
 
             MachOperator::EndBody => {
+                if let Some(Frame::Function) = state.stack.last() {
+                    state.stack.pop();
+                }
                 let id = state.fn_id;
                 let rets = state.ret_count;
+                // Label N = stack depth after popping the Function frame (+1
+                // for 1-based labels) targets early `br`-to-function returns.
+                let label = state.stack.len() + 1;
                 write!(
                     self,
-                    "memcpy(__rets_{id},stack+sp-{rets},{rets}*sizeof(uint64_t));return __rets_{id};}}"
+                    "fn_ret_{label}:;memcpy(__rets_{id},stack+sp-{rets},{rets}*sizeof(uint64_t));return __rets_{id};}}"
                 )
             }
 
@@ -1127,25 +1598,13 @@ pub trait CWrite: Write {
 /// Blanket implementation of `CWrite` for all `Write` types.
 impl<T: Write + ?Sized> CWrite for T {}
 
-/// Emit module-level globals and extern declarations for linear memory access.
-///
-/// Call once before the first `on_mach` loop. Declares:
-/// - `__wasm_mems[8]` / `__wasm_mem_pages_arr[8]` – per-memory-index byte buffer
-///   and page count backing arrays (set by the caller). Up to 8 memories.
-/// - `__wasm_mem` / `__wasm_mem_pages` – macro aliases for `__wasm_mems[0]` /
-///   `__wasm_mem_pages_arr[0]`, kept so single-memory callers/tests are unaffected.
-/// - `__wasm_mb(i)` / `__wasm_mp(i)` – multi-memory accessors used by every
-///   load/store/bulk-memory arm; `__wasm_mb` returns the byte pointer for memory
-///   `i`, `__wasm_mp` returns a pointer to its page count.
-/// - `__wasm_memory_grow` – extern function that the caller must provide to
-///   implement `memory.grow`; signature:
-///   `uint32_t __wasm_memory_grow(uint32_t delta, uint8_t** mem, uint32_t* pages)`
-///   It returns the old page count (or `UINT32_MAX` on failure) and updates
-///   `*mem` and `*pages`.
 pub fn c_module_preamble(w: &mut (dyn core::fmt::Write + '_)) -> core::fmt::Result {
     write!(
         w,
         "#include <setjmp.h>\n\
+         #include <stdio.h>\n\
+         #include <stdlib.h>\n\
+         #include <math.h>\n\
          #include <string.h>\n\
          typedef struct{{uint32_t tag;uint64_t vals[64];int nvals;}}__wasm_exn_t;\
          static __wasm_exn_t __wasm_exn;\
@@ -1157,16 +1616,67 @@ pub fn c_module_preamble(w: &mut (dyn core::fmt::Write + '_)) -> core::fmt::Resu
          #define __wasm_mem_pages (__wasm_mem_pages_arr[0])\n\
          static inline uint8_t*__wasm_mb(uint32_t i){{return __wasm_mems[i];}}\
          static inline uint32_t*__wasm_mp(uint32_t i){{return &__wasm_mem_pages_arr[i];}}\
-         extern uint32_t __wasm_memory_grow(uint32_t delta,uint8_t**mem,uint32_t*pages);"
+         extern uint32_t __wasm_memory_grow(uint32_t delta,uint8_t**mem,uint32_t*pages);\
+         static uint64_t __wasm_globals[1024]={{0}};\
+         static inline uint32_t __wasm_f32_bits(const void*p){{uint32_t v;memcpy(&v,p,4);return v;}}\
+         static inline uint64_t __wasm_f64_bits(const void*p){{uint64_t v;memcpy(&v,p,8);return v;}}\
+         static inline void __wasm_store_f32(void*p,uint32_t b){{memcpy(p,&b,4);}}\
+         static inline void __wasm_store_f64(void*p,uint64_t b){{memcpy(p,&b,8);}}\
+         static inline float __wasm_bits_f32(uint32_t b){{float v;memcpy(&v,&b,4);return v;}}\
+         static inline double __wasm_bits_f64(uint64_t b){{double v;memcpy(&v,&b,8);return v;}}\
+         static inline uint32_t __wasm_f32_bits_of(float v){{uint32_t b;memcpy(&b,&v,4);return b;}}\
+         static inline uint64_t __wasm_f64_bits_of(double v){{uint64_t b;memcpy(&b,&v,8);return b;}}\
+         static inline uint32_t __wasm_f32ceil_b(uint32_t a){{return __wasm_f32_bits_of(__builtin_ceilf(__wasm_bits_f32(a)));}}\
+         static inline uint32_t __wasm_f32floor_b(uint32_t a){{return __wasm_f32_bits_of(__builtin_floorf(__wasm_bits_f32(a)));}}\
+         static inline uint32_t __wasm_f32trunc_b(uint32_t a){{return __wasm_f32_bits_of(__builtin_truncf(__wasm_bits_f32(a)));}}\
+         static inline uint32_t __wasm_f32nearest_b(uint32_t a){{return __wasm_f32_bits_of(__builtin_nearbyintf(__wasm_bits_f32(a)));}}\
+         static inline uint32_t __wasm_f32sqrt_b(uint32_t a){{return __wasm_f32_bits_of(__builtin_sqrtf(__wasm_bits_f32(a)));}}\
+         static inline uint64_t __wasm_f64ceil_b(uint64_t a){{return __wasm_f64_bits_of(__builtin_ceil(__wasm_bits_f64(a)));}}\
+         static inline uint64_t __wasm_f64floor_b(uint64_t a){{return __wasm_f64_bits_of(__builtin_floor(__wasm_bits_f64(a)));}}\
+         static inline uint64_t __wasm_f64trunc_b(uint64_t a){{return __wasm_f64_bits_of(__builtin_trunc(__wasm_bits_f64(a)));}}\
+         static inline uint64_t __wasm_f64nearest_b(uint64_t a){{return __wasm_f64_bits_of(__builtin_nearbyint(__wasm_bits_f64(a)));}}\
+         static inline uint64_t __wasm_f64sqrt_b(uint64_t a){{return __wasm_f64_bits_of(__builtin_sqrt(__wasm_bits_f64(a)));}}\
+         static inline uint32_t __wasm_f32add(uint64_t a,uint64_t b){{return __wasm_f32_bits_of(__wasm_bits_f32((uint32_t)b)+__wasm_bits_f32((uint32_t)a));}}\
+         static inline uint32_t __wasm_f32sub(uint64_t a,uint64_t b){{return __wasm_f32_bits_of(__wasm_bits_f32((uint32_t)b)-__wasm_bits_f32((uint32_t)a));}}\
+         static inline uint32_t __wasm_f32mul(uint64_t a,uint64_t b){{return __wasm_f32_bits_of(__wasm_bits_f32((uint32_t)b)*__wasm_bits_f32((uint32_t)a));}}\
+         static inline uint32_t __wasm_f32div(uint64_t a,uint64_t b){{return __wasm_f32_bits_of(__wasm_bits_f32((uint32_t)b)/__wasm_bits_f32((uint32_t)a));}}\
+         static inline uint64_t __wasm_f64add(uint64_t a,uint64_t b){{return __wasm_f64_bits_of(__wasm_bits_f64(b)+__wasm_bits_f64(a));}}\
+         static inline uint64_t __wasm_f64sub(uint64_t a,uint64_t b){{return __wasm_f64_bits_of(__wasm_bits_f64(b)-__wasm_bits_f64(a));}}\
+         static inline uint64_t __wasm_f64mul(uint64_t a,uint64_t b){{return __wasm_f64_bits_of(__wasm_bits_f64(b)*__wasm_bits_f64(a));}}\
+         static inline uint64_t __wasm_f64div(uint64_t a,uint64_t b){{return __wasm_f64_bits_of(__wasm_bits_f64(b)/__wasm_bits_f64(a));}}\
+         static inline uint32_t __wasm_f32min_b(uint32_t x,uint32_t y){{float a=__wasm_bits_f32(x),b=__wasm_bits_f32(y);if(__builtin_isnan(a)||__builtin_isnan(b))return 0x7fc00000u;return (a<b||(a==0.0f&&b==0.0f&&__builtin_signbit(a)))?x:y;}}\
+         static inline uint32_t __wasm_f32max_b(uint32_t x,uint32_t y){{float a=__wasm_bits_f32(x),b=__wasm_bits_f32(y);if(__builtin_isnan(a)||__builtin_isnan(b))return 0x7fc00000u;return (a>b||(a==0.0f&&b==0.0f&&!__builtin_signbit(a)&&__builtin_signbit(b)))?x:y;}}\
+         static inline uint64_t __wasm_f64min_b(uint64_t x,uint64_t y){{double a=__wasm_bits_f64(x),b=__wasm_bits_f64(y);if(__builtin_isnan(a)||__builtin_isnan(b))return 0x7ff8000000000000ull;return (a<b||(a==0.0&&b==0.0&&__builtin_signbit(a)))?x:y;}}\
+         static inline uint64_t __wasm_f64max_b(uint64_t x,uint64_t y){{double a=__wasm_bits_f64(x),b=__wasm_bits_f64(y);if(__builtin_isnan(a)||__builtin_isnan(b))return 0x7ff8000000000000ull;return (a>b||(a==0.0&&b==0.0&&!__builtin_signbit(a)&&__builtin_signbit(b)))?x:y;}}\
+         static inline uint32_t __wasm_i32ToF32(uint32_t v){{return __wasm_f32_bits_of((float)(int32_t)v);}}\
+         static inline uint32_t __wasm_u32ToF32(uint32_t v){{return __wasm_f32_bits_of((float)v);}}\
+         static inline uint32_t __wasm_i64ToF32(uint64_t v){{return __wasm_f32_bits_of((float)(int64_t)v);}}\
+         static inline uint32_t __wasm_u64ToF32(uint64_t v){{return __wasm_f32_bits_of((float)v);}}\
+         static inline uint64_t __wasm_i32ToF64(uint32_t v){{return __wasm_f64_bits_of((double)(int32_t)v);}}\
+         static inline uint64_t __wasm_u32ToF64(uint32_t v){{return __wasm_f64_bits_of((double)v);}}\
+         static inline uint64_t __wasm_i64ToF64(uint64_t v){{return __wasm_f64_bits_of((double)(int64_t)v);}}\
+         static inline uint64_t __wasm_u64ToF64(uint64_t v){{return __wasm_f64_bits_of((double)v);}}\
+         static inline uint32_t __wasm_f64ToF32(uint64_t v){{return __wasm_f32_bits_of((float)__wasm_bits_f64(v));}}\
+         static inline uint64_t __wasm_f32ToF64(uint32_t v){{return __wasm_f64_bits_of((double)__wasm_bits_f32(v));}}\
+         static inline uint32_t __wasm_trap_trunc(void){{abort();return 0u;}}\
+         static inline uint32_t __wasm_truncF32S(uint32_t b){{float x=__wasm_bits_f32(b);if(__builtin_isnan(x))return __wasm_trap_trunc();float t=__builtin_truncf(x);if(t>=-2147483648.0f&&t<2147483648.0f)return (uint32_t)(int32_t)t;return __wasm_trap_trunc();}}\
+         static inline uint32_t __wasm_truncF32U(uint32_t b){{float x=__wasm_bits_f32(b);if(__builtin_isnan(x))return __wasm_trap_trunc();float t=__builtin_truncf(x);if(t>-1.0f&&t<4294967296.0f)return (uint32_t)t;return __wasm_trap_trunc();}}\
+         static inline uint32_t __wasm_truncF64S(uint64_t b){{double x=__wasm_bits_f64(b);if(__builtin_isnan(x))return __wasm_trap_trunc();double t=__builtin_trunc(x);if(t>=-2147483648.0&&t<2147483648.0)return (uint32_t)(int32_t)t;return __wasm_trap_trunc();}}\
+         static inline uint32_t __wasm_truncF64U(uint64_t b){{double x=__wasm_bits_f64(b);if(__builtin_isnan(x))return __wasm_trap_trunc();double t=__builtin_trunc(x);if(t>-1.0&&t<4294967296.0)return (uint32_t)t;return __wasm_trap_trunc();}}\
+         static inline uint64_t __wasm_truncF32to64S(uint32_t b){{float x=__wasm_bits_f32(b);if(__builtin_isnan(x))return __wasm_trap_trunc();float t=__builtin_truncf(x);if(t>=-9223372036854775808.0f&&t<9223372036854775808.0f)return (uint64_t)(int64_t)t;return __wasm_trap_trunc();}}\
+         static inline uint64_t __wasm_truncF32to64U(uint32_t b){{float x=__wasm_bits_f32(b);if(__builtin_isnan(x))return __wasm_trap_trunc();float t=__builtin_truncf(x);if(t>-1.0f&&t<18446744073709551616.0f)return (uint64_t)t;return __wasm_trap_trunc();}}\
+         static inline uint64_t __wasm_truncF64to64S(uint64_t b){{double x=__wasm_bits_f64(b);if(__builtin_isnan(x))return __wasm_trap_trunc();double t=__builtin_trunc(x);if(t>=-9223372036854775808.0&&t<9223372036854775808.0)return (uint64_t)(int64_t)t;return __wasm_trap_trunc();}}\
+         static inline uint64_t __wasm_truncF64to64U(uint64_t b){{double x=__wasm_bits_f64(b);if(__builtin_isnan(x))return __wasm_trap_trunc();double t=__builtin_trunc(x);if(t>-1.0&&t<18446744073709551616.0)return (uint64_t)t;return __wasm_trap_trunc();}}\
+         static inline uint64_t __wasm_div_check0(uint64_t d,uint64_t r){{if(d==0ull){{abort();}}return r;}}\
+         static inline uint32_t __wasm_sdiv32(int32_t b,int32_t a){{if(a==0){{abort();}}if(b==(-2147483647-1)&&a==-1){{abort();}}return (uint32_t)(b/a);}}\
+         static inline uint32_t __wasm_srem32(int32_t b,int32_t a){{if(a==0){{abort();}}return (uint32_t)(b%a);}}\
+         static inline uint64_t __wasm_sdiv64(int64_t b,int64_t a){{if(a==0){{abort();}}if(b==INT64_MIN&&a==-1){{abort();}}return (uint64_t)(b/a);}}\
+         static inline uint64_t __wasm_srem64(int64_t b,int64_t a){{if(a==0){{abort();}}return (uint64_t)(b%a);}}\
+         "
     )
 }
 
-/// Emit a `__wasm_init_data()` function that copies active data segments into
-/// `__wasm_mem`.
-///
-/// Each `(byte_offset, bytes)` pair becomes one `memcpy` call.  The caller
-/// must invoke `__wasm_init_data()` after `__wasm_mem` has been initialised
-/// and is large enough to hold all segments.
+
 pub fn c_emit_data_segments(
     w: &mut (dyn core::fmt::Write + '_),
     segments: &[(u32, &[u8])],

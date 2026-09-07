@@ -35,7 +35,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 struct NativeAsmWriter(String);
 
 impl std::fmt::Write for NativeAsmWriter {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result { self.0.write_str(s) }
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.0.write_str(s)
+    }
 }
 
 portal_solutions_asm_x86_64::writers!(NativeAsmWriter);
@@ -45,20 +47,25 @@ portal_solutions_asm_riscv32::writers!(NativeAsmWriter);
 portal_solutions_asm_arm::writers!(NativeAsmWriter);
 portal_solutions_asm_x86::writers!(NativeAsmWriter);
 
+use portal_solutions_blitz_c::{
+    CWrite, State as CState, c_emit_data_segments, c_emit_exports, c_emit_import_decls,
+    c_module_preamble,
+};
 use portal_solutions_blitz_common::HandleOpError;
 use portal_solutions_blitz_common::{
     dce_pass,
     ops::mach_operators,
-    wasmparser::{self, DataKind, FuncType as WpFuncType, Operator},
     wasm_encoder::{
-        self,
-        reencode::RoundtripReencoder,
-        Catch, CodeSection, DataSection, ExportKind, ExportSection, Function, FunctionSection,
-        Instruction, MemorySection, MemoryType, Module, TagSection, TagType, TypeSection, ValType,
+        self, Catch, CodeSection, DataSection, ExportKind, ExportSection, Function,
+        FunctionSection, Instruction, MemorySection, MemoryType, Module, TagSection, TagType,
+        TypeSection, ValType, reencode::RoundtripReencoder,
     },
+    wasmparser::{self, DataKind, FuncType as WpFuncType, Operator},
 };
-use portal_solutions_blitz_c::{c_emit_data_segments, c_emit_exports, c_emit_import_decls, c_module_preamble, CWrite, State as CState};
-use portal_solutions_blitz_js::{js_apply_data_segments, js_emit_exports, js_emit_imports, js_module_preamble, JsWrite, State as JsState};
+use portal_solutions_blitz_js::{
+    JsWrite, State as JsState, js_apply_data_segments, js_emit_exports, js_emit_imports,
+    js_module_preamble,
+};
 /// Global counter for unique temp-file names (needed for parallel test runs).
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -73,7 +80,9 @@ fn make_module(params: &[ValType], results: &[ValType], instrs: &[Instruction<'_
     let mut module = Module::new();
 
     let mut types = TypeSection::new();
-    types.ty().function(params.iter().cloned(), results.iter().cloned());
+    types
+        .ty()
+        .function(params.iter().cloned(), results.iter().cloned());
     module.section(&types);
 
     let mut functions = FunctionSection::new();
@@ -162,13 +171,23 @@ fn compile_js(wasm: &[u8]) -> String {
     let ops = dce_pass!(raw_ops);
 
     let mut out = String::new();
+    js_module_preamble(&mut out).unwrap();
     let mut state = JsState::default();
     let mut reencoder = RoundtripReencoder;
 
     for op in ops {
         let op = op.unwrap();
-        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder)
-            .unwrap();
+        JsWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
     out
 }
@@ -188,13 +207,23 @@ fn compile_c(wasm: &[u8]) -> String {
     let ops = dce_pass!(raw_ops);
 
     let mut out = String::new();
+    c_module_preamble(&mut out).unwrap();
     let mut state = CState::default();
     let mut reencoder = RoundtripReencoder;
 
     for op in ops {
         let op = op.unwrap();
-        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder)
-            .unwrap();
+        CWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
     out
 }
@@ -233,7 +262,11 @@ fn run_js(js_src: &str, bigint_args: &[i64]) -> Vec<i64> {
         .unwrap()
         .lines()
         .filter(|l| !l.is_empty())
-        .map(|l| l.trim().parse::<i64>().expect("expected integer line from node"))
+        .map(|l| {
+            l.trim()
+                .parse::<i64>()
+                .expect("expected integer line from node")
+        })
         .collect()
 }
 
@@ -253,12 +286,11 @@ fn run_c(c_src: &str, fn_id: u32, args: &[u64], rets: usize) -> Vec<u64> {
 
     // Build main(): declare a zero-padded arg array so 0-param functions still
     // receive a valid (non-null) pointer.
-    let mut main_body = format!(
-        "int main(){{uint64_t _args[{n}]={{",
-        n = args.len().max(1)
-    );
+    let mut main_body = format!("int main(){{uint64_t _args[{n}]={{", n = args.len().max(1));
     for (i, &a) in args.iter().enumerate() {
-        if i > 0 { main_body.push(','); }
+        if i > 0 {
+            main_body.push(',');
+        }
         main_body.push_str(&format!("{a}ull"));
     }
     // Pad to at least 1 element so the pointer is non-null.
@@ -279,7 +311,7 @@ fn run_c(c_src: &str, fn_id: u32, args: &[u64], rets: usize) -> Vec<u64> {
 
     let compile = std::process::Command::new("cc")
         .arg(&src_path)
-        .arg("-Wno-unsequenced")   // C backend may use sp in single expression
+        .arg("-Wno-unsequenced") // C backend may use sp in single expression
         .arg("-o")
         .arg(&bin_path)
         .output()
@@ -296,7 +328,11 @@ fn run_c(c_src: &str, fn_id: u32, args: &[u64], rets: usize) -> Vec<u64> {
         .output()
         .expect("failed to run compiled binary");
 
-    assert!(run.status.success(), "binary exited non-zero: {}", String::from_utf8_lossy(&run.stderr));
+    assert!(
+        run.status.success(),
+        "binary exited non-zero: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
 
     // Clean up.
     let _ = std::fs::remove_file(&src_path);
@@ -310,19 +346,23 @@ fn run_c(c_src: &str, fn_id: u32, args: &[u64], rets: usize) -> Vec<u64> {
         .collect()
 }
 
-
-
 // ---------------------------------------------------------------------------
 // Memory helpers
 // ---------------------------------------------------------------------------
 
 /// Build a WASM module that declares one linear memory page and a single
 /// function.  Used for testing load/store operations.
-fn make_module_with_memory(params: &[ValType], results: &[ValType], instrs: &[Instruction<'_>]) -> Vec<u8> {
+fn make_module_with_memory(
+    params: &[ValType],
+    results: &[ValType],
+    instrs: &[Instruction<'_>],
+) -> Vec<u8> {
     let mut module = Module::new();
 
     let mut types = TypeSection::new();
-    types.ty().function(params.iter().cloned(), results.iter().cloned());
+    types
+        .ty()
+        .function(params.iter().cloned(), results.iter().cloned());
     module.section(&types);
 
     let mut functions = FunctionSection::new();
@@ -331,7 +371,13 @@ fn make_module_with_memory(params: &[ValType], results: &[ValType], instrs: &[In
 
     // One page (64 KiB) of linear memory.
     let mut memories = MemorySection::new();
-    memories.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    memories.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
     module.section(&memories);
 
     let mut exports = ExportSection::new();
@@ -373,8 +419,17 @@ fn compile_js_with_mem(wasm: &[u8]) -> String {
 
     for op in ops {
         let op = op.unwrap();
-        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder)
-            .unwrap();
+        JsWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
     out
 }
@@ -401,8 +456,17 @@ fn compile_c_with_mem(wasm: &[u8]) -> String {
 
     for op in ops {
         let op = op.unwrap();
-        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder)
-            .unwrap();
+        CWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
     out
 }
@@ -411,7 +475,10 @@ fn compile_c_with_mem(wasm: &[u8]) -> String {
 /// `$mem` before the function is called.
 fn run_js_with_mem(js_src: &str, mem_bytes: &[u8], args: &[i64]) -> Vec<i64> {
     let bytes_js: Vec<String> = mem_bytes.iter().map(|b| b.to_string()).collect();
-    let mem_init = format!("$mem=new Uint8Array([{}]);$mem_dv=new DataView($mem.buffer);", bytes_js.join(","));
+    let mem_init = format!(
+        "$mem=new Uint8Array([{}]);$mem_dv=new DataView($mem.buffer);",
+        bytes_js.join(",")
+    );
 
     let fn_args: Vec<String> = args.iter().map(|v| format!("{v}n")).collect();
     let harness = format!(
@@ -437,13 +504,23 @@ fn run_js_with_mem(js_src: &str, mem_bytes: &[u8], args: &[i64]) -> Vec<i64> {
         .unwrap()
         .lines()
         .filter(|l| !l.is_empty())
-        .map(|l| l.trim().parse::<i64>().expect("expected integer line from node"))
+        .map(|l| {
+            l.trim()
+                .parse::<i64>()
+                .expect("expected integer line from node")
+        })
         .collect()
 }
 
 /// Run C with a pre-initialised memory buffer. `mem_bytes` is written into
 /// `__wasm_mem` before the function is called.
-fn run_c_with_mem(c_src: &str, mem_bytes: &[u8], fn_id: u32, args: &[u64], rets: usize) -> Vec<u64> {
+fn run_c_with_mem(
+    c_src: &str,
+    mem_bytes: &[u8],
+    fn_id: u32,
+    args: &[u64],
+    rets: usize,
+) -> Vec<u64> {
     use std::io::Write as _;
 
     let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -462,10 +539,14 @@ fn run_c_with_mem(c_src: &str, mem_bytes: &[u8], fn_id: u32, args: &[u64], rets:
         args.len().max(1)
     );
     for (i, &a) in args.iter().enumerate() {
-        if i > 0 { main_body.push(','); }
+        if i > 0 {
+            main_body.push(',');
+        }
         main_body.push_str(&format!("{a}ull"));
     }
-    if args.is_empty() { main_body.push('0'); }
+    if args.is_empty() {
+        main_body.push('0');
+    }
     main_body.push_str(&format!("}};uint64_t*_r=fn_{fn_id}(_args);"));
     for i in 0..rets {
         main_body.push_str(&format!("printf(\"%llu\\n\",_r[{i}]);"));
@@ -497,7 +578,11 @@ fn run_c_with_mem(c_src: &str, mem_bytes: &[u8], fn_id: u32, args: &[u64], rets:
         .output()
         .expect("failed to run compiled binary");
 
-    assert!(run.status.success(), "binary exited non-zero: {}", String::from_utf8_lossy(&run.stderr));
+    assert!(
+        run.status.success(),
+        "binary exited non-zero: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
 
     let _ = std::fs::remove_file(&src_path);
     let _ = std::fs::remove_file(&bin_path);
@@ -525,7 +610,11 @@ fn test_i64_store_load_js() {
     //   i64.load  offset=0
     // )
     use wasm_encoder::MemArg;
-    let memarg = MemArg { offset: 0, align: 3, memory_index: 0 };
+    let memarg = MemArg {
+        offset: 0,
+        align: 3,
+        memory_index: 0,
+    };
     let wasm = make_module_with_memory(
         &[ValType::I32, ValType::I64],
         &[ValType::I64],
@@ -552,7 +641,11 @@ fn test_i64_store_load_js() {
 #[test]
 fn test_i64_store_load_c() {
     use wasm_encoder::MemArg;
-    let memarg = MemArg { offset: 0, align: 3, memory_index: 0 };
+    let memarg = MemArg {
+        offset: 0,
+        align: 3,
+        memory_index: 0,
+    };
     let wasm = make_module_with_memory(
         &[ValType::I32, ValType::I64],
         &[ValType::I64],
@@ -567,14 +660,21 @@ fn test_i64_store_load_c() {
     let c = compile_c_with_mem(&wasm);
     let mem = vec![0u8; 64];
     assert_eq!(run_c_with_mem(&c, &mem, 0, &[8, 42], 1), vec![42]);
-    assert_eq!(run_c_with_mem(&c, &mem, 0, &[0, 0xdeadbeef_cafebabe], 1), vec![0xdeadbeef_cafebabe]);
+    assert_eq!(
+        run_c_with_mem(&c, &mem, 0, &[0, 0xdeadbeef_cafebabe], 1),
+        vec![0xdeadbeef_cafebabe]
+    );
 }
 
 /// i32.store then i32.load round-trips a 32-bit value.
 #[test]
 fn test_i32_store_load_js() {
     use wasm_encoder::MemArg;
-    let memarg = MemArg { offset: 0, align: 2, memory_index: 0 };
+    let memarg = MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    };
     let wasm = make_module_with_memory(
         &[ValType::I32, ValType::I32],
         &[ValType::I32],
@@ -588,13 +688,20 @@ fn test_i32_store_load_js() {
     );
     let js = compile_js_with_mem(&wasm);
     let mem = vec![0u8; 64];
-    assert_eq!(run_js_with_mem(&js, &mem, &[4, 0xdeadbeef_u32 as i64]), vec![0xdeadbeef_u32 as i64]);
+    assert_eq!(
+        run_js_with_mem(&js, &mem, &[4, 0xdeadbeef_u32 as i64]),
+        vec![0xdeadbeef_u32 as i64]
+    );
 }
 
 #[test]
 fn test_i32_store_load_c() {
     use wasm_encoder::MemArg;
-    let memarg = MemArg { offset: 0, align: 2, memory_index: 0 };
+    let memarg = MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    };
     let wasm = make_module_with_memory(
         &[ValType::I32, ValType::I32],
         &[ValType::I32],
@@ -608,7 +715,10 @@ fn test_i32_store_load_c() {
     );
     let c = compile_c_with_mem(&wasm);
     let mem = vec![0u8; 64];
-    assert_eq!(run_c_with_mem(&c, &mem, 0, &[4, 0xdeadbeef], 1), vec![0xdeadbeef]);
+    assert_eq!(
+        run_c_with_mem(&c, &mem, 0, &[4, 0xdeadbeef], 1),
+        vec![0xdeadbeef]
+    );
 }
 
 /// Non-zero memarg.offset: store at addr=0, load with offset=8 reads the same location.
@@ -616,8 +726,16 @@ fn test_i32_store_load_c() {
 fn test_memarg_offset_js() {
     use wasm_encoder::MemArg;
     // store with offset=0, load with offset=8 but addr-8
-    let store_arg = MemArg { offset: 0, align: 3, memory_index: 0 };
-    let load_arg  = MemArg { offset: 8, align: 3, memory_index: 0 };
+    let store_arg = MemArg {
+        offset: 0,
+        align: 3,
+        memory_index: 0,
+    };
+    let load_arg = MemArg {
+        offset: 8,
+        align: 3,
+        memory_index: 0,
+    };
     let wasm = make_module_with_memory(
         &[ValType::I64],
         &[ValType::I64],
@@ -644,8 +762,16 @@ fn test_memarg_offset_js() {
 #[test]
 fn test_memarg_offset_c() {
     use wasm_encoder::MemArg;
-    let store_arg = MemArg { offset: 0, align: 3, memory_index: 0 };
-    let load_arg  = MemArg { offset: 8, align: 3, memory_index: 0 };
+    let store_arg = MemArg {
+        offset: 0,
+        align: 3,
+        memory_index: 0,
+    };
+    let load_arg = MemArg {
+        offset: 8,
+        align: 3,
+        memory_index: 0,
+    };
     let wasm = make_module_with_memory(
         &[ValType::I64],
         &[ValType::I64],
@@ -672,7 +798,10 @@ fn test_const_js() {
     let wasm = make_module(&[], &[ValType::I32], &[Instruction::I32Const(42)]);
     let js = compile_js(&wasm);
     assert!(js.contains("42n"), "expected BigInt literal 42n in: {js}");
-    assert!(js.contains("$0"), "expected function identifier $0 in: {js}");
+    assert!(
+        js.contains("$0"),
+        "expected function identifier $0 in: {js}"
+    );
 }
 
 #[test]
@@ -680,7 +809,10 @@ fn test_const_c() {
     let wasm = make_module(&[], &[ValType::I32], &[Instruction::I32Const(42)]);
     let c = compile_c(&wasm);
     assert!(c.contains("42u"), "expected 42u in C output: {c}");
-    assert!(c.contains("fn_0"), "expected function identifier fn_0 in: {c}");
+    assert!(
+        c.contains("fn_0"),
+        "expected function identifier fn_0 in: {c}"
+    );
     assert!(c.contains("uint64_t"), "expected uint64_t in: {c}");
 }
 
@@ -690,7 +822,11 @@ fn test_add_js() {
     let wasm = make_module(
         &[ValType::I32, ValType::I32],
         &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Add],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Add,
+        ],
     );
     let js = compile_js(&wasm);
     assert!(js.contains("locals[0]"), "expected locals[0] in: {js}");
@@ -704,7 +840,11 @@ fn test_add_c() {
     let wasm = make_module(
         &[ValType::I32, ValType::I32],
         &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Add],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Add,
+        ],
     );
     let c = compile_c(&wasm);
     assert!(c.contains("locals[0]"), "expected locals[0] in: {c}");
@@ -724,12 +864,19 @@ fn test_i32sub_operand_order_js() {
     let wasm = make_module(
         &[ValType::I32, ValType::I32],
         &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Sub],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Sub,
+        ],
     );
     let js = compile_js(&wasm);
     // After the fix, the lambda body must compute b-a (lhs minus rhs).
     assert!(js.contains("b-a"), "expected b-a (lhs-rhs) in: {js}");
-    assert!(!js.contains("a-b"), "must NOT contain a-b (rhs-lhs) in: {js}");
+    assert!(
+        !js.contains("a-b"),
+        "must NOT contain a-b (rhs-lhs) in: {js}"
+    );
 }
 
 #[test]
@@ -737,7 +884,11 @@ fn test_i32sub_operand_order_c() {
     let wasm = make_module(
         &[ValType::I32, ValType::I32],
         &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Sub],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Sub,
+        ],
     );
     let c = compile_c(&wasm);
     // C backend emits casts: (uint32_t)tmp2-(uint32_t)tmp = lhs-rhs.
@@ -757,11 +908,17 @@ fn test_i32divu_operand_order_js() {
     let wasm = make_module(
         &[ValType::I32, ValType::I32],
         &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32DivU],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32DivU,
+        ],
     );
     let js = compile_js(&wasm);
-    assert!(js.contains("b/a"), "expected b/a in: {js}");
-    assert!(!js.contains("a/b"), "must NOT contain a/b in: {js}");
+    assert!(
+        js.contains("__udiv("),
+        "expected __udiv helper call in: {js}"
+    );
 }
 
 /// I32Shl: shift amount is rhs (top of stack = first pop = `a`), value is lhs (second pop = `b`).
@@ -771,7 +928,11 @@ fn test_i32shl_operand_order_js() {
     let wasm = make_module(
         &[ValType::I32, ValType::I32],
         &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Shl],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Shl,
+        ],
     );
     let js = compile_js(&wasm);
     assert!(js.contains("b<<a"), "expected b<<a in: {js}");
@@ -784,7 +945,11 @@ fn test_i64sub_operand_order_js() {
     let wasm = make_module(
         &[ValType::I64, ValType::I64],
         &[ValType::I64],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I64Sub],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I64Sub,
+        ],
     );
     let js = compile_js(&wasm);
     assert!(js.contains("b-a"), "expected b-a (lhs-rhs) in: {js}");
@@ -802,12 +967,19 @@ fn test_i32shrs_paren_js() {
     let wasm = make_module(
         &[ValType::I32, ValType::I32],
         &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32ShrS],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32ShrS,
+        ],
     );
     let js = compile_js(&wasm);
     // Must contain `toUint(` followed eventually by `,32)` where 32 is INSIDE.
     assert!(js.contains("toUint("), "expected toUint( in: {js}");
-    assert!(js.contains(",32)"), "expected ,32) (bit-width inside toUint) in: {js}");
+    assert!(
+        js.contains(",32)"),
+        "expected ,32) (bit-width inside toUint) in: {js}"
+    );
     // The bad pattern was `mask32),32)` — the mask close-paren before the 32 arg.
     assert!(
         !js.contains("mask32),32)"),
@@ -821,7 +993,11 @@ fn test_i64shrs_paren_js() {
     let wasm = make_module(
         &[ValType::I64, ValType::I64],
         &[ValType::I64],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I64ShrS],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I64ShrS,
+        ],
     );
     let js = compile_js(&wasm);
     assert!(js.contains("toUint("), "expected toUint( in: {js}");
@@ -850,7 +1026,10 @@ fn test_localset_syntax_js() {
     );
     let js = compile_js(&wasm);
     assert!(js.contains("locals[0]="), "expected locals[0]= in: {js}");
-    assert!(!js.contains("locals[0="), "must NOT contain locals[0= in: {js}");
+    assert!(
+        !js.contains("locals[0="),
+        "must NOT contain locals[0= in: {js}"
+    );
 }
 
 #[test]
@@ -866,7 +1045,10 @@ fn test_localset_syntax_c() {
     );
     let c = compile_c(&wasm);
     assert!(c.contains("locals[0]="), "expected locals[0]= in: {c}");
-    assert!(!c.contains("locals[0="), "must NOT contain locals[0= in: {c}");
+    assert!(
+        !c.contains("locals[0="),
+        "must NOT contain locals[0= in: {c}"
+    );
 }
 
 /// LocalTee: must emit `(locals[N]=…)` not `locals[N=…`.
@@ -879,7 +1061,10 @@ fn test_localtee_syntax_js() {
     );
     let js = compile_js(&wasm);
     assert!(js.contains("locals[0]="), "expected locals[0]= in: {js}");
-    assert!(!js.contains("locals[0="), "must NOT contain locals[0= in: {js}");
+    assert!(
+        !js.contains("locals[0="),
+        "must NOT contain locals[0= in: {js}"
+    );
 }
 
 #[test]
@@ -891,7 +1076,10 @@ fn test_localtee_syntax_c() {
     );
     let c = compile_c(&wasm);
     assert!(c.contains("locals[0]="), "expected locals[0]= in: {c}");
-    assert!(!c.contains("locals[0="), "must NOT contain locals[0= in: {c}");
+    assert!(
+        !c.contains("locals[0="),
+        "must NOT contain locals[0= in: {c}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -927,7 +1115,10 @@ fn test_brtable_tmp_assign_js() {
     );
     let js = compile_js(&wasm);
     // The fix emits `tmp=<pop>;` before the comparison loop.
-    assert!(js.contains("tmp="), "expected tmp= assignment from BrTable in: {js}");
+    assert!(
+        js.contains("tmp="),
+        "expected tmp= assignment from BrTable in: {js}"
+    );
 }
 
 #[test]
@@ -950,7 +1141,10 @@ fn test_brtable_tmp_assign_c() {
         ],
     );
     let c = compile_c(&wasm);
-    assert!(c.contains("tmp="), "expected tmp= assignment from BrTable in: {c}");
+    assert!(
+        c.contains("tmp="),
+        "expected tmp= assignment from BrTable in: {c}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -975,7 +1169,10 @@ fn test_loop_continue_js() {
     );
     let js = compile_js(&wasm);
     // Non-opt mode: `continue l{n}`, never `break l{n}` for a loop target.
-    assert!(js.contains("continue l"), "expected `continue l` for loop back-edge in: {js}");
+    assert!(
+        js.contains("continue l"),
+        "expected `continue l` for loop back-edge in: {js}"
+    );
 }
 
 #[test]
@@ -991,7 +1188,10 @@ fn test_loop_continue_c() {
     );
     let c = compile_c(&wasm);
     // C backend uses goto lp_s_{n} for loop back-edges.
-    assert!(c.contains("goto lp_s_"), "expected `goto lp_s_` for loop back-edge in: {c}");
+    assert!(
+        c.contains("goto lp_s_"),
+        "expected `goto lp_s_` for loop back-edge in: {c}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1001,11 +1201,15 @@ fn test_loop_continue_c() {
 /// The JS backend must emit `__sig` property with correct param/result counts.
 #[test]
 fn test_js_function_signature() {
-    let wasm = make_module(&[ValType::I32, ValType::I32], &[ValType::I32], &[
-        Instruction::LocalGet(0),
-        Instruction::LocalGet(1),
-        Instruction::I32Add,
-    ]);
+    let wasm = make_module(
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Add,
+        ],
+    );
     let js = compile_js(&wasm);
     assert!(js.contains("params:2"), "expected params:2 in: {js}");
     assert!(js.contains("rets:1"), "expected rets:1 in: {js}");
@@ -1014,11 +1218,15 @@ fn test_js_function_signature() {
 /// The C backend must emit the signature struct with correct values.
 #[test]
 fn test_c_function_signature() {
-    let wasm = make_module(&[ValType::I32, ValType::I32], &[ValType::I32], &[
-        Instruction::LocalGet(0),
-        Instruction::LocalGet(1),
-        Instruction::I32Add,
-    ]);
+    let wasm = make_module(
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Add,
+        ],
+    );
     let c = compile_c(&wasm);
     assert!(c.contains(".params=2"), "expected .params=2 in: {c}");
     assert!(c.contains(".rets=1"), "expected .rets=1 in: {c}");
@@ -1030,14 +1238,22 @@ fn test_c_function_signature() {
 
 #[test]
 fn test_i64const_js() {
-    let wasm = make_module(&[], &[ValType::I64], &[Instruction::I64Const(0xDEAD_BEEF_u64 as i64)]);
+    let wasm = make_module(
+        &[],
+        &[ValType::I64],
+        &[Instruction::I64Const(0xDEAD_BEEF_u64 as i64)],
+    );
     let js = compile_js(&wasm);
     assert!(js.contains("n"), "expected BigInt suffix n in: {js}");
 }
 
 #[test]
 fn test_i64const_c() {
-    let wasm = make_module(&[], &[ValType::I64], &[Instruction::I64Const(0xDEAD_BEEF_u64 as i64)]);
+    let wasm = make_module(
+        &[],
+        &[ValType::I64],
+        &[Instruction::I64Const(0xDEAD_BEEF_u64 as i64)],
+    );
     let c = compile_c(&wasm);
     assert!(c.contains("ull"), "expected ull suffix in: {c}");
 }
@@ -1069,7 +1285,11 @@ fn test_exec_add_js() {
     let wasm = make_module(
         &[ValType::I32, ValType::I32],
         &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Add],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Add,
+        ],
     );
     let js = compile_js(&wasm);
     assert_eq!(run_js(&js, &[5, 3]), vec![8]);
@@ -1081,7 +1301,11 @@ fn test_exec_add_c() {
     let wasm = make_module(
         &[ValType::I32, ValType::I32],
         &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Add],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Add,
+        ],
     );
     let c = compile_c(&wasm);
     assert_eq!(run_c(&c, 0, &[5, 3], 1), vec![8]);
@@ -1095,7 +1319,11 @@ fn test_exec_sub_js() {
     let wasm = make_module(
         &[ValType::I32, ValType::I32],
         &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Sub],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Sub,
+        ],
     );
     let js = compile_js(&wasm);
     // 10 - 3 = 7, NOT 3 - 10 = -7
@@ -1111,7 +1339,11 @@ fn test_exec_sub_c() {
     let wasm = make_module(
         &[ValType::I32, ValType::I32],
         &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Sub],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Sub,
+        ],
     );
     let c = compile_c(&wasm);
     assert_eq!(run_c(&c, 0, &[10, 3], 1), vec![7]);
@@ -1125,7 +1357,11 @@ fn test_exec_divu_js() {
     let wasm = make_module(
         &[ValType::I32, ValType::I32],
         &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32DivU],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32DivU,
+        ],
     );
     let js = compile_js(&wasm);
     // 10 / 2 = 5, NOT 2 / 10 = 0
@@ -1137,7 +1373,11 @@ fn test_exec_divu_c() {
     let wasm = make_module(
         &[ValType::I32, ValType::I32],
         &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32DivU],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32DivU,
+        ],
     );
     let c = compile_c(&wasm);
     assert_eq!(run_c(&c, 0, &[10, 2], 1), vec![5]);
@@ -1199,7 +1439,11 @@ fn test_exec_i64sub_js() {
     let wasm = make_module(
         &[ValType::I64, ValType::I64],
         &[ValType::I64],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I64Sub],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I64Sub,
+        ],
     );
     let js = compile_js(&wasm);
     assert_eq!(run_js(&js, &[100, 37]), vec![63]);
@@ -1210,7 +1454,11 @@ fn test_exec_i64sub_c() {
     let wasm = make_module(
         &[ValType::I64, ValType::I64],
         &[ValType::I64],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I64Sub],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I64Sub,
+        ],
     );
     let c = compile_c(&wasm);
     assert_eq!(run_c(&c, 0, &[100, 37], 1), vec![63]);
@@ -1222,7 +1470,11 @@ fn test_exec_shl_js() {
     let wasm = make_module(
         &[ValType::I32, ValType::I32],
         &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Shl],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Shl,
+        ],
     );
     let js = compile_js(&wasm);
     // 3 << 4 = 48
@@ -1234,7 +1486,11 @@ fn test_exec_shl_c() {
     let wasm = make_module(
         &[ValType::I32, ValType::I32],
         &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Shl],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Shl,
+        ],
     );
     let c = compile_c(&wasm);
     assert_eq!(run_c(&c, 0, &[3, 4], 1), vec![48]);
@@ -1273,8 +1529,16 @@ fn test_exec_brtable_js() {
         ],
     );
     let js = compile_js(&wasm);
-    assert_eq!(run_js(&js, &[0]), vec![20], "selector 0 → target 0 (inner block) → falls to i32.const 20, br 1 → 20");
-    assert_eq!(run_js(&js, &[1]), vec![10], "selector 1 → default (middle block) → falls to i32.const 10 → 10");
+    assert_eq!(
+        run_js(&js, &[0]),
+        vec![20],
+        "selector 0 → target 0 (inner block) → falls to i32.const 20, br 1 → 20"
+    );
+    assert_eq!(
+        run_js(&js, &[1]),
+        vec![10],
+        "selector 1 → default (middle block) → falls to i32.const 10 → 10"
+    );
 }
 
 #[test]
@@ -1297,8 +1561,16 @@ fn test_exec_brtable_c() {
         ],
     );
     let c = compile_c(&wasm);
-    assert_eq!(run_c(&c, 0, &[0], 1), vec![20], "selector 0 → target 0 (inner block) → i32.const 20, br 1 → 20");
-    assert_eq!(run_c(&c, 0, &[1], 1), vec![10], "selector 1 → default (middle block) → i32.const 10 → 10");
+    assert_eq!(
+        run_c(&c, 0, &[0], 1),
+        vec![20],
+        "selector 0 → target 0 (inner block) → i32.const 20, br 1 → 20"
+    );
+    assert_eq!(
+        run_c(&c, 0, &[1], 1),
+        vec![10],
+        "selector 1 → default (middle block) → i32.const 10 → 10"
+    );
 }
 
 /// A loop with a counter: counts down from N to 0, returns N total iterations.
@@ -1351,18 +1623,18 @@ fn test_exec_loop_counter_js() {
         func.instruction(&Instruction::I32Sub);
         func.instruction(&Instruction::LocalSet(0));
         func.instruction(&Instruction::Br(1)); // br $lp (depth 1 from if = loop)
-        func.instruction(&Instruction::End);   // end if
-        func.instruction(&Instruction::End);   // end loop
+        func.instruction(&Instruction::End); // end if
+        func.instruction(&Instruction::End); // end loop
         func.instruction(&Instruction::LocalGet(1)); // acc
         func.instruction(&Instruction::Return);
-        func.instruction(&Instruction::End);   // end func
+        func.instruction(&Instruction::End); // end func
         code.function(&func);
         module.section(&code);
         module.finish()
     };
     let js = compile_js(&wasm);
-    assert_eq!(run_js(&js, &[0]), vec![0],  "loop(0) → 0 iterations");
-    assert_eq!(run_js(&js, &[5]), vec![5],  "loop(5) → 5 iterations");
+    assert_eq!(run_js(&js, &[0]), vec![0], "loop(0) → 0 iterations");
+    assert_eq!(run_js(&js, &[5]), vec![5], "loop(5) → 5 iterations");
     assert_eq!(run_js(&js, &[10]), vec![10], "loop(10) → 10 iterations");
 }
 
@@ -1442,7 +1714,9 @@ fn make_module_with_data(
     let mut module = Module::new();
 
     let mut types = TypeSection::new();
-    types.ty().function(params.iter().cloned(), results.iter().cloned());
+    types
+        .ty()
+        .function(params.iter().cloned(), results.iter().cloned());
     module.section(&types);
 
     let mut functions = FunctionSection::new();
@@ -1450,7 +1724,13 @@ fn make_module_with_data(
     module.section(&functions);
 
     let mut memories = MemorySection::new();
-    memories.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    memories.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
     module.section(&memories);
 
     let mut exports = ExportSection::new();
@@ -1486,7 +1766,9 @@ fn make_module_with_passive_data_memory_init(seg_bytes: &[u8]) -> Vec<u8> {
     let mut module = Module::new();
 
     let mut types = TypeSection::new();
-    types.ty().function([ValType::I32, ValType::I32, ValType::I32], []);
+    types
+        .ty()
+        .function([ValType::I32, ValType::I32, ValType::I32], []);
     module.section(&types);
 
     let mut functions = FunctionSection::new();
@@ -1494,7 +1776,13 @@ fn make_module_with_passive_data_memory_init(seg_bytes: &[u8]) -> Vec<u8> {
     module.section(&functions);
 
     let mut memories = MemorySection::new();
-    memories.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    memories.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
     module.section(&memories);
 
     let mut exports = ExportSection::new();
@@ -1506,7 +1794,10 @@ fn make_module_with_passive_data_memory_init(seg_bytes: &[u8]) -> Vec<u8> {
     func.instruction(&Instruction::LocalGet(0));
     func.instruction(&Instruction::LocalGet(1));
     func.instruction(&Instruction::LocalGet(2));
-    func.instruction(&Instruction::MemoryInit { mem: 0, data_index: 0 });
+    func.instruction(&Instruction::MemoryInit {
+        mem: 0,
+        data_index: 0,
+    });
     func.instruction(&Instruction::DataDrop(0));
     func.instruction(&Instruction::Return);
     func.instruction(&Instruction::End);
@@ -1570,7 +1861,10 @@ fn make_module_with_memory_copy_fill() -> Vec<u8> {
     func.instruction(&Instruction::I32Const(0));
     func.instruction(&Instruction::I32Const(0));
     func.instruction(&Instruction::I32Const(0));
-    func.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    func.instruction(&Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
     // memory.fill dest=0 val=0 len=0
     func.instruction(&Instruction::I32Const(0));
     func.instruction(&Instruction::I32Const(0));
@@ -1646,7 +1940,17 @@ fn compile_c_with_data(wasm: &[u8], segments: &[(u32, &[u8])]) -> String {
     let mut reencoder = RoundtripReencoder;
     for op in ops {
         let op = op.unwrap();
-        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+        CWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
     out
 }
@@ -1666,13 +1970,7 @@ static uint32_t __wasm_memory_grow(uint32_t delta,uint8_t**mem,uint32_t*pages){\
 
 /// Run C source that uses `memory.size`/`memory.grow`, injecting a default grow impl.
 /// `mem_pages` is how many pages to pre-allocate (each 65536 bytes).
-fn run_c_with_grow(
-    c_src: &str,
-    mem_pages: u32,
-    fn_id: u32,
-    args: &[u64],
-    rets: usize,
-) -> Vec<u64> {
+fn run_c_with_grow(c_src: &str, mem_pages: u32, fn_id: u32, args: &[u64], rets: usize) -> Vec<u64> {
     use std::io::Write as _;
 
     let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -1690,13 +1988,15 @@ fn run_c_with_grow(
         n = args.len().max(1)
     );
     for (i, &a) in args.iter().enumerate() {
-        if i > 0 { main_body.push(','); }
+        if i > 0 {
+            main_body.push(',');
+        }
         main_body.push_str(&format!("{a}ull"));
     }
-    if args.is_empty() { main_body.push('0'); }
-    main_body.push_str(&format!(
-        "}};uint64_t*_r=fn_{fn_id}(_args);"
-    ));
+    if args.is_empty() {
+        main_body.push('0');
+    }
+    main_body.push_str(&format!("}};uint64_t*_r=fn_{fn_id}(_args);"));
     for i in 0..rets {
         main_body.push_str(&format!("printf(\"%llu\\n\",_r[{i}]);"));
     }
@@ -1730,7 +2030,11 @@ fn run_c_with_grow(
         .output()
         .expect("failed to run compiled binary");
 
-    assert!(run.status.success(), "binary exited non-zero: {}", String::from_utf8_lossy(&run.stderr));
+    assert!(
+        run.status.success(),
+        "binary exited non-zero: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     let _ = std::fs::remove_file(&src_path);
     let _ = std::fs::remove_file(&bin_path);
 
@@ -1851,7 +2155,14 @@ fn test_data_segment_js() {
     let wasm = make_module_with_data(
         &[],
         &[ValType::I32],
-        &[Instruction::I32Const(8), Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 })],
+        &[
+            Instruction::I32Const(8),
+            Instruction::I32Load(MemArg {
+                offset: 0,
+                align: 2,
+                memory_index: 0,
+            }),
+        ],
         &[(8, data_bytes)],
     );
     let js = compile_js_with_data(&wasm);
@@ -1868,7 +2179,14 @@ fn test_data_segment_c() {
     let wasm = make_module_with_data(
         &[],
         &[ValType::I32],
-        &[Instruction::I32Const(8), Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 })],
+        &[
+            Instruction::I32Const(8),
+            Instruction::I32Load(MemArg {
+                offset: 0,
+                align: 2,
+                memory_index: 0,
+            }),
+        ],
         &[(8, data_bytes)],
     );
     let segments = parse_active_data(&wasm);
@@ -1897,14 +2215,31 @@ fn test_data_segment_c() {
 
     std::fs::write(&src_path, &full_src).unwrap();
     let compile = std::process::Command::new("cc")
-        .arg(&src_path).arg("-Wno-unsequenced").arg("-o").arg(&bin_path)
-        .output().expect("cc not found");
-    assert!(compile.status.success(), "C compile failed:\n{}\nsource:\n{}", String::from_utf8_lossy(&compile.stderr), full_src);
-    let run = std::process::Command::new(&bin_path).output().expect("run failed");
-    assert!(run.status.success(), "binary failed: {}", String::from_utf8_lossy(&run.stderr));
+        .arg(&src_path)
+        .arg("-Wno-unsequenced")
+        .arg("-o")
+        .arg(&bin_path)
+        .output()
+        .expect("cc not found");
+    assert!(
+        compile.status.success(),
+        "C compile failed:\n{}\nsource:\n{}",
+        String::from_utf8_lossy(&compile.stderr),
+        full_src
+    );
+    let run = std::process::Command::new(&bin_path)
+        .output()
+        .expect("run failed");
+    assert!(
+        run.status.success(),
+        "binary failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     let _ = std::fs::remove_file(&src_path);
     let _ = std::fs::remove_file(&bin_path);
-    let result: Vec<u64> = String::from_utf8(run.stdout).unwrap().lines()
+    let result: Vec<u64> = String::from_utf8(run.stdout)
+        .unwrap()
+        .lines()
         .filter(|l| !l.is_empty())
         .map(|l| l.trim().parse::<u64>().unwrap())
         .collect();
@@ -1993,10 +2328,12 @@ fn compile_js_with_imports_exports(wasm: &[u8]) -> String {
     let raw_exports = parse_exports(wasm);
 
     // Convert to &str slices for the API
-    let imports_ref: Vec<(&str, &str)> = raw_imports.iter()
+    let imports_ref: Vec<(&str, &str)> = raw_imports
+        .iter()
         .map(|(m, n)| (m.as_str(), n.as_str()))
         .collect();
-    let exports_ref: Vec<(u32, &str)> = raw_exports.iter()
+    let exports_ref: Vec<(u32, &str)> = raw_exports
+        .iter()
         .map(|(idx, n)| (*idx, n.as_str()))
         .collect();
 
@@ -2009,7 +2346,10 @@ fn compile_js_with_imports_exports(wasm: &[u8]) -> String {
 
     let import_count = imports_ref.len() as u32;
     let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(
-        &bodies, &fsigs, &sigs_wp, import_count,
+        &bodies,
+        &fsigs,
+        &sigs_wp,
+        import_count,
     );
     let ops = dce_pass!(raw_ops);
 
@@ -2020,8 +2360,17 @@ fn compile_js_with_imports_exports(wasm: &[u8]) -> String {
     let mut reencoder = RoundtripReencoder;
     for op in ops {
         let op = op.unwrap();
-        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &imports_ref, &mut state, &op, &mut reencoder)
-            .unwrap();
+        JsWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &imports_ref,
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
 
     js_emit_exports(&mut out, &exports_ref).unwrap();
@@ -2034,10 +2383,12 @@ fn compile_c_with_imports_exports(wasm: &[u8]) -> String {
     let raw_imports = parse_imports(wasm);
     let raw_exports = parse_exports(wasm);
 
-    let imports_ref: Vec<(&str, &str)> = raw_imports.iter()
+    let imports_ref: Vec<(&str, &str)> = raw_imports
+        .iter()
         .map(|(m, n)| (m.as_str(), n.as_str()))
         .collect();
-    let exports_ref: Vec<(u32, &str)> = raw_exports.iter()
+    let exports_ref: Vec<(u32, &str)> = raw_exports
+        .iter()
         .map(|(idx, n)| (*idx, n.as_str()))
         .collect();
 
@@ -2050,7 +2401,10 @@ fn compile_c_with_imports_exports(wasm: &[u8]) -> String {
 
     let import_count = imports_ref.len() as u32;
     let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(
-        &bodies, &fsigs, &sigs_wp, import_count,
+        &bodies,
+        &fsigs,
+        &sigs_wp,
+        import_count,
     );
     let ops = dce_pass!(raw_ops);
 
@@ -2061,8 +2415,17 @@ fn compile_c_with_imports_exports(wasm: &[u8]) -> String {
     let mut reencoder = RoundtripReencoder;
     for op in ops {
         let op = op.unwrap();
-        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &imports_ref, &mut state, &op, &mut reencoder)
-            .unwrap();
+        CWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &imports_ref,
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
 
     c_emit_exports(&mut out, &exports_ref).unwrap();
@@ -2087,12 +2450,21 @@ fn test_import_call_js() {
     let code = format!("{js_src}{harness}");
 
     let out = std::process::Command::new("node")
-        .arg("-e").arg(&code)
-        .output().expect("node not found");
-    assert!(out.status.success(), "node failed:\n{}\ncode:\n{}", String::from_utf8_lossy(&out.stderr), code);
+        .arg("-e")
+        .arg(&code)
+        .output()
+        .expect("node not found");
+    assert!(
+        out.status.success(),
+        "node failed:\n{}\ncode:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+        code
+    );
 
-    let result: Vec<i64> = String::from_utf8(out.stdout).unwrap()
-        .lines().filter(|l| !l.is_empty())
+    let result: Vec<i64> = String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.is_empty())
         .map(|l| l.trim().parse::<i64>().unwrap())
         .collect();
     assert_eq!(result, vec![42]);
@@ -2136,26 +2508,43 @@ fn test_import_call_c() {
 
     std::fs::write(&src_path, &full_src).unwrap();
     let compile = std::process::Command::new("cc")
-        .arg(&src_path).arg("-Wno-unsequenced").arg("-o").arg(&bin_path)
-        .output().expect("cc not found");
-    assert!(compile.status.success(), "C compile failed:\n{}\nsource:\n{}", String::from_utf8_lossy(&compile.stderr), full_src);
+        .arg(&src_path)
+        .arg("-Wno-unsequenced")
+        .arg("-o")
+        .arg(&bin_path)
+        .output()
+        .expect("cc not found");
+    assert!(
+        compile.status.success(),
+        "C compile failed:\n{}\nsource:\n{}",
+        String::from_utf8_lossy(&compile.stderr),
+        full_src
+    );
 
-    let run = std::process::Command::new(&bin_path).output().expect("failed to run");
+    let run = std::process::Command::new(&bin_path)
+        .output()
+        .expect("failed to run");
     assert!(run.status.success());
 
     let _ = std::fs::remove_file(&src_path);
     let _ = std::fs::remove_file(&bin_path);
 
-    let result: u64 = String::from_utf8(run.stdout).unwrap().trim().parse().unwrap();
+    let result: u64 = String::from_utf8(run.stdout)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
     assert_eq!(result, 42);
 }
 
 /// JS: verify that exported function aliases are emitted correctly.
 #[test]
 fn test_export_js() {
-    let wasm = make_module(&[ValType::I64], &[ValType::I64], &[
-        Instruction::LocalGet(0),
-    ]);
+    let wasm = make_module(
+        &[ValType::I64],
+        &[ValType::I64],
+        &[Instruction::LocalGet(0)],
+    );
     let js_src = compile_js(&wasm);
     let raw_exports = parse_exports(&wasm);
     let exports_ref: Vec<(u32, &str)> = raw_exports.iter().map(|(i, n)| (*i, n.as_str())).collect();
@@ -2163,15 +2552,20 @@ fn test_export_js() {
     js_emit_exports(&mut with_export, &exports_ref).unwrap();
 
     // The module exports "f" = WASM index 0
-    assert!(with_export.contains("var f=$0;"), "expected export alias in:\n{with_export}");
+    assert!(
+        with_export.contains("var f=$0;"),
+        "expected export alias in:\n{with_export}"
+    );
 }
 
 /// C: verify that exported function alias is emitted with correct signature.
 #[test]
 fn test_export_c() {
-    let wasm = make_module(&[ValType::I64], &[ValType::I64], &[
-        Instruction::LocalGet(0),
-    ]);
+    let wasm = make_module(
+        &[ValType::I64],
+        &[ValType::I64],
+        &[Instruction::LocalGet(0)],
+    );
     let c_src = compile_c(&wasm);
     let raw_exports = parse_exports(&wasm);
     let exports_ref: Vec<(u32, &str)> = raw_exports.iter().map(|(i, n)| (*i, n.as_str())).collect();
@@ -2179,7 +2573,10 @@ fn test_export_c() {
     c_emit_exports(&mut with_export, &exports_ref).unwrap();
 
     // Should emit an alias function named "f"
-    assert!(with_export.contains("uint64_t*f("), "expected export alias in:\n{with_export}");
+    assert!(
+        with_export.contains("uint64_t*f("),
+        "expected export alias in:\n{with_export}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2196,10 +2593,7 @@ fn test_esm_imports_structural() {
     use portal_solutions_blitz_js::js_emit_imports_esm;
 
     let mut out = String::new();
-    let imports: &[(&str, &str)] = &[
-        ("env", "add_one"),
-        ("math", "sqrt"),
-    ];
+    let imports: &[(&str, &str)] = &[("env", "add_one"), ("math", "sqrt")];
     js_emit_imports_esm(&mut out, imports).unwrap();
 
     // Import 0: env::add_one
@@ -2254,9 +2648,18 @@ fn test_esm_preamble_structural() {
     js_module_preamble_esm(&mut out).unwrap();
 
     assert!(out.contains("$mem"), "expected $mem in preamble:\n{out}");
-    assert!(out.contains("$mem_dv"), "expected $mem_dv in preamble:\n{out}");
-    assert!(out.contains("Uint8Array"), "expected Uint8Array in preamble:\n{out}");
-    assert!(out.contains("DataView"), "expected DataView in preamble:\n{out}");
+    assert!(
+        out.contains("$mem_dv"),
+        "expected $mem_dv in preamble:\n{out}"
+    );
+    assert!(
+        out.contains("Uint8Array"),
+        "expected Uint8Array in preamble:\n{out}"
+    );
+    assert!(
+        out.contains("DataView"),
+        "expected DataView in preamble:\n{out}"
+    );
 }
 
 /// ESM imports/exports are distinct from CJS equivalents.
@@ -2265,7 +2668,9 @@ fn test_esm_preamble_structural() {
 /// CJS uses `var name=$N;` aliases; ESM uses `export {$N as name};`.
 #[test]
 fn test_esm_vs_cjs_distinct() {
-    use portal_solutions_blitz_js::{js_emit_imports, js_emit_imports_esm, js_emit_exports, js_emit_exports_esm};
+    use portal_solutions_blitz_js::{
+        js_emit_exports, js_emit_exports_esm, js_emit_imports, js_emit_imports_esm,
+    };
 
     let imports: &[(&str, &str)] = &[("env", "foo")];
     let exports: &[(u32, &str)] = &[(0, "bar")];
@@ -2279,14 +2684,26 @@ fn test_esm_vs_cjs_distinct() {
     js_emit_exports_esm(&mut esm_out, exports).unwrap();
 
     // CJS should use `var $0;` style
-    assert!(cjs_out.contains("var $0;"), "CJS should use var declaration:\n{cjs_out}");
+    assert!(
+        cjs_out.contains("var $0;"),
+        "CJS should use var declaration:\n{cjs_out}"
+    );
     // ESM should use `import` statement
-    assert!(esm_out.contains("import {"), "ESM should use import statement:\n{esm_out}");
+    assert!(
+        esm_out.contains("import {"),
+        "ESM should use import statement:\n{esm_out}"
+    );
 
     // CJS export is an alias assignment
-    assert!(cjs_out.contains("var bar=$0;"), "CJS export should be alias:\n{cjs_out}");
+    assert!(
+        cjs_out.contains("var bar=$0;"),
+        "CJS export should be alias:\n{cjs_out}"
+    );
     // ESM export uses `export` keyword
-    assert!(esm_out.contains("export {$0 as bar};"), "ESM export should use export keyword:\n{esm_out}");
+    assert!(
+        esm_out.contains("export {$0 as bar};"),
+        "ESM export should use export keyword:\n{esm_out}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2362,166 +2779,280 @@ fn compile_native_asm(wasm: &[u8], arch: NativeArch, abi: NativeAbi) -> String {
 
     match (arch, abi) {
         (NativeArch::X86_64, NativeAbi::Naive) => {
-            use portal_solutions_blitz_x86_64::{naive, X64Arch};
+            use portal_solutions_blitz_x86_64::{X64Arch, naive};
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, X64Arch::default(),
-                    &mut state, &[], &[], &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    X64Arch::default(),
+                    &mut state,
+                    &[],
+                    &[],
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
         }
         (NativeArch::X86_64, NativeAbi::Sysv) => {
-            use portal_solutions_blitz_x86_64::{sysv, X64Arch};
+            use portal_solutions_blitz_x86_64::{X64Arch, sysv};
             let mut state = sysv::SysVState::default();
             for op in ops {
                 let op = op.unwrap();
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, X64Arch::default(),
-                    &mut state, &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    X64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
         }
         (NativeArch::AArch64, NativeAbi::Naive) => {
-            use portal_solutions_blitz_aarch64::{naive, AArch64Arch};
+            use portal_solutions_blitz_aarch64::{AArch64Arch, naive};
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, AArch64Arch::default(),
-                    &mut state, &[], &[], &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    AArch64Arch::default(),
+                    &mut state,
+                    &[],
+                    &[],
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
         }
         (NativeArch::AArch64, NativeAbi::Sysv) => {
-            use portal_solutions_blitz_aarch64::{naive, sysv, AArch64Arch};
+            use portal_solutions_blitz_aarch64::{AArch64Arch, naive, sysv};
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, AArch64Arch::default(),
-                    &mut state, &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    AArch64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
         }
         (NativeArch::Riscv64, NativeAbi::Naive) => {
-            use portal_solutions_blitz_riscv64::{naive, RiscV64Arch};
+            use portal_solutions_blitz_riscv64::{RiscV64Arch, naive};
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, RiscV64Arch::default(),
-                    &mut state, &[], &[], &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    RiscV64Arch::default(),
+                    &mut state,
+                    &[],
+                    &[],
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
         }
         (NativeArch::Riscv64, NativeAbi::Sysv) => {
-            use portal_solutions_blitz_riscv64::{naive, sysv, RiscV64Arch};
+            use portal_solutions_blitz_riscv64::{RiscV64Arch, naive, sysv};
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, RiscV64Arch::default(),
-                    &mut state, &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    RiscV64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
         }
         (NativeArch::X86_64, NativeAbi::Lfi) => {
-            use portal_solutions_blitz_x86_64::{lfi, X64Arch};
+            use portal_solutions_blitz_x86_64::{X64Arch, lfi};
             let mut state = lfi::State::default();
             for op in ops {
                 let op = op.unwrap();
                 lfi::LfiWriterExt::lfi_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, X64Arch::default(),
-                    &mut state, &[], &[], &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    X64Arch::default(),
+                    &mut state,
+                    &[],
+                    &[],
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
         }
         (NativeArch::AArch64, NativeAbi::Lfi) => {
-            use portal_solutions_blitz_aarch64::{lfi, AArch64Arch};
+            use portal_solutions_blitz_aarch64::{AArch64Arch, lfi};
             let mut state = lfi::State::default();
             for op in ops {
                 let op = op.unwrap();
                 lfi::LfiWriterExt::lfi_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, AArch64Arch::default(),
-                    &mut state, &[], &[], &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    AArch64Arch::default(),
+                    &mut state,
+                    &[],
+                    &[],
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
         }
         (NativeArch::Riscv64, NativeAbi::Lfi) => {
             panic!("LFI not implemented for RISC-V 64");
         }
         (NativeArch::Riscv32, NativeAbi::Naive) => {
-            use portal_solutions_blitz_riscv32::{naive, RiscV32Arch};
+            use portal_solutions_blitz_riscv32::{RiscV32Arch, naive};
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, RiscV32Arch::default(),
-                    &mut state, &[], &[], &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    RiscV32Arch::default(),
+                    &mut state,
+                    &[],
+                    &[],
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
         }
         (NativeArch::Riscv32, NativeAbi::Sysv) => {
-            use portal_solutions_blitz_riscv32::{naive, sysv, RiscV32Arch};
+            use portal_solutions_blitz_riscv32::{RiscV32Arch, naive, sysv};
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, RiscV32Arch::default(),
-                    &mut state, &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    RiscV32Arch::default(),
+                    &mut state,
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
         }
         (NativeArch::Riscv32, NativeAbi::Lfi) => {
             panic!("LFI not implemented for RISC-V 32");
         }
         (NativeArch::Arm, NativeAbi::Naive) => {
-            use portal_solutions_blitz_arm::{naive, ArmArch};
+            use portal_solutions_blitz_arm::{ArmArch, naive};
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, ArmArch::default(),
-                    &mut state, &[], &[], &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    ArmArch::default(),
+                    &mut state,
+                    &[],
+                    &[],
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
         }
         (NativeArch::Arm, NativeAbi::Sysv) => {
-            use portal_solutions_blitz_arm::{naive, sysv, ArmArch};
+            use portal_solutions_blitz_arm::{ArmArch, naive, sysv};
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, ArmArch::default(),
-                    &mut state, &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    ArmArch::default(),
+                    &mut state,
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
         }
         (NativeArch::Arm, NativeAbi::Lfi) => {
             panic!("LFI not implemented for ARM");
         }
         (NativeArch::I686, NativeAbi::Naive) => {
-            use portal_solutions_blitz_i686::{naive, X86Arch};
+            use portal_solutions_blitz_i686::{X86Arch, naive};
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, X86Arch::default(),
-                    &mut state, &[], &[], &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    X86Arch::default(),
+                    &mut state,
+                    &[],
+                    &[],
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
         }
         (NativeArch::I686, NativeAbi::Sysv) => {
-            use portal_solutions_blitz_i686::{naive, sysv, X86Arch};
+            use portal_solutions_blitz_i686::{X86Arch, naive, sysv};
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, X86Arch::default(),
-                    &mut state, &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    X86Arch::default(),
+                    &mut state,
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
         }
         (NativeArch::I686, NativeAbi::Lfi) => {
@@ -2537,10 +3068,9 @@ fn normalize_native_asm(arch: NativeArch, asm: String) -> String {
         NativeArch::X86_64 | NativeArch::I686 => {
             format!(".intel_syntax noprefix\n.text\n.global f0\n{asm}")
         }
-        NativeArch::AArch64
-        | NativeArch::Riscv64
-        | NativeArch::Riscv32
-        | NativeArch::Arm => format!(".text\n.global f0\n{asm}"),
+        NativeArch::AArch64 | NativeArch::Riscv64 | NativeArch::Riscv32 | NativeArch::Arm => {
+            format!(".text\n.global f0\n{asm}")
+        }
     };
 
     // The x86 text writer currently omits a newline after LEA. Keep the tests
@@ -2622,13 +3152,19 @@ fn extract_elf_text(obj: &[u8]) -> Option<Vec<u8>> {
     let class = *obj.get(4)?; // 1 = ELF32, 2 = ELF64
 
     let read_u16 = |offset: usize| -> Option<u16> {
-        Some(u16::from_le_bytes(obj.get(offset..offset + 2)?.try_into().ok()?))
+        Some(u16::from_le_bytes(
+            obj.get(offset..offset + 2)?.try_into().ok()?,
+        ))
     };
     let read_u32 = |offset: usize| -> Option<u32> {
-        Some(u32::from_le_bytes(obj.get(offset..offset + 4)?.try_into().ok()?))
+        Some(u32::from_le_bytes(
+            obj.get(offset..offset + 4)?.try_into().ok()?,
+        ))
     };
     let read_u64 = |offset: usize| -> Option<u64> {
-        Some(u64::from_le_bytes(obj.get(offset..offset + 8)?.try_into().ok()?))
+        Some(u64::from_le_bytes(
+            obj.get(offset..offset + 8)?.try_into().ok()?,
+        ))
     };
 
     let (shoff, shentsize, shnum, shstrndx, min_shentsize, sh_off_field, sh_size_field) =
@@ -2662,9 +3198,15 @@ fn extract_elf_text(obj: &[u8]) -> Option<Vec<u8>> {
 
     let shstr = shoff.checked_add(shstrndx.checked_mul(shentsize)?)?;
     let (shstr_off, shstr_size) = if class == 2 {
-        (read_u64(shstr + sh_off_field)? as usize, read_u64(shstr + sh_size_field)? as usize)
+        (
+            read_u64(shstr + sh_off_field)? as usize,
+            read_u64(shstr + sh_size_field)? as usize,
+        )
     } else {
-        (read_u32(shstr + sh_off_field)? as usize, read_u32(shstr + sh_size_field)? as usize)
+        (
+            read_u32(shstr + sh_off_field)? as usize,
+            read_u32(shstr + sh_size_field)? as usize,
+        )
     };
     let shstrtab = obj.get(shstr_off..shstr_off.checked_add(shstr_size)?)?;
 
@@ -2676,9 +3218,15 @@ fn extract_elf_text(obj: &[u8]) -> Option<Vec<u8>> {
         let name = core::str::from_utf8(&name_tail[..nul]).ok()?;
         if name == ".text" {
             let (off, size) = if class == 2 {
-                (read_u64(sh + sh_off_field)? as usize, read_u64(sh + sh_size_field)? as usize)
+                (
+                    read_u64(sh + sh_off_field)? as usize,
+                    read_u64(sh + sh_size_field)? as usize,
+                )
             } else {
-                (read_u32(sh + sh_off_field)? as usize, read_u32(sh + sh_size_field)? as usize)
+                (
+                    read_u32(sh + sh_off_field)? as usize,
+                    read_u32(sh + sh_size_field)? as usize,
+                )
             };
             return Some(obj.get(off..off.checked_add(size)?)?.to_vec());
         }
@@ -2697,8 +3245,8 @@ fn native_naive_empty_wasm() -> Vec<u8> {
 
 fn run_native_sysv_const(arch: NativeArch, code: &[u8]) -> u64 {
     use unicorn_engine::{
-        unicorn_const::{Arch, Mode, Prot},
         Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
     };
 
     const CODE: u64 = 0x100000;
@@ -2713,10 +3261,12 @@ fn run_native_sysv_const(arch: NativeArch, code: &[u8]) -> u64 {
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
             let rsp = STACK + STACK_SIZE - 8;
-            uc.mem_write(rsp, &(CODE + code.len() as u64).to_le_bytes()).unwrap();
+            uc.mem_write(rsp, &(CODE + code.len() as u64).to_le_bytes())
+                .unwrap();
             uc.reg_write(RegisterX86::RSP, rsp).unwrap();
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
             uc.reg_read(RegisterX86::RAX).unwrap()
         }
         NativeArch::AArch64 => {
@@ -2725,10 +3275,13 @@ fn run_native_sysv_const(arch: NativeArch, code: &[u8]) -> u64 {
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
-            uc.reg_write(RegisterARM64::SP, STACK + STACK_SIZE - 16).unwrap();
-            uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64).unwrap();
+            uc.reg_write(RegisterARM64::SP, STACK + STACK_SIZE - 16)
+                .unwrap();
+            uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64)
+                .unwrap();
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
             uc.reg_read(RegisterARM64::X0).unwrap()
         }
         NativeArch::Riscv64 => {
@@ -2737,10 +3290,13 @@ fn run_native_sysv_const(arch: NativeArch, code: &[u8]) -> u64 {
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
-            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16).unwrap();
-            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64).unwrap();
+            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16)
+                .unwrap();
+            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64)
+                .unwrap();
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
             uc.reg_read(RegisterRISCV::A0).unwrap()
         }
         NativeArch::Riscv32 => {
@@ -2749,10 +3305,13 @@ fn run_native_sysv_const(arch: NativeArch, code: &[u8]) -> u64 {
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
-            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16).unwrap();
-            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64).unwrap();
+            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16)
+                .unwrap();
+            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64)
+                .unwrap();
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
             let lo = uc.reg_read(RegisterRISCV::A0).unwrap();
             let hi = uc.reg_read(RegisterRISCV::A1).unwrap();
             lo | (hi << 32)
@@ -2764,10 +3323,13 @@ fn run_native_sysv_const(arch: NativeArch, code: &[u8]) -> u64 {
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
-            uc.reg_write(RegisterARM::SP, STACK + STACK_SIZE - 16).unwrap();
-            uc.reg_write(RegisterARM::LR, CODE + code.len() as u64).unwrap();
+            uc.reg_write(RegisterARM::SP, STACK + STACK_SIZE - 16)
+                .unwrap();
+            uc.reg_write(RegisterARM::LR, CODE + code.len() as u64)
+                .unwrap();
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
             let lo = uc.reg_read(RegisterARM::R0).unwrap();
             let hi = uc.reg_read(RegisterARM::R1).unwrap();
             lo | (hi << 32)
@@ -2779,10 +3341,12 @@ fn run_native_sysv_const(arch: NativeArch, code: &[u8]) -> u64 {
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
             let esp = STACK + STACK_SIZE - 4;
-            uc.mem_write(esp, &(CODE + code.len() as u64).to_le_bytes()[..4]).unwrap();
+            uc.mem_write(esp, &(CODE + code.len() as u64).to_le_bytes()[..4])
+                .unwrap();
             uc.reg_write(RegisterX86::ESP, esp).unwrap();
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
             let lo = uc.reg_read(RegisterX86::EAX).unwrap();
             let hi = uc.reg_read(RegisterX86::EDX).unwrap();
             lo | (hi << 32)
@@ -2799,20 +3363,27 @@ fn attach_trace_hook<D: 'static>(
     code_base: u64,
     code_len: usize,
 ) {
-    if std::env::var("BLITZ_TRACE_UNICORN").is_err() { return; }
+    if std::env::var("BLITZ_TRACE_UNICORN").is_err() {
+        return;
+    }
     let portal_logger = log::LlmtrimLogger::from_env();
     let arch_str = format!("{arch:?}");
-    uc.add_code_hook(code_base, code_base + code_len as u64, move |uc, addr, size| {
-        let mut buf = vec![0u8; size as usize];
-        let _ = uc.mem_read(addr, &mut buf);
-        log::portal_trace(&portal_logger, &arch_str, addr, size as usize, &buf);
-    }).expect("add_code_hook failed");
+    uc.add_code_hook(
+        code_base,
+        code_base + code_len as u64,
+        move |uc, addr, size| {
+            let mut buf = vec![0u8; size as usize];
+            let _ = uc.mem_read(addr, &mut buf);
+            log::portal_trace(&portal_logger, &arch_str, addr, size as usize, &buf);
+        },
+    )
+    .expect("add_code_hook failed");
 }
 
 fn run_native_naive_smoke(arch: NativeArch, code: &[u8]) {
     use unicorn_engine::{
-        unicorn_const::{Arch, Mode, Prot},
         Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
     };
 
     const CODE: u64 = 0x100000;
@@ -2833,11 +3404,14 @@ fn run_native_naive_smoke(arch: NativeArch, code: &[u8]) {
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
-            uc.reg_write(RegisterARM64::SP, STACK + STACK_SIZE - 16).unwrap();
-            uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64).unwrap();
+            uc.reg_write(RegisterARM64::SP, STACK + STACK_SIZE - 16)
+                .unwrap();
+            uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64)
+                .unwrap();
             attach_trace_hook(&mut uc, arch, CODE, code.len());
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
         }
         NativeArch::Riscv64 => {
             use unicorn_engine::RegisterRISCV;
@@ -2845,11 +3419,14 @@ fn run_native_naive_smoke(arch: NativeArch, code: &[u8]) {
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
-            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16).unwrap();
-            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64).unwrap();
+            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16)
+                .unwrap();
+            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64)
+                .unwrap();
             attach_trace_hook(&mut uc, arch, CODE, code.len());
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
         }
         NativeArch::Riscv32 => {
             use unicorn_engine::RegisterRISCV;
@@ -2857,10 +3434,13 @@ fn run_native_naive_smoke(arch: NativeArch, code: &[u8]) {
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
-            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16).unwrap();
-            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64).unwrap();
+            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16)
+                .unwrap();
+            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64)
+                .unwrap();
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
         }
         NativeArch::Arm => {
             use unicorn_engine::RegisterARM;
@@ -2868,10 +3448,13 @@ fn run_native_naive_smoke(arch: NativeArch, code: &[u8]) {
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
-            uc.reg_write(RegisterARM::SP, STACK + STACK_SIZE - 16).unwrap();
-            uc.reg_write(RegisterARM::LR, CODE + code.len() as u64).unwrap();
+            uc.reg_write(RegisterARM::SP, STACK + STACK_SIZE - 16)
+                .unwrap();
+            uc.reg_write(RegisterARM::LR, CODE + code.len() as u64)
+                .unwrap();
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
         }
         NativeArch::I686 => {
             use unicorn_engine::RegisterX86;
@@ -2883,10 +3466,12 @@ fn run_native_naive_smoke(arch: NativeArch, code: &[u8]) {
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
             let esp = STACK + STACK_SIZE - 4;
-            uc.mem_write(esp, &(CODE + code.len() as u64).to_le_bytes()[..4]).unwrap();
+            uc.mem_write(esp, &(CODE + code.len() as u64).to_le_bytes()[..4])
+                .unwrap();
             uc.reg_write(RegisterX86::ESP, esp).unwrap();
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
         }
     }
 }
@@ -2898,8 +3483,13 @@ fn assemble_or_skip(arch: NativeArch, asm: &str) -> Option<Vec<u8>> {
             eprintln!("skipping native test: clang not in PATH ({err})");
             None
         }
-        Err(err) if matches!(arch, NativeArch::Riscv64) && err.contains("riscv-add-build-attributes") => {
-            eprintln!("skipping RISC-V Unicorn backend test: host clang cannot assemble RISC-V ({err})");
+        Err(err)
+            if matches!(arch, NativeArch::Riscv64)
+                && err.contains("riscv-add-build-attributes") =>
+        {
+            eprintln!(
+                "skipping RISC-V Unicorn backend test: host clang cannot assemble RISC-V ({err})"
+            );
             None
         }
         Err(err)
@@ -2924,14 +3514,18 @@ fn assemble_or_skip(arch: NativeArch, asm: &str) -> Option<Vec<u8>> {
 fn assert_native_sysv_const(arch: NativeArch) {
     let wasm = native_sysv_const_wasm(0x1234_5678_9abc_def0u64 as i64);
     let asm = compile_native_asm(&wasm, arch, NativeAbi::Sysv);
-    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    let Some(code) = assemble_or_skip(arch, &asm) else {
+        return;
+    };
     assert_eq!(run_native_sysv_const(arch, &code), 0x1234_5678_9abc_def0);
 }
 
 fn assert_native_naive_smoke(arch: NativeArch) {
     let wasm = native_naive_empty_wasm();
     let asm = compile_native_asm(&wasm, arch, NativeAbi::Naive);
-    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    let Some(code) = assemble_or_skip(arch, &asm) else {
+        return;
+    };
     run_native_naive_smoke(arch, &code);
 }
 
@@ -3049,10 +3643,14 @@ fn manyarg_sum_tailcall_wasm(n: u32) -> Vec<u8> {
 /// offset of `f0`'s entry. Panics if any external relocation survives.
 fn compile_allstack_binary(wasm: &[u8], arch: NativeArch) -> (Vec<u8>, u64) {
     let (sigs_wp, _enc, fsigs) = parse_sigs(wasm);
-    let call_params: Vec<u32> =
-        fsigs.iter().map(|&ti| sigs_wp[ti as usize].params().len() as u32).collect();
-    let call_results: Vec<u32> =
-        fsigs.iter().map(|&ti| sigs_wp[ti as usize].results().len() as u32).collect();
+    let call_params: Vec<u32> = fsigs
+        .iter()
+        .map(|&ti| sigs_wp[ti as usize].params().len() as u32)
+        .collect();
+    let call_results: Vec<u32> = fsigs
+        .iter()
+        .map(|&ti| sigs_wp[ti as usize].results().len() as u32)
+        .collect();
     let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
     for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
         if let wasmparser::Payload::CodeSectionEntry(body) = payload {
@@ -3065,8 +3663,8 @@ fn compile_allstack_binary(wasm: &[u8], arch: NativeArch) -> (Vec<u8>, u64) {
     let mut ctx = ();
     match arch {
         NativeArch::X86_64 => {
-            use portal_solutions_blitz_x86_64::{sysv, X64Arch, X64Label};
             use portal_solutions_asm_x86_64::out::iced::IcedWriter;
+            use portal_solutions_blitz_x86_64::{X64Arch, X64Label, sysv};
             let mut out = IcedWriter::<X64Label>::new(0x100000);
             let mut state = sysv::SysVState::default();
             state.call_abi = sysv::CallAbi::AllStack;
@@ -3080,8 +3678,14 @@ fn compile_allstack_binary(wasm: &[u8], arch: NativeArch) -> (Vec<u8>, u64) {
             state.sig_results = sigs_wp.iter().map(|s| s.results().len() as u32).collect();
             for op in ops {
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, X64Arch::default(), &mut state, &[], &op.unwrap(),
-                    &mut reencoder, 0,
+                    &mut out,
+                    &mut ctx,
+                    X64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op.unwrap(),
+                    &mut reencoder,
+                    0,
                 )
                 .unwrap();
             }
@@ -3090,8 +3694,8 @@ fn compile_allstack_binary(wasm: &[u8], arch: NativeArch) -> (Vec<u8>, u64) {
             (bytes, labels[&X64Label::Func { r#fn: 0 }] as u64)
         }
         NativeArch::AArch64 => {
-            use portal_solutions_blitz_aarch64::{naive, sysv, AArch64Arch, AArch64Label};
             use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+            use portal_solutions_blitz_aarch64::{AArch64Arch, AArch64Label, naive, sysv};
             let mut out = AArch64Writer::<AArch64Label>::new();
             let mut state = naive::State::default();
             state.call_abi = naive::CallAbi::AllStack;
@@ -3101,19 +3705,28 @@ fn compile_allstack_binary(wasm: &[u8], arch: NativeArch) -> (Vec<u8>, u64) {
             state.sig_results = sigs_wp.iter().map(|s| s.results().len() as u32).collect();
             for op in ops {
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, AArch64Arch::default(), &mut state, &[], &op.unwrap(),
-                    &mut reencoder, 0,
+                    &mut out,
+                    &mut ctx,
+                    AArch64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op.unwrap(),
+                    &mut reencoder,
+                    0,
                 )
                 .unwrap();
             }
             let (bytes, labels, relocs) = out.into_parts_with_relocs();
             assert!(relocs.is_empty(), "unexpected external relocs: {relocs:?}");
             // AArch64 SysV entry label is `Indexed { id + 0x8000_0000 }`.
-            (bytes, labels[&AArch64Label::Indexed { idx: 0x8000_0000 }] as u64)
+            (
+                bytes,
+                labels[&AArch64Label::Indexed { idx: 0x8000_0000 }] as u64,
+            )
         }
         NativeArch::Riscv64 => {
-            use portal_solutions_blitz_riscv64::{sysv, RiscV64Arch, RiscvLabel};
             use portal_solutions_asm_riscv64::out::rv_asm_backend::RvAsmWriter;
+            use portal_solutions_blitz_riscv64::{RiscV64Arch, RiscvLabel, sysv};
             let mut out = RvAsmWriter::<RiscvLabel>::new();
             let mut state = sysv::SysVState::default();
             state.call_abi = sysv::CallAbi::AllStack;
@@ -3124,8 +3737,14 @@ fn compile_allstack_binary(wasm: &[u8], arch: NativeArch) -> (Vec<u8>, u64) {
             state.sig_results = sigs_wp.iter().map(|s| s.results().len() as u32).collect();
             for op in ops {
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, RiscV64Arch::default(), &mut state, &[], &op.unwrap(),
-                    &mut reencoder, 0,
+                    &mut out,
+                    &mut ctx,
+                    RiscV64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op.unwrap(),
+                    &mut reencoder,
+                    0,
                 )
                 .unwrap();
             }
@@ -3140,10 +3759,16 @@ fn compile_allstack_binary(wasm: &[u8], arch: NativeArch) -> (Vec<u8>, u64) {
 
 /// Invoke an `AllStack` entry under Unicorn with `args` (i64 each) and return X0/RAX.
 /// `count` caps emulated instructions (0 = unlimited).
-fn run_allstack_entry(arch: NativeArch, code: &[u8], entry_off: u64, args: &[u64], count: u64) -> u64 {
+fn run_allstack_entry(
+    arch: NativeArch,
+    code: &[u8],
+    entry_off: u64,
+    args: &[u64],
+    count: u64,
+) -> u64 {
     use unicorn_engine::{
-        unicorn_const::{Arch, Mode, Prot},
         Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
     };
     const CODE: u64 = 0x100000;
     const STACK: u64 = 0x200000;
@@ -3164,11 +3789,13 @@ fn run_allstack_entry(arch: NativeArch, code: &[u8], entry_off: u64, args: &[u64
             let rsp = (STACK + STACK_SIZE - frame - 16) & !15;
             uc.mem_write(rsp, &ret.to_le_bytes()).unwrap();
             for (i, &a) in args.iter().enumerate() {
-                uc.mem_write(rsp + 8 + (i as u64) * 8, &a.to_le_bytes()).unwrap();
+                uc.mem_write(rsp + 8 + (i as u64) * 8, &a.to_le_bytes())
+                    .unwrap();
             }
             uc.reg_write(RegisterX86::RSP, rsp).unwrap();
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE + entry_off, ret, 0, count as usize).unwrap();
+            uc.emu_start(CODE + entry_off, ret, 0, count as usize)
+                .unwrap();
             uc.reg_read(RegisterX86::RAX).unwrap()
         }
         NativeArch::AArch64 => {
@@ -3188,7 +3815,8 @@ fn run_allstack_entry(arch: NativeArch, code: &[u8], entry_off: u64, args: &[u64
             uc.reg_write(RegisterARM64::SP, sp).unwrap();
             uc.reg_write(RegisterARM64::LR, ret).unwrap();
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE + entry_off, ret, 0, count as usize).unwrap();
+            uc.emu_start(CODE + entry_off, ret, 0, count as usize)
+                .unwrap();
             uc.reg_read(RegisterARM64::X0).unwrap()
         }
         NativeArch::Riscv64 => {
@@ -3207,7 +3835,8 @@ fn run_allstack_entry(arch: NativeArch, code: &[u8], entry_off: u64, args: &[u64
             uc.reg_write(RegisterRISCV::SP, sp).unwrap();
             uc.reg_write(RegisterRISCV::RA, ret).unwrap();
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE + entry_off, ret, 0, count as usize).unwrap();
+            uc.emu_start(CODE + entry_off, ret, 0, count as usize)
+                .unwrap();
             uc.reg_read(RegisterRISCV::A0).unwrap()
         }
         NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
@@ -3245,7 +3874,9 @@ fn test_unicorn_riscv64_manyarg_tailcall() {
 fn deep_tailchain_wasm() -> Vec<u8> {
     let mut module = Module::new();
     let mut types = TypeSection::new();
-    types.ty().function([ValType::I64, ValType::I64], [ValType::I64]);
+    types
+        .ty()
+        .function([ValType::I64, ValType::I64], [ValType::I64]);
     module.section(&types);
     let mut functions = FunctionSection::new();
     functions.function(0);
@@ -3257,7 +3888,9 @@ fn deep_tailchain_wasm() -> Vec<u8> {
     let mut f = Function::new([]);
     f.instruction(&Instruction::LocalGet(0)); // n
     f.instruction(&Instruction::I64Eqz);
-    f.instruction(&Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
+    f.instruction(&Instruction::If(wasm_encoder::BlockType::Result(
+        ValType::I64,
+    )));
     f.instruction(&Instruction::LocalGet(1)); // n == 0 -> acc
     f.instruction(&Instruction::Else);
     f.instruction(&Instruction::LocalGet(0)); // n
@@ -3292,7 +3925,9 @@ fn ifelse_probe_wasm() -> Vec<u8> {
     let mut f = Function::new([]);
     f.instruction(&Instruction::LocalGet(0));
     f.instruction(&Instruction::I64Eqz);
-    f.instruction(&Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
+    f.instruction(&Instruction::If(wasm_encoder::BlockType::Result(
+        ValType::I64,
+    )));
     f.instruction(&Instruction::I64Const(111));
     f.instruction(&Instruction::Else);
     f.instruction(&Instruction::I64Const(222));
@@ -3307,15 +3942,27 @@ fn ifelse_probe_wasm() -> Vec<u8> {
 #[test]
 fn test_unicorn_x86_64_ifelse_probe() {
     let (code, entry) = compile_allstack_binary(&ifelse_probe_wasm(), NativeArch::X86_64);
-    assert_eq!(run_allstack_entry(NativeArch::X86_64, &code, entry, &[0], 100_000), 111);
-    assert_eq!(run_allstack_entry(NativeArch::X86_64, &code, entry, &[1], 100_000), 222);
+    assert_eq!(
+        run_allstack_entry(NativeArch::X86_64, &code, entry, &[0], 100_000),
+        111
+    );
+    assert_eq!(
+        run_allstack_entry(NativeArch::X86_64, &code, entry, &[1], 100_000),
+        222
+    );
 }
 
 #[test]
 fn test_unicorn_aarch64_ifelse_probe() {
     let (code, entry) = compile_allstack_binary(&ifelse_probe_wasm(), NativeArch::AArch64);
-    assert_eq!(run_allstack_entry(NativeArch::AArch64, &code, entry, &[0], 100_000), 111);
-    assert_eq!(run_allstack_entry(NativeArch::AArch64, &code, entry, &[1], 100_000), 222);
+    assert_eq!(
+        run_allstack_entry(NativeArch::AArch64, &code, entry, &[0], 100_000),
+        111
+    );
+    assert_eq!(
+        run_allstack_entry(NativeArch::AArch64, &code, entry, &[1], 100_000),
+        222
+    );
 }
 
 fn run_deep_tailchain(arch: NativeArch, n: u64, count: u64) -> u64 {
@@ -3345,13 +3992,19 @@ fn test_unicorn_x86_64_deep_tailchain() {
     // 20k self-tail-calls: a fake tail call (real call + ret) grows the machine
     // stack ~20k frames and faults the 256 KiB stack; a true tail call stays O(1).
     let n = 20_000u64;
-    assert_eq!(run_deep_tailchain(NativeArch::X86_64, n, 0), n * (n + 1) / 2);
+    assert_eq!(
+        run_deep_tailchain(NativeArch::X86_64, n, 0),
+        n * (n + 1) / 2
+    );
 }
 
 #[test]
 fn test_unicorn_aarch64_deep_tailchain() {
     let n = 20_000u64;
-    assert_eq!(run_deep_tailchain(NativeArch::AArch64, n, 0), n * (n + 1) / 2);
+    assert_eq!(
+        run_deep_tailchain(NativeArch::AArch64, n, 0),
+        n * (n + 1) / 2
+    );
 }
 
 /// Two functions, `(i64) -> i64` each: func 0 (the `compile_allstack_binary`
@@ -3438,20 +4091,41 @@ const LSW_VAL: u64 = 0x8090_A0B0_C0D0_E0F0;
 
 fn loadstore_widths_wasm() -> Vec<u8> {
     use wasm_encoder::MemArg;
-    let m = |align| MemArg { offset: 0, align, memory_index: 0 };
+    let m = |align| MemArg {
+        offset: 0,
+        align,
+        memory_index: 0,
+    };
     let i = [
         // mem[A..A+8] = LSW_VAL
-        Instruction::I32Const(LSW_ADDR), Instruction::I64Const(LSW_VAL as i64), Instruction::I64Store(m(3)),
+        Instruction::I32Const(LSW_ADDR),
+        Instruction::I64Const(LSW_VAL as i64),
+        Instruction::I64Store(m(3)),
         // mem16[A+8] = 0x1234 (narrow store)
-        Instruction::I32Const(LSW_ADDR + 8), Instruction::I64Const(0x1234), Instruction::I64Store16(m(1)),
+        Instruction::I32Const(LSW_ADDR + 8),
+        Instruction::I64Const(0x1234),
+        Instruction::I64Store16(m(1)),
         // sum = load8_u + load8_s + load16_u + load16_s + load32_u + load32_s + load16_u(A+8)
-        Instruction::I32Const(LSW_ADDR), Instruction::I64Load8U(m(0)),
-        Instruction::I32Const(LSW_ADDR), Instruction::I64Load8S(m(0)), Instruction::I64Add,
-        Instruction::I32Const(LSW_ADDR), Instruction::I64Load16U(m(1)), Instruction::I64Add,
-        Instruction::I32Const(LSW_ADDR), Instruction::I64Load16S(m(1)), Instruction::I64Add,
-        Instruction::I32Const(LSW_ADDR), Instruction::I64Load32U(m(2)), Instruction::I64Add,
-        Instruction::I32Const(LSW_ADDR), Instruction::I64Load32S(m(2)), Instruction::I64Add,
-        Instruction::I32Const(LSW_ADDR + 8), Instruction::I64Load16U(m(1)), Instruction::I64Add,
+        Instruction::I32Const(LSW_ADDR),
+        Instruction::I64Load8U(m(0)),
+        Instruction::I32Const(LSW_ADDR),
+        Instruction::I64Load8S(m(0)),
+        Instruction::I64Add,
+        Instruction::I32Const(LSW_ADDR),
+        Instruction::I64Load16U(m(1)),
+        Instruction::I64Add,
+        Instruction::I32Const(LSW_ADDR),
+        Instruction::I64Load16S(m(1)),
+        Instruction::I64Add,
+        Instruction::I32Const(LSW_ADDR),
+        Instruction::I64Load32U(m(2)),
+        Instruction::I64Add,
+        Instruction::I32Const(LSW_ADDR),
+        Instruction::I64Load32S(m(2)),
+        Instruction::I64Add,
+        Instruction::I32Const(LSW_ADDR + 8),
+        Instruction::I64Load16U(m(1)),
+        Instruction::I64Add,
     ];
     make_module_with_memory(&[], &[ValType::I64], &i)
 }
@@ -3464,14 +4138,21 @@ fn loadstore_widths_expected() -> u64 {
     let d = (v as u16 as i16 as i64) as u64;
     let e = (v as u32) as u64;
     let f = (v as u32 as i32 as i64) as u64;
-    a.wrapping_add(b).wrapping_add(c).wrapping_add(d)
-        .wrapping_add(e).wrapping_add(f).wrapping_add(0x1234)
+    a.wrapping_add(b)
+        .wrapping_add(c)
+        .wrapping_add(d)
+        .wrapping_add(e)
+        .wrapping_add(f)
+        .wrapping_add(0x1234)
 }
 
 fn assert_loadstore_widths(arch: NativeArch) {
     let wasm = loadstore_widths_wasm();
     let (code, entry) = compile_allstack_binary(&wasm, arch);
-    assert_eq!(run_allstack_entry(arch, &code, entry, &[], 0), loadstore_widths_expected());
+    assert_eq!(
+        run_allstack_entry(arch, &code, entry, &[], 0),
+        loadstore_widths_expected()
+    );
 }
 
 #[test]
@@ -3493,11 +4174,17 @@ fn fp_arith_wasm() -> Vec<u8> {
     let c64 = |x: f64| Instruction::F64Const(wasm_encoder::Ieee64::from(x));
     let c32 = |x: f32| Instruction::F32Const(wasm_encoder::Ieee32::from(x));
     let i = [
-        Instruction::I64Const(7), Instruction::F64ConvertI64S,
-        c64(2.0), Instruction::F64Div,
-        c64(0.5), Instruction::F64Add,
+        Instruction::I64Const(7),
+        Instruction::F64ConvertI64S,
+        c64(2.0),
+        Instruction::F64Div,
+        c64(0.5),
+        Instruction::F64Add,
         Instruction::F64Sqrt,
-        c32(3.0), c32(3.0), Instruction::F32Mul, Instruction::F64PromoteF32,
+        c32(3.0),
+        c32(3.0),
+        Instruction::F32Mul,
+        Instruction::F64PromoteF32,
         Instruction::F64Add,
         Instruction::I64TruncF64S,
     ];
@@ -3509,9 +4196,17 @@ fn fp_arith_wasm() -> Vec<u8> {
 fn fp_cmp_wasm() -> Vec<u8> {
     let c64 = |x: f64| Instruction::F64Const(wasm_encoder::Ieee64::from(x));
     let i = [
-        c64(2.0), c64(3.0), Instruction::F64Lt,
-        c64(3.0), c64(3.0), Instruction::F64Ge, Instruction::I32Add,
-        c64(5.0), c64(1.0), Instruction::F64Lt, Instruction::I32Add,
+        c64(2.0),
+        c64(3.0),
+        Instruction::F64Lt,
+        c64(3.0),
+        c64(3.0),
+        Instruction::F64Ge,
+        Instruction::I32Add,
+        c64(5.0),
+        c64(1.0),
+        Instruction::F64Lt,
+        Instruction::I32Add,
         Instruction::I64ExtendI32S,
     ];
     make_module_with_memory(&[], &[ValType::I64], &i)
@@ -3611,8 +4306,8 @@ fn run_native_sysv_with_mem(
     extra_data: &[u8],
 ) -> u64 {
     use unicorn_engine::{
-        unicorn_const::{Arch, Mode, Prot},
         Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
     };
 
     const CODE: u64 = 0x100000;
@@ -3626,14 +4321,17 @@ fn run_native_sysv_with_mem(
             let mut uc = Unicorn::new(Arch::X86, Mode::MODE_64).unwrap();
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
-            uc.mem_map(extra_addr & !0xfff, EXTRA_SIZE, Prot::ALL).unwrap();
+            uc.mem_map(extra_addr & !0xfff, EXTRA_SIZE, Prot::ALL)
+                .unwrap();
             uc.mem_write(CODE, code).unwrap();
             uc.mem_write(extra_addr, extra_data).unwrap();
             let rsp = STACK + STACK_SIZE - 8;
-            uc.mem_write(rsp, &(CODE + code.len() as u64).to_le_bytes()).unwrap();
+            uc.mem_write(rsp, &(CODE + code.len() as u64).to_le_bytes())
+                .unwrap();
             uc.reg_write(RegisterX86::RSP, rsp).unwrap();
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
             uc.reg_read(RegisterX86::RAX).unwrap()
         }
         NativeArch::AArch64 => {
@@ -3641,13 +4339,17 @@ fn run_native_sysv_with_mem(
             let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
-            uc.mem_map(extra_addr & !0xfff, EXTRA_SIZE, Prot::ALL).unwrap();
+            uc.mem_map(extra_addr & !0xfff, EXTRA_SIZE, Prot::ALL)
+                .unwrap();
             uc.mem_write(CODE, code).unwrap();
             uc.mem_write(extra_addr, extra_data).unwrap();
-            uc.reg_write(RegisterARM64::SP, STACK + STACK_SIZE - 16).unwrap();
-            uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64).unwrap();
+            uc.reg_write(RegisterARM64::SP, STACK + STACK_SIZE - 16)
+                .unwrap();
+            uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64)
+                .unwrap();
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
             uc.reg_read(RegisterARM64::X0).unwrap()
         }
         NativeArch::Riscv64 => {
@@ -3655,13 +4357,17 @@ fn run_native_sysv_with_mem(
             let mut uc = Unicorn::new(Arch::RISCV, Mode::RISCV64).unwrap();
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
-            uc.mem_map(extra_addr & !0xfff, EXTRA_SIZE, Prot::ALL).unwrap();
+            uc.mem_map(extra_addr & !0xfff, EXTRA_SIZE, Prot::ALL)
+                .unwrap();
             uc.mem_write(CODE, code).unwrap();
             uc.mem_write(extra_addr, extra_data).unwrap();
-            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16).unwrap();
-            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64).unwrap();
+            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16)
+                .unwrap();
+            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64)
+                .unwrap();
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
             uc.reg_read(RegisterRISCV::A0).unwrap()
         }
         NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
@@ -3695,8 +4401,8 @@ fn run_native_naive_smoke_with_mem_and_locals(
     pre_locals: &[u64],
 ) {
     use unicorn_engine::{
-        unicorn_const::{Arch, Mode, Prot},
         Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
     };
 
     const CODE: u64 = 0x100000;
@@ -3710,11 +4416,17 @@ fn run_native_naive_smoke_with_mem_and_locals(
             let mut uc = Unicorn::new(Arch::X86, Mode::MODE_64).unwrap();
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
-            if extra_addr != 0 { uc.mem_map(extra_addr & !0xfff, EXTRA_SIZE, Prot::ALL).unwrap(); }
+            if extra_addr != 0 {
+                uc.mem_map(extra_addr & !0xfff, EXTRA_SIZE, Prot::ALL)
+                    .unwrap();
+            }
             uc.mem_write(CODE, code).unwrap();
-            if !extra_data.is_empty() && extra_addr != 0 { uc.mem_write(extra_addr, extra_data).unwrap(); }
+            if !extra_data.is_empty() && extra_addr != 0 {
+                uc.mem_write(extra_addr, extra_data).unwrap();
+            }
             let sp = STACK + STACK_SIZE - 0x100;
-            uc.mem_write(sp, &(CODE + code.len() as u64).to_le_bytes()).unwrap();
+            uc.mem_write(sp, &(CODE + code.len() as u64).to_le_bytes())
+                .unwrap();
             uc.reg_write(RegisterX86::RSP, sp).unwrap();
             // The x86-64 naive CTX mechanism: StartFn stores the initial r15 value as the
             // "old CTX" in RAX, which StartBody then pushes as local 0's backing slot.
@@ -3738,12 +4450,18 @@ fn run_native_naive_smoke_with_mem_and_locals(
             let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
-            if extra_addr != 0 { uc.mem_map(extra_addr & !0xfff, EXTRA_SIZE, Prot::ALL).unwrap(); }
+            if extra_addr != 0 {
+                uc.mem_map(extra_addr & !0xfff, EXTRA_SIZE, Prot::ALL)
+                    .unwrap();
+            }
             uc.mem_write(CODE, code).unwrap();
-            if !extra_data.is_empty() && extra_addr != 0 { uc.mem_write(extra_addr, extra_data).unwrap(); }
+            if !extra_data.is_empty() && extra_addr != 0 {
+                uc.mem_write(extra_addr, extra_data).unwrap();
+            }
             let initial_sp = STACK + STACK_SIZE - 16;
             uc.reg_write(RegisterARM64::SP, initial_sp).unwrap();
-            uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64).unwrap();
+            uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64)
+                .unwrap();
             // Pre-populate local variables: local n is at [fp - (n+1)*8].
             // After `stp x29,x30,[sp,#-16]!; mov x29,sp`, fp = initial_sp - 16.
             let fp = initial_sp - 16;
@@ -3752,19 +4470,26 @@ fn run_native_naive_smoke_with_mem_and_locals(
                 uc.mem_write(addr, &val.to_le_bytes()).unwrap();
             }
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
         }
         NativeArch::Riscv64 => {
             use unicorn_engine::RegisterRISCV;
             let mut uc = Unicorn::new(Arch::RISCV, Mode::RISCV64).unwrap();
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
-            if extra_addr != 0 { uc.mem_map(extra_addr & !0xfff, EXTRA_SIZE, Prot::ALL).unwrap(); }
+            if extra_addr != 0 {
+                uc.mem_map(extra_addr & !0xfff, EXTRA_SIZE, Prot::ALL)
+                    .unwrap();
+            }
             uc.mem_write(CODE, code).unwrap();
-            if !extra_data.is_empty() && extra_addr != 0 { uc.mem_write(extra_addr, extra_data).unwrap(); }
+            if !extra_data.is_empty() && extra_addr != 0 {
+                uc.mem_write(extra_addr, extra_data).unwrap();
+            }
             let initial_sp = STACK + STACK_SIZE - 16;
             uc.reg_write(RegisterRISCV::SP, initial_sp).unwrap();
-            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64).unwrap();
+            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64)
+                .unwrap();
             // Pre-populate local variables for the RISC-V naive ABI frame.
             // Naive StartFn: `addi sp,sp,-8; sd fp,[sp]; mv fp,sp; addi sp,sp,-alloc`
             // So FP = initial_sp - 8, and local n is at [FP-(n+1)*8] = [initial_sp-8-(n+1)*8].
@@ -3774,7 +4499,8 @@ fn run_native_naive_smoke_with_mem_and_locals(
                 uc.mem_write(addr, &val.to_le_bytes()).unwrap();
             }
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
         }
         NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
             panic!("not implemented for {arch:?} in this helper");
@@ -3794,12 +4520,17 @@ fn assert_native_compile_module_with_memory(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_module_with_memory(&[], &[ValType::I32], &[Instruction::MemorySize(0)]);
     let base_asm = compile_native_asm(&wasm, arch, abi);
     let asm = format!("{base_asm}{STUB_MEM_PAGES}");
-    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    let Some(code) = assemble_or_skip(arch, &asm) else {
+        return;
+    };
     match abi {
-        NativeAbi::Sysv => assert_eq!(run_native_sysv_const(arch, &code), 1,
-            "memory.size should return 1 page for {arch:?} sysv"),
+        NativeAbi::Sysv => assert_eq!(
+            run_native_sysv_const(arch, &code),
+            1,
+            "memory.size should return 1 page for {arch:?} sysv"
+        ),
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
-    NativeAbi::Lfi => {}
+        NativeAbi::Lfi => {}
     }
 }
 
@@ -3849,11 +4580,17 @@ fn assert_native_compile_module_with_data(arch: NativeArch, abi: NativeAbi) {
         &[ValType::I32],
         &[
             Instruction::I32Const(NATIVE_WASM_MEM as i32),
-            Instruction::I32Load(MemArg { offset: 0, align: 0, memory_index: 0 }),
+            Instruction::I32Load(MemArg {
+                offset: 0,
+                align: 0,
+                memory_index: 0,
+            }),
         ],
     );
     let asm = compile_native_asm(&wasm, arch, abi);
-    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    let Some(code) = assemble_or_skip(arch, &asm) else {
+        return;
+    };
     let data: [u8; 4] = 42u32.to_le_bytes();
     match abi {
         NativeAbi::Sysv => assert_eq!(
@@ -3862,7 +4599,7 @@ fn assert_native_compile_module_with_data(arch: NativeArch, abi: NativeAbi) {
             "i32.load should return 42 for {arch:?} sysv",
         ),
         NativeAbi::Naive => run_native_naive_smoke_with_mem(arch, &code, NATIVE_WASM_MEM, &data),
-    NativeAbi::Lfi => {}
+        NativeAbi::Lfi => {}
     }
 }
 
@@ -3954,7 +4691,10 @@ fn assert_native_compile_module_with_import(arch: NativeArch, abi: NativeAbi) {
     // One imported function (index 0 = import), one local body (index 1).
     let import_count = 1u32;
     let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(
-        &bodies, &fsigs, &sigs_wp, import_count,
+        &bodies,
+        &fsigs,
+        &sigs_wp,
+        import_count,
     );
     let ops = dce_pass!(raw_ops);
     let mut reencoder = RoundtripReencoder;
@@ -3964,79 +4704,129 @@ fn assert_native_compile_module_with_import(arch: NativeArch, abi: NativeAbi) {
 
     match (arch, abi) {
         (NativeArch::X86_64, NativeAbi::Naive) => {
-            use portal_solutions_blitz_x86_64::{naive, X64Arch};
+            use portal_solutions_blitz_x86_64::{X64Arch, naive};
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, X64Arch::default(),
-                    &mut state, imports, &[], &[], &op, &mut reencoder, import_count,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    X64Arch::default(),
+                    &mut state,
+                    imports,
+                    &[],
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    import_count,
+                )
+                .unwrap();
             }
         }
         (NativeArch::X86_64, NativeAbi::Sysv) => {
-            use portal_solutions_blitz_x86_64::{sysv, X64Arch};
+            use portal_solutions_blitz_x86_64::{X64Arch, sysv};
             let mut state = sysv::SysVState::default();
             for op in ops {
                 let op = op.unwrap();
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, X64Arch::default(),
-                    &mut state, imports, &op, &mut reencoder, import_count,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    X64Arch::default(),
+                    &mut state,
+                    imports,
+                    &op,
+                    &mut reencoder,
+                    import_count,
+                )
+                .unwrap();
             }
         }
         (NativeArch::AArch64, NativeAbi::Naive) => {
-            use portal_solutions_blitz_aarch64::{naive, AArch64Arch};
+            use portal_solutions_blitz_aarch64::{AArch64Arch, naive};
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, AArch64Arch::default(),
-                    &mut state, imports, &[], &[], &op, &mut reencoder, import_count,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    AArch64Arch::default(),
+                    &mut state,
+                    imports,
+                    &[],
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    import_count,
+                )
+                .unwrap();
             }
         }
         (NativeArch::AArch64, NativeAbi::Sysv) => {
-            use portal_solutions_blitz_aarch64::{naive, sysv, AArch64Arch};
+            use portal_solutions_blitz_aarch64::{AArch64Arch, naive, sysv};
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, AArch64Arch::default(),
-                    &mut state, imports, &op, &mut reencoder, import_count,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    AArch64Arch::default(),
+                    &mut state,
+                    imports,
+                    &op,
+                    &mut reencoder,
+                    import_count,
+                )
+                .unwrap();
             }
         }
         (NativeArch::Riscv64, NativeAbi::Naive) => {
-            use portal_solutions_blitz_riscv64::{naive, RiscV64Arch};
+            use portal_solutions_blitz_riscv64::{RiscV64Arch, naive};
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, RiscV64Arch::default(),
-                    &mut state, imports, &[], &[], &op, &mut reencoder, import_count,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    RiscV64Arch::default(),
+                    &mut state,
+                    imports,
+                    &[],
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    import_count,
+                )
+                .unwrap();
             }
         }
         (NativeArch::Riscv64, NativeAbi::Sysv) => {
-            use portal_solutions_blitz_riscv64::{naive, sysv, RiscV64Arch};
+            use portal_solutions_blitz_riscv64::{RiscV64Arch, naive, sysv};
             let mut state = naive::State::default();
             for op in ops {
                 let op = op.unwrap();
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, RiscV64Arch::default(),
-                    &mut state, imports, &op, &mut reencoder, import_count,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    RiscV64Arch::default(),
+                    &mut state,
+                    imports,
+                    &op,
+                    &mut reencoder,
+                    import_count,
+                )
+                .unwrap();
             }
         }
-    (_, NativeAbi::Lfi) => panic!("LFI not supported in this test helper"),
+        (_, NativeAbi::Lfi) => panic!("LFI not supported in this test helper"),
         (NativeArch::Riscv32, _) | (NativeArch::Arm, _) | (NativeArch::I686, _) => {
             panic!("not implemented for ILP32 arch in this helper");
         }
     }
     let base_asm = normalize_native_asm(arch, out.0);
     let asm = format!("{base_asm}{}", import_stub_add_one(arch));
-    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    let Some(code) = assemble_or_skip(arch, &asm) else {
+        return;
+    };
     match abi {
         NativeAbi::Sysv => assert_eq!(
             run_native_sysv_const(arch, &code),
@@ -4044,7 +4834,7 @@ fn assert_native_compile_module_with_import(arch: NativeArch, abi: NativeAbi) {
             "env::add_one(42) should return 43 for {arch:?} sysv",
         ),
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
-    NativeAbi::Lfi => {}
+        NativeAbi::Lfi => {}
     }
 }
 
@@ -4120,8 +4910,8 @@ macro_rules! native_bin_variants {
 /// - RISC-V: args[0..4] → A0, A1, A2, A3; return A0
 fn run_native_sysv_with_args(arch: NativeArch, code: &[u8], args: &[u64]) -> u64 {
     use unicorn_engine::{
-        unicorn_const::{Arch, Mode, Prot},
         Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
     };
 
     const CODE: u64 = 0x100000;
@@ -4136,15 +4926,22 @@ fn run_native_sysv_with_args(arch: NativeArch, code: &[u8], args: &[u64]) -> u64
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
             let rsp = STACK + STACK_SIZE - 8;
-            uc.mem_write(rsp, &(CODE + code.len() as u64).to_le_bytes()).unwrap();
+            uc.mem_write(rsp, &(CODE + code.len() as u64).to_le_bytes())
+                .unwrap();
             uc.reg_write(RegisterX86::RSP, rsp).unwrap();
-            let arg_regs = [RegisterX86::RDI, RegisterX86::RSI, RegisterX86::RDX, RegisterX86::RCX];
+            let arg_regs = [
+                RegisterX86::RDI,
+                RegisterX86::RSI,
+                RegisterX86::RDX,
+                RegisterX86::RCX,
+            ];
             for (i, &v) in args.iter().enumerate().take(4) {
                 uc.reg_write(arg_regs[i], v).unwrap();
             }
             attach_trace_hook(&mut uc, arch, CODE, code.len());
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
             uc.reg_read(RegisterX86::RAX).unwrap()
         }
         NativeArch::AArch64 => {
@@ -4153,15 +4950,23 @@ fn run_native_sysv_with_args(arch: NativeArch, code: &[u8], args: &[u64]) -> u64
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
-            uc.reg_write(RegisterARM64::SP, STACK + STACK_SIZE - 16).unwrap();
-            uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64).unwrap();
-            let arg_regs = [RegisterARM64::X0, RegisterARM64::X1, RegisterARM64::X2, RegisterARM64::X3];
+            uc.reg_write(RegisterARM64::SP, STACK + STACK_SIZE - 16)
+                .unwrap();
+            uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64)
+                .unwrap();
+            let arg_regs = [
+                RegisterARM64::X0,
+                RegisterARM64::X1,
+                RegisterARM64::X2,
+                RegisterARM64::X3,
+            ];
             for (i, &v) in args.iter().enumerate().take(4) {
                 uc.reg_write(arg_regs[i], v).unwrap();
             }
             attach_trace_hook(&mut uc, arch, CODE, code.len());
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
             uc.reg_read(RegisterARM64::X0).unwrap()
         }
         NativeArch::Riscv64 => {
@@ -4170,15 +4975,23 @@ fn run_native_sysv_with_args(arch: NativeArch, code: &[u8], args: &[u64]) -> u64
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
-            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16).unwrap();
-            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64).unwrap();
-            let arg_regs = [RegisterRISCV::A0, RegisterRISCV::A1, RegisterRISCV::A2, RegisterRISCV::A3];
+            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16)
+                .unwrap();
+            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64)
+                .unwrap();
+            let arg_regs = [
+                RegisterRISCV::A0,
+                RegisterRISCV::A1,
+                RegisterRISCV::A2,
+                RegisterRISCV::A3,
+            ];
             for (i, &v) in args.iter().enumerate().take(4) {
                 uc.reg_write(arg_regs[i], v).unwrap();
             }
             attach_trace_hook(&mut uc, arch, CODE, code.len());
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
             uc.reg_read(RegisterRISCV::A0).unwrap()
         }
         NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
@@ -4198,8 +5011,8 @@ fn run_native_sysv_with_args_and_mem(
     mem_size: usize,
 ) -> u64 {
     use unicorn_engine::{
-        unicorn_const::{Arch, Mode, Prot},
         Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
     };
 
     const CODE: u64 = 0x100000;
@@ -4212,17 +5025,29 @@ fn run_native_sysv_with_args_and_mem(
             let mut uc = Unicorn::new(Arch::X86, Mode::MODE_64).unwrap();
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
-            uc.mem_map(mem_addr & !0xfff, mem_size as u64 + (mem_addr & 0xfff), Prot::ALL).unwrap();
+            uc.mem_map(
+                mem_addr & !0xfff,
+                mem_size as u64 + (mem_addr & 0xfff),
+                Prot::ALL,
+            )
+            .unwrap();
             uc.mem_write(CODE, code).unwrap();
             let rsp = STACK + STACK_SIZE - 8;
-            uc.mem_write(rsp, &(CODE + code.len() as u64).to_le_bytes()).unwrap();
+            uc.mem_write(rsp, &(CODE + code.len() as u64).to_le_bytes())
+                .unwrap();
             uc.reg_write(RegisterX86::RSP, rsp).unwrap();
-            let arg_regs = [RegisterX86::RDI, RegisterX86::RSI, RegisterX86::RDX, RegisterX86::RCX];
+            let arg_regs = [
+                RegisterX86::RDI,
+                RegisterX86::RSI,
+                RegisterX86::RDX,
+                RegisterX86::RCX,
+            ];
             for (i, &v) in args.iter().enumerate().take(4) {
                 uc.reg_write(arg_regs[i], v).unwrap();
             }
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
             uc.reg_read(RegisterX86::RAX).unwrap()
         }
         NativeArch::AArch64 => {
@@ -4230,16 +5055,29 @@ fn run_native_sysv_with_args_and_mem(
             let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
-            uc.mem_map(mem_addr & !0xfff, mem_size as u64 + (mem_addr & 0xfff), Prot::ALL).unwrap();
+            uc.mem_map(
+                mem_addr & !0xfff,
+                mem_size as u64 + (mem_addr & 0xfff),
+                Prot::ALL,
+            )
+            .unwrap();
             uc.mem_write(CODE, code).unwrap();
-            uc.reg_write(RegisterARM64::SP, STACK + STACK_SIZE - 16).unwrap();
-            uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64).unwrap();
-            let arg_regs = [RegisterARM64::X0, RegisterARM64::X1, RegisterARM64::X2, RegisterARM64::X3];
+            uc.reg_write(RegisterARM64::SP, STACK + STACK_SIZE - 16)
+                .unwrap();
+            uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64)
+                .unwrap();
+            let arg_regs = [
+                RegisterARM64::X0,
+                RegisterARM64::X1,
+                RegisterARM64::X2,
+                RegisterARM64::X3,
+            ];
             for (i, &v) in args.iter().enumerate().take(4) {
                 uc.reg_write(arg_regs[i], v).unwrap();
             }
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
             uc.reg_read(RegisterARM64::X0).unwrap()
         }
         NativeArch::Riscv64 => {
@@ -4247,16 +5085,29 @@ fn run_native_sysv_with_args_and_mem(
             let mut uc = Unicorn::new(Arch::RISCV, Mode::RISCV64).unwrap();
             uc.mem_map(CODE, 0x10000, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
-            uc.mem_map(mem_addr & !0xfff, mem_size as u64 + (mem_addr & 0xfff), Prot::ALL).unwrap();
+            uc.mem_map(
+                mem_addr & !0xfff,
+                mem_size as u64 + (mem_addr & 0xfff),
+                Prot::ALL,
+            )
+            .unwrap();
             uc.mem_write(CODE, code).unwrap();
-            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16).unwrap();
-            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64).unwrap();
-            let arg_regs = [RegisterRISCV::A0, RegisterRISCV::A1, RegisterRISCV::A2, RegisterRISCV::A3];
+            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16)
+                .unwrap();
+            uc.reg_write(RegisterRISCV::RA, CODE + code.len() as u64)
+                .unwrap();
+            let arg_regs = [
+                RegisterRISCV::A0,
+                RegisterRISCV::A1,
+                RegisterRISCV::A2,
+                RegisterRISCV::A3,
+            ];
             for (i, &v) in args.iter().enumerate().take(4) {
                 uc.reg_write(arg_regs[i], v).unwrap();
             }
             attach_trace_hook(&mut uc, arch, CODE, code.len());
-            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
+            uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+                .unwrap();
             uc.reg_read(RegisterRISCV::A0).unwrap()
         }
         NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
@@ -4288,84 +5139,132 @@ fn compile_native_binary(wasm: &[u8], arch: NativeArch, abi: NativeAbi) -> Vec<u
 
     match (arch, abi) {
         (NativeArch::X86_64, NativeAbi::Naive) => {
-            use portal_solutions_blitz_x86_64::{naive, X64Arch, X64Label};
             use portal_solutions_asm_x86_64::out::iced::IcedWriter;
+            use portal_solutions_blitz_x86_64::{X64Arch, X64Label, naive};
             let mut out = IcedWriter::<X64Label>::new(0x100000);
             let mut state = naive::State::default();
             for op in ops {
                 naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, X64Arch::default(),
-                    &mut state, &[], &[], &[], &op.unwrap(), &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    X64Arch::default(),
+                    &mut state,
+                    &[],
+                    &[],
+                    &[],
+                    &op.unwrap(),
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
             out.into_bytes()
         }
         (NativeArch::X86_64, NativeAbi::Sysv) => {
-            use portal_solutions_blitz_x86_64::{sysv, X64Arch, X64Label};
             use portal_solutions_asm_x86_64::out::iced::IcedWriter;
+            use portal_solutions_blitz_x86_64::{X64Arch, X64Label, sysv};
             let mut out = IcedWriter::<X64Label>::new(0x100000);
             let mut state = sysv::SysVState::default();
             for op in ops {
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, X64Arch::default(),
-                    &mut state, &[], &op.unwrap(), &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    X64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op.unwrap(),
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
             out.into_bytes()
         }
         (NativeArch::AArch64, NativeAbi::Naive) => {
-            use portal_solutions_blitz_aarch64::{naive, AArch64Arch, AArch64Label};
             use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+            use portal_solutions_blitz_aarch64::{AArch64Arch, AArch64Label, naive};
             let mut out = AArch64Writer::<AArch64Label>::new();
             let mut state = naive::State::default();
             for op in ops {
                 naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, AArch64Arch::default(),
-                    &mut state, &[], &[], &[], &op.unwrap(), &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    AArch64Arch::default(),
+                    &mut state,
+                    &[],
+                    &[],
+                    &[],
+                    &op.unwrap(),
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
             out.into_bytes()
         }
         (NativeArch::AArch64, NativeAbi::Sysv) => {
-            use portal_solutions_blitz_aarch64::{naive, sysv, AArch64Arch, AArch64Label};
             use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+            use portal_solutions_blitz_aarch64::{AArch64Arch, AArch64Label, naive, sysv};
             let mut out = AArch64Writer::<AArch64Label>::new();
             let mut state = naive::State::default();
             for op in ops {
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, AArch64Arch::default(),
-                    &mut state, &[], &op.unwrap(), &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    AArch64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op.unwrap(),
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
             out.into_bytes()
         }
         (NativeArch::Riscv64, NativeAbi::Naive) => {
-            use portal_solutions_blitz_riscv64::{naive, RiscV64Arch, RiscvLabel};
             use portal_solutions_asm_riscv64::out::rv_asm_backend::RvAsmWriter;
+            use portal_solutions_blitz_riscv64::{RiscV64Arch, RiscvLabel, naive};
             let mut out = RvAsmWriter::<RiscvLabel>::new();
             let mut state = naive::State::default();
             for op in ops {
                 naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, RiscV64Arch::default(),
-                    &mut state, &[], &[], &[], &op.unwrap(), &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    RiscV64Arch::default(),
+                    &mut state,
+                    &[],
+                    &[],
+                    &[],
+                    &op.unwrap(),
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
             out.into_bytes()
         }
         (NativeArch::Riscv64, NativeAbi::Sysv) => {
-            use portal_solutions_blitz_riscv64::{naive, sysv, RiscV64Arch, RiscvLabel};
             use portal_solutions_asm_riscv64::out::rv_asm_backend::RvAsmWriter;
+            use portal_solutions_blitz_riscv64::{RiscV64Arch, RiscvLabel, naive, sysv};
             let mut out = RvAsmWriter::<RiscvLabel>::new();
             let mut state = naive::State::default();
             for op in ops {
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, RiscV64Arch::default(),
-                    &mut state, &[], &op.unwrap(), &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    RiscV64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op.unwrap(),
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
             out.into_bytes()
         }
-    (_, NativeAbi::Lfi) => panic!("LFI not supported in this test helper"),
+        (_, NativeAbi::Lfi) => panic!("LFI not supported in this test helper"),
         (NativeArch::Riscv32, _) | (NativeArch::Arm, _) | (NativeArch::I686, _) => {
             panic!("not implemented for ILP32 arch in this helper");
         }
@@ -4393,7 +5292,12 @@ fn compile_native_asm_with_imports(
         }
     }
     let import_count = imports.len() as u32;
-    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, import_count);
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(
+        &bodies,
+        &fsigs,
+        &sigs_wp,
+        import_count,
+    );
     let ops = dce_pass!(raw_ops);
     let mut reencoder = RoundtripReencoder;
     let mut out = NativeAsmWriter(String::new());
@@ -4401,66 +5305,114 @@ fn compile_native_asm_with_imports(
 
     match (arch, abi) {
         (NativeArch::X86_64, NativeAbi::Naive) => {
-            use portal_solutions_blitz_x86_64::{naive, X64Arch};
+            use portal_solutions_blitz_x86_64::{X64Arch, naive};
             let mut state = naive::State::default();
             for op in ops {
                 naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, X64Arch::default(),
-                    &mut state, imports, &[], &[], &op.unwrap(), &mut reencoder, import_count,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    X64Arch::default(),
+                    &mut state,
+                    imports,
+                    &[],
+                    &[],
+                    &op.unwrap(),
+                    &mut reencoder,
+                    import_count,
+                )
+                .unwrap();
             }
         }
         (NativeArch::X86_64, NativeAbi::Sysv) => {
-            use portal_solutions_blitz_x86_64::{sysv, X64Arch};
+            use portal_solutions_blitz_x86_64::{X64Arch, sysv};
             let mut state = sysv::SysVState::default();
             for op in ops {
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, X64Arch::default(),
-                    &mut state, imports, &op.unwrap(), &mut reencoder, import_count,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    X64Arch::default(),
+                    &mut state,
+                    imports,
+                    &op.unwrap(),
+                    &mut reencoder,
+                    import_count,
+                )
+                .unwrap();
             }
         }
         (NativeArch::AArch64, NativeAbi::Naive) => {
-            use portal_solutions_blitz_aarch64::{naive, AArch64Arch};
+            use portal_solutions_blitz_aarch64::{AArch64Arch, naive};
             let mut state = naive::State::default();
             for op in ops {
                 naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, AArch64Arch::default(),
-                    &mut state, imports, &[], &[], &op.unwrap(), &mut reencoder, import_count,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    AArch64Arch::default(),
+                    &mut state,
+                    imports,
+                    &[],
+                    &[],
+                    &op.unwrap(),
+                    &mut reencoder,
+                    import_count,
+                )
+                .unwrap();
             }
         }
         (NativeArch::AArch64, NativeAbi::Sysv) => {
-            use portal_solutions_blitz_aarch64::{naive, sysv, AArch64Arch};
+            use portal_solutions_blitz_aarch64::{AArch64Arch, naive, sysv};
             let mut state = naive::State::default();
             for op in ops {
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, AArch64Arch::default(),
-                    &mut state, imports, &op.unwrap(), &mut reencoder, import_count,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    AArch64Arch::default(),
+                    &mut state,
+                    imports,
+                    &op.unwrap(),
+                    &mut reencoder,
+                    import_count,
+                )
+                .unwrap();
             }
         }
         (NativeArch::Riscv64, NativeAbi::Naive) => {
-            use portal_solutions_blitz_riscv64::{naive, RiscV64Arch};
+            use portal_solutions_blitz_riscv64::{RiscV64Arch, naive};
             let mut state = naive::State::default();
             for op in ops {
                 naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, RiscV64Arch::default(),
-                    &mut state, imports, &[], &[], &op.unwrap(), &mut reencoder, import_count,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    RiscV64Arch::default(),
+                    &mut state,
+                    imports,
+                    &[],
+                    &[],
+                    &op.unwrap(),
+                    &mut reencoder,
+                    import_count,
+                )
+                .unwrap();
             }
         }
         (NativeArch::Riscv64, NativeAbi::Sysv) => {
-            use portal_solutions_blitz_riscv64::{naive, sysv, RiscV64Arch};
+            use portal_solutions_blitz_riscv64::{RiscV64Arch, naive, sysv};
             let mut state = naive::State::default();
             for op in ops {
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, RiscV64Arch::default(),
-                    &mut state, imports, &op.unwrap(), &mut reencoder, import_count,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    RiscV64Arch::default(),
+                    &mut state,
+                    imports,
+                    &op.unwrap(),
+                    &mut reencoder,
+                    import_count,
+                )
+                .unwrap();
             }
         }
-    (_, NativeAbi::Lfi) => panic!("LFI not supported in this test helper"),
+        (_, NativeAbi::Lfi) => panic!("LFI not supported in this test helper"),
         (NativeArch::Riscv32, _) | (NativeArch::Arm, _) | (NativeArch::I686, _) => {
             panic!("not implemented for ILP32 arch in this helper");
         }
@@ -4477,11 +5429,13 @@ fn assert_native_exec_const(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_module(&[], &[ValType::I32], &[Instruction::I32Const(42)]);
     let asm = compile_native_asm(&wasm, arch, abi);
     assert!(!asm.is_empty());
-    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    let Some(code) = assemble_or_skip(arch, &asm) else {
+        return;
+    };
     match abi {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => assert_eq!(run_native_sysv_with_args(arch, &code, &[]) as u32, 42),
-    NativeAbi::Lfi => {}
+        NativeAbi::Lfi => {}
     }
 }
 native_variants!(exec_const, assert_native_exec_const);
@@ -4490,11 +5444,15 @@ fn assert_native_bin_exec_const(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_module(&[], &[ValType::I32], &[Instruction::I32Const(42)]);
     let code = compile_native_binary(&wasm, arch, abi);
     assert!(!code.is_empty());
-    eprintln!("exec_const binary ({arch:?}/{abi:?}): {} bytes: {:02x?}", code.len(), &code);
+    eprintln!(
+        "exec_const binary ({arch:?}/{abi:?}): {} bytes: {:02x?}",
+        code.len(),
+        &code
+    );
     match abi {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => assert_eq!(run_native_sysv_with_args(arch, &code, &[]) as u32, 42),
-    NativeAbi::Lfi => {}
+        NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_const, assert_native_bin_exec_const);
@@ -4504,11 +5462,13 @@ fn assert_native_exec_i64const(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_module(&[], &[ValType::I64], &[Instruction::I64Const(val as i64)]);
     let asm = compile_native_asm(&wasm, arch, abi);
     assert!(!asm.is_empty());
-    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    let Some(code) = assemble_or_skip(arch, &asm) else {
+        return;
+    };
     match abi {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => assert_eq!(run_native_sysv_with_args(arch, &code, &[]), val),
-    NativeAbi::Lfi => {}
+        NativeAbi::Lfi => {}
     }
 }
 native_variants!(exec_i64const, assert_native_exec_i64const);
@@ -4521,29 +5481,46 @@ fn assert_native_bin_exec_i64const(arch: NativeArch, abi: NativeAbi) {
     match abi {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => assert_eq!(run_native_sysv_with_args(arch, &code, &[]), val),
-    NativeAbi::Lfi => {}
+        NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_i64const, assert_native_bin_exec_i64const);
 
 fn assert_native_exec_add(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_module(
-        &[ValType::I32, ValType::I32], &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Add],
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Add,
+        ],
     );
     let asm = compile_native_asm(&wasm, arch, abi);
     assert!(!asm.is_empty());
-    if matches!(abi, NativeAbi::Naive) { return; }
-    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    if matches!(abi, NativeAbi::Naive) {
+        return;
+    }
+    let Some(code) = assemble_or_skip(arch, &asm) else {
+        return;
+    };
     assert_eq!(run_native_sysv_with_args(arch, &code, &[5, 3]) as u32, 8);
-    assert_eq!(run_native_sysv_with_args(arch, &code, &[100, 200]) as u32, 300);
+    assert_eq!(
+        run_native_sysv_with_args(arch, &code, &[100, 200]) as u32,
+        300
+    );
 }
 native_variants!(exec_add, assert_native_exec_add);
 
 fn assert_native_bin_exec_add(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_module(
-        &[ValType::I32, ValType::I32], &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Add],
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Add,
+        ],
     );
     let code = compile_native_binary(&wasm, arch, abi);
     assert!(!code.is_empty());
@@ -4551,31 +5528,51 @@ fn assert_native_bin_exec_add(arch: NativeArch, abi: NativeAbi) {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => {
             assert_eq!(run_native_sysv_with_args(arch, &code, &[5, 3]) as u32, 8);
-            assert_eq!(run_native_sysv_with_args(arch, &code, &[100, 200]) as u32, 300);
+            assert_eq!(
+                run_native_sysv_with_args(arch, &code, &[100, 200]) as u32,
+                300
+            );
         }
-    NativeAbi::Lfi => {}
+        NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_add, assert_native_bin_exec_add);
 
 fn assert_native_exec_sub(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_module(
-        &[ValType::I32, ValType::I32], &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Sub],
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Sub,
+        ],
     );
     let asm = compile_native_asm(&wasm, arch, abi);
     assert!(!asm.is_empty());
-    if matches!(abi, NativeAbi::Naive) { return; }
-    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    if matches!(abi, NativeAbi::Naive) {
+        return;
+    }
+    let Some(code) = assemble_or_skip(arch, &asm) else {
+        return;
+    };
     assert_eq!(run_native_sysv_with_args(arch, &code, &[10, 3]) as u32, 7);
-    assert_eq!(run_native_sysv_with_args(arch, &code, &[3, 10]) as u32, (-7i32) as u32);
+    assert_eq!(
+        run_native_sysv_with_args(arch, &code, &[3, 10]) as u32,
+        (-7i32) as u32
+    );
 }
 native_variants!(exec_sub, assert_native_exec_sub);
 
 fn assert_native_bin_exec_sub(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_module(
-        &[ValType::I32, ValType::I32], &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Sub],
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Sub,
+        ],
     );
     let code = compile_native_binary(&wasm, arch, abi);
     assert!(!code.is_empty());
@@ -4583,121 +5580,180 @@ fn assert_native_bin_exec_sub(arch: NativeArch, abi: NativeAbi) {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => {
             assert_eq!(run_native_sysv_with_args(arch, &code, &[10, 3]) as u32, 7);
-            assert_eq!(run_native_sysv_with_args(arch, &code, &[3, 10]) as u32, (-7i32) as u32);
+            assert_eq!(
+                run_native_sysv_with_args(arch, &code, &[3, 10]) as u32,
+                (-7i32) as u32
+            );
         }
-    NativeAbi::Lfi => {}
+        NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_sub, assert_native_bin_exec_sub);
 
 fn assert_native_exec_divu(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_module(
-        &[ValType::I32, ValType::I32], &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32DivU],
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32DivU,
+        ],
     );
     let asm = compile_native_asm(&wasm, arch, abi);
     assert!(!asm.is_empty());
-    if matches!(abi, NativeAbi::Naive) { return; }
-    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    if matches!(abi, NativeAbi::Naive) {
+        return;
+    }
+    let Some(code) = assemble_or_skip(arch, &asm) else {
+        return;
+    };
     assert_eq!(run_native_sysv_with_args(arch, &code, &[10, 2]) as u32, 5);
 }
 native_variants!(exec_divu, assert_native_exec_divu);
 
 fn assert_native_bin_exec_divu(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_module(
-        &[ValType::I32, ValType::I32], &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32DivU],
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32DivU,
+        ],
     );
     let code = compile_native_binary(&wasm, arch, abi);
     assert!(!code.is_empty());
     match abi {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => assert_eq!(run_native_sysv_with_args(arch, &code, &[10, 2]) as u32, 5),
-    NativeAbi::Lfi => {}
+        NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_divu, assert_native_bin_exec_divu);
 
 fn assert_native_exec_localset(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_module(
-        &[ValType::I32], &[ValType::I32],
-        &[Instruction::I32Const(77), Instruction::LocalSet(0), Instruction::LocalGet(0)],
+        &[ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::I32Const(77),
+            Instruction::LocalSet(0),
+            Instruction::LocalGet(0),
+        ],
     );
     let asm = compile_native_asm(&wasm, arch, abi);
     assert!(!asm.is_empty());
-    if matches!(abi, NativeAbi::Naive) { return; }
-    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    if matches!(abi, NativeAbi::Naive) {
+        return;
+    }
+    let Some(code) = assemble_or_skip(arch, &asm) else {
+        return;
+    };
     assert_eq!(run_native_sysv_with_args(arch, &code, &[0]) as u32, 77);
 }
 native_variants!(exec_localset, assert_native_exec_localset);
 
 fn assert_native_bin_exec_localset(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_module(
-        &[ValType::I32], &[ValType::I32],
-        &[Instruction::I32Const(77), Instruction::LocalSet(0), Instruction::LocalGet(0)],
+        &[ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::I32Const(77),
+            Instruction::LocalSet(0),
+            Instruction::LocalGet(0),
+        ],
     );
     let code = compile_native_binary(&wasm, arch, abi);
     assert!(!code.is_empty());
     match abi {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => assert_eq!(run_native_sysv_with_args(arch, &code, &[0]) as u32, 77),
-    NativeAbi::Lfi => {}
+        NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_localset, assert_native_bin_exec_localset);
 
 fn assert_native_exec_i64sub(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_module(
-        &[ValType::I64, ValType::I64], &[ValType::I64],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I64Sub],
+        &[ValType::I64, ValType::I64],
+        &[ValType::I64],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I64Sub,
+        ],
     );
     let asm = compile_native_asm(&wasm, arch, abi);
     assert!(!asm.is_empty());
-    if matches!(abi, NativeAbi::Naive) { return; }
-    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    if matches!(abi, NativeAbi::Naive) {
+        return;
+    }
+    let Some(code) = assemble_or_skip(arch, &asm) else {
+        return;
+    };
     assert_eq!(run_native_sysv_with_args(arch, &code, &[100, 37]), 63);
 }
 native_variants!(exec_i64sub, assert_native_exec_i64sub);
 
 fn assert_native_bin_exec_i64sub(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_module(
-        &[ValType::I64, ValType::I64], &[ValType::I64],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I64Sub],
+        &[ValType::I64, ValType::I64],
+        &[ValType::I64],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I64Sub,
+        ],
     );
     let code = compile_native_binary(&wasm, arch, abi);
     assert!(!code.is_empty());
     match abi {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => assert_eq!(run_native_sysv_with_args(arch, &code, &[100, 37]), 63),
-    NativeAbi::Lfi => {}
+        NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_i64sub, assert_native_bin_exec_i64sub);
 
 fn assert_native_exec_shl(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_module(
-        &[ValType::I32, ValType::I32], &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Shl],
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Shl,
+        ],
     );
     let asm = compile_native_asm(&wasm, arch, abi);
     assert!(!asm.is_empty());
-    if matches!(abi, NativeAbi::Naive) { return; }
-    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    if matches!(abi, NativeAbi::Naive) {
+        return;
+    }
+    let Some(code) = assemble_or_skip(arch, &asm) else {
+        return;
+    };
     assert_eq!(run_native_sysv_with_args(arch, &code, &[3, 4]) as u32, 48);
 }
 native_variants!(exec_shl, assert_native_exec_shl);
 
 fn assert_native_bin_exec_shl(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_module(
-        &[ValType::I32, ValType::I32], &[ValType::I32],
-        &[Instruction::LocalGet(0), Instruction::LocalGet(1), Instruction::I32Shl],
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Shl,
+        ],
     );
     let code = compile_native_binary(&wasm, arch, abi);
     assert!(!code.is_empty());
     match abi {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => assert_eq!(run_native_sysv_with_args(arch, &code, &[3, 4]) as u32, 48),
-    NativeAbi::Lfi => {}
+        NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_shl, assert_native_bin_exec_shl);
@@ -4705,7 +5761,8 @@ native_bin_variants!(exec_shl, assert_native_bin_exec_shl);
 fn assert_native_exec_brtable(arch: NativeArch, abi: NativeAbi) {
     use wasm_encoder::BlockType;
     let wasm = make_module(
-        &[ValType::I32], &[ValType::I32],
+        &[ValType::I32],
+        &[ValType::I32],
         &[
             Instruction::Block(BlockType::Result(ValType::I32)),
             Instruction::Block(BlockType::Empty),
@@ -4722,19 +5779,30 @@ fn assert_native_exec_brtable(arch: NativeArch, abi: NativeAbi) {
     );
     let asm = compile_native_asm(&wasm, arch, abi);
     assert!(!asm.is_empty());
-    if matches!(abi, NativeAbi::Naive) { return; }
-    let Some(code) = assemble_or_skip(arch, &asm) else { return };
-    assert_eq!(run_native_sysv_with_args(arch, &code, &[0]) as u32, 20,
-        "selector 0 → 20 for {arch:?}");
-    assert_eq!(run_native_sysv_with_args(arch, &code, &[1]) as u32, 10,
-        "selector 1 → 10 for {arch:?}");
+    if matches!(abi, NativeAbi::Naive) {
+        return;
+    }
+    let Some(code) = assemble_or_skip(arch, &asm) else {
+        return;
+    };
+    assert_eq!(
+        run_native_sysv_with_args(arch, &code, &[0]) as u32,
+        20,
+        "selector 0 → 20 for {arch:?}"
+    );
+    assert_eq!(
+        run_native_sysv_with_args(arch, &code, &[1]) as u32,
+        10,
+        "selector 1 → 10 for {arch:?}"
+    );
 }
 native_variants!(exec_brtable, assert_native_exec_brtable);
 
 fn assert_native_bin_exec_brtable(arch: NativeArch, abi: NativeAbi) {
     use wasm_encoder::BlockType;
     let wasm = make_module(
-        &[ValType::I32], &[ValType::I32],
+        &[ValType::I32],
+        &[ValType::I32],
         &[
             Instruction::Block(BlockType::Result(ValType::I32)),
             Instruction::Block(BlockType::Empty),
@@ -4754,12 +5822,18 @@ fn assert_native_bin_exec_brtable(arch: NativeArch, abi: NativeAbi) {
     match abi {
         NativeAbi::Naive => run_native_naive_smoke(arch, &code),
         NativeAbi::Sysv => {
-            assert_eq!(run_native_sysv_with_args(arch, &code, &[0]) as u32, 20,
-                "selector 0 → 20 for {arch:?}");
-            assert_eq!(run_native_sysv_with_args(arch, &code, &[1]) as u32, 10,
-                "selector 1 → 10 for {arch:?}");
+            assert_eq!(
+                run_native_sysv_with_args(arch, &code, &[0]) as u32,
+                20,
+                "selector 0 → 20 for {arch:?}"
+            );
+            assert_eq!(
+                run_native_sysv_with_args(arch, &code, &[1]) as u32,
+                10,
+                "selector 1 → 10 for {arch:?}"
+            );
         }
-    NativeAbi::Lfi => {}
+        NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_brtable, assert_native_bin_exec_brtable);
@@ -4804,8 +5878,12 @@ fn assert_native_exec_loop_counter(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_loop_counter_wasm();
     let asm = compile_native_asm(&wasm, arch, abi);
     assert!(!asm.is_empty());
-    if matches!(abi, NativeAbi::Naive) { return; }
-    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    if matches!(abi, NativeAbi::Naive) {
+        return;
+    }
+    let Some(code) = assemble_or_skip(arch, &asm) else {
+        return;
+    };
     assert_eq!(run_native_sysv_with_args(arch, &code, &[0]) as u32, 0);
     assert_eq!(run_native_sysv_with_args(arch, &code, &[5]) as u32, 5);
     assert_eq!(run_native_sysv_with_args(arch, &code, &[10]) as u32, 10);
@@ -4823,7 +5901,7 @@ fn assert_native_bin_exec_loop_counter(arch: NativeArch, abi: NativeAbi) {
             assert_eq!(run_native_sysv_with_args(arch, &code, &[5]) as u32, 5);
             assert_eq!(run_native_sysv_with_args(arch, &code, &[10]) as u32, 10);
         }
-    NativeAbi::Lfi => {}
+        NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_loop_counter, assert_native_bin_exec_loop_counter);
@@ -4834,87 +5912,186 @@ native_bin_variants!(exec_loop_counter, assert_native_bin_exec_loop_counter);
 
 fn assert_native_exec_i64_store_load(arch: NativeArch, abi: NativeAbi) {
     use wasm_encoder::MemArg;
-    let memarg = MemArg { offset: 0, align: 3, memory_index: 0 };
+    let memarg = MemArg {
+        offset: 0,
+        align: 3,
+        memory_index: 0,
+    };
     let wasm = make_module_with_memory(
-        &[ValType::I32, ValType::I64], &[ValType::I64],
+        &[ValType::I32, ValType::I64],
+        &[ValType::I64],
         &[
-            Instruction::LocalGet(0), Instruction::LocalGet(1),
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
             Instruction::I64Store(memarg),
-            Instruction::LocalGet(0), Instruction::I64Load(memarg),
+            Instruction::LocalGet(0),
+            Instruction::I64Load(memarg),
         ],
     );
     let asm = compile_native_asm(&wasm, arch, abi);
     assert!(!asm.is_empty());
-    if matches!(abi, NativeAbi::Naive) { return; }
-    let Some(code) = assemble_or_skip(arch, &asm) else { return };
-    assert_eq!(run_native_sysv_with_args_and_mem(arch, &code, &[NATIVE_WASM_MEM, 42], NATIVE_WASM_MEM, 65536), 42);
-    assert_eq!(run_native_sysv_with_args_and_mem(arch, &code, &[NATIVE_WASM_MEM, u64::MAX], NATIVE_WASM_MEM, 65536), u64::MAX);
+    if matches!(abi, NativeAbi::Naive) {
+        return;
+    }
+    let Some(code) = assemble_or_skip(arch, &asm) else {
+        return;
+    };
+    assert_eq!(
+        run_native_sysv_with_args_and_mem(
+            arch,
+            &code,
+            &[NATIVE_WASM_MEM, 42],
+            NATIVE_WASM_MEM,
+            65536
+        ),
+        42
+    );
+    assert_eq!(
+        run_native_sysv_with_args_and_mem(
+            arch,
+            &code,
+            &[NATIVE_WASM_MEM, u64::MAX],
+            NATIVE_WASM_MEM,
+            65536
+        ),
+        u64::MAX
+    );
 }
 native_variants!(exec_i64_store_load, assert_native_exec_i64_store_load);
 
 fn assert_native_bin_exec_i64_store_load(arch: NativeArch, abi: NativeAbi) {
     use wasm_encoder::MemArg;
-    let memarg = MemArg { offset: 0, align: 3, memory_index: 0 };
+    let memarg = MemArg {
+        offset: 0,
+        align: 3,
+        memory_index: 0,
+    };
     let wasm = make_module_with_memory(
-        &[ValType::I32, ValType::I64], &[ValType::I64],
+        &[ValType::I32, ValType::I64],
+        &[ValType::I64],
         &[
-            Instruction::LocalGet(0), Instruction::LocalGet(1),
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
             Instruction::I64Store(memarg),
-            Instruction::LocalGet(0), Instruction::I64Load(memarg),
+            Instruction::LocalGet(0),
+            Instruction::I64Load(memarg),
         ],
     );
     let code = compile_native_binary(&wasm, arch, abi);
     assert!(!code.is_empty());
     match abi {
-        NativeAbi::Naive => run_native_naive_smoke_with_mem_and_locals(arch, &code, NATIVE_WASM_MEM, &[], &[NATIVE_WASM_MEM, 42]),
+        NativeAbi::Naive => run_native_naive_smoke_with_mem_and_locals(
+            arch,
+            &code,
+            NATIVE_WASM_MEM,
+            &[],
+            &[NATIVE_WASM_MEM, 42],
+        ),
         NativeAbi::Sysv => {
-            assert_eq!(run_native_sysv_with_args_and_mem(arch, &code, &[NATIVE_WASM_MEM, 42], NATIVE_WASM_MEM, 65536), 42);
-            assert_eq!(run_native_sysv_with_args_and_mem(arch, &code, &[NATIVE_WASM_MEM, u64::MAX], NATIVE_WASM_MEM, 65536), u64::MAX);
+            assert_eq!(
+                run_native_sysv_with_args_and_mem(
+                    arch,
+                    &code,
+                    &[NATIVE_WASM_MEM, 42],
+                    NATIVE_WASM_MEM,
+                    65536
+                ),
+                42
+            );
+            assert_eq!(
+                run_native_sysv_with_args_and_mem(
+                    arch,
+                    &code,
+                    &[NATIVE_WASM_MEM, u64::MAX],
+                    NATIVE_WASM_MEM,
+                    65536
+                ),
+                u64::MAX
+            );
         }
-    NativeAbi::Lfi => {}
+        NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_i64_store_load, assert_native_bin_exec_i64_store_load);
 
 fn assert_native_exec_i32_store_load(arch: NativeArch, abi: NativeAbi) {
     use wasm_encoder::MemArg;
-    let memarg = MemArg { offset: 0, align: 2, memory_index: 0 };
+    let memarg = MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    };
     let wasm = make_module_with_memory(
-        &[ValType::I32, ValType::I32], &[ValType::I32],
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
         &[
-            Instruction::LocalGet(0), Instruction::LocalGet(1),
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
             Instruction::I32Store(memarg),
-            Instruction::LocalGet(0), Instruction::I32Load(memarg),
+            Instruction::LocalGet(0),
+            Instruction::I32Load(memarg),
         ],
     );
     let asm = compile_native_asm(&wasm, arch, abi);
     assert!(!asm.is_empty());
-    if matches!(abi, NativeAbi::Naive) { return; }
-    let Some(code) = assemble_or_skip(arch, &asm) else { return };
-    assert_eq!(run_native_sysv_with_args_and_mem(arch, &code, &[NATIVE_WASM_MEM, 0xDEAD], NATIVE_WASM_MEM, 65536) as u32, 0xDEAD);
+    if matches!(abi, NativeAbi::Naive) {
+        return;
+    }
+    let Some(code) = assemble_or_skip(arch, &asm) else {
+        return;
+    };
+    assert_eq!(
+        run_native_sysv_with_args_and_mem(
+            arch,
+            &code,
+            &[NATIVE_WASM_MEM, 0xDEAD],
+            NATIVE_WASM_MEM,
+            65536
+        ) as u32,
+        0xDEAD
+    );
 }
 native_variants!(exec_i32_store_load, assert_native_exec_i32_store_load);
 
 fn assert_native_bin_exec_i32_store_load(arch: NativeArch, abi: NativeAbi) {
     use wasm_encoder::MemArg;
-    let memarg = MemArg { offset: 0, align: 2, memory_index: 0 };
+    let memarg = MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    };
     let wasm = make_module_with_memory(
-        &[ValType::I32, ValType::I32], &[ValType::I32],
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
         &[
-            Instruction::LocalGet(0), Instruction::LocalGet(1),
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
             Instruction::I32Store(memarg),
-            Instruction::LocalGet(0), Instruction::I32Load(memarg),
+            Instruction::LocalGet(0),
+            Instruction::I32Load(memarg),
         ],
     );
     let code = compile_native_binary(&wasm, arch, abi);
     assert!(!code.is_empty());
     match abi {
-        NativeAbi::Naive => run_native_naive_smoke_with_mem_and_locals(arch, &code, NATIVE_WASM_MEM, &[], &[NATIVE_WASM_MEM, 0xDEAD]),
+        NativeAbi::Naive => run_native_naive_smoke_with_mem_and_locals(
+            arch,
+            &code,
+            NATIVE_WASM_MEM,
+            &[],
+            &[NATIVE_WASM_MEM, 0xDEAD],
+        ),
         NativeAbi::Sysv => assert_eq!(
-            run_native_sysv_with_args_and_mem(arch, &code, &[NATIVE_WASM_MEM, 0xDEAD], NATIVE_WASM_MEM, 65536) as u32,
+            run_native_sysv_with_args_and_mem(
+                arch,
+                &code,
+                &[NATIVE_WASM_MEM, 0xDEAD],
+                NATIVE_WASM_MEM,
+                65536
+            ) as u32,
             0xDEAD,
         ),
-    NativeAbi::Lfi => {}
+        NativeAbi::Lfi => {}
     }
 }
 native_bin_variants!(exec_i32_store_load, assert_native_bin_exec_i32_store_load);
@@ -4925,16 +6102,30 @@ native_bin_variants!(exec_i32_store_load, assert_native_bin_exec_i32_store_load)
 
 fn assert_native_codegen_memory_grow(arch: NativeArch, abi: NativeAbi) {
     // memory.grow needs a __wasm_memory_grow external — codegen-only, no exec.
-    let wasm = make_module_with_memory(&[], &[ValType::I32], &[Instruction::I32Const(1), Instruction::MemoryGrow(0)]);
+    let wasm = make_module_with_memory(
+        &[],
+        &[ValType::I32],
+        &[Instruction::I32Const(1), Instruction::MemoryGrow(0)],
+    );
     let asm = compile_native_asm(&wasm, arch, abi);
-    assert!(!asm.is_empty(), "memory.grow codegen should produce non-empty asm for {arch:?} {abi:?}");
+    assert!(
+        !asm.is_empty(),
+        "memory.grow codegen should produce non-empty asm for {arch:?} {abi:?}"
+    );
 }
 native_variants!(codegen_memory_grow, assert_native_codegen_memory_grow);
 
 fn assert_native_bin_codegen_memory_grow(arch: NativeArch, abi: NativeAbi) {
-    let wasm = make_module_with_memory(&[], &[ValType::I32], &[Instruction::I32Const(1), Instruction::MemoryGrow(0)]);
+    let wasm = make_module_with_memory(
+        &[],
+        &[ValType::I32],
+        &[Instruction::I32Const(1), Instruction::MemoryGrow(0)],
+    );
     let code = compile_native_binary(&wasm, arch, abi);
-    assert!(!code.is_empty(), "memory.grow binary codegen should be non-empty for {arch:?} {abi:?}");
+    assert!(
+        !code.is_empty(),
+        "memory.grow binary codegen should be non-empty for {arch:?} {abi:?}"
+    );
 }
 native_bin_variants!(codegen_memory_grow, assert_native_bin_codegen_memory_grow);
 
@@ -4942,8 +6133,16 @@ fn assert_native_codegen_data_segment(arch: NativeArch, abi: NativeAbi) {
     // data section is not natively emitted — test that codegen doesn't crash.
     use wasm_encoder::MemArg;
     let wasm = make_module_with_memory(
-        &[], &[ValType::I32],
-        &[Instruction::I32Const(NATIVE_WASM_MEM as i32), Instruction::I32Load(MemArg { offset: 0, align: 0, memory_index: 0 })],
+        &[],
+        &[ValType::I32],
+        &[
+            Instruction::I32Const(NATIVE_WASM_MEM as i32),
+            Instruction::I32Load(MemArg {
+                offset: 0,
+                align: 0,
+                memory_index: 0,
+            }),
+        ],
     );
     let asm = compile_native_asm(&wasm, arch, abi);
     assert!(!asm.is_empty());
@@ -4953,8 +6152,16 @@ native_variants!(codegen_data_segment, assert_native_codegen_data_segment);
 fn assert_native_bin_codegen_data_segment(arch: NativeArch, abi: NativeAbi) {
     use wasm_encoder::MemArg;
     let wasm = make_module_with_memory(
-        &[], &[ValType::I32],
-        &[Instruction::I32Const(NATIVE_WASM_MEM as i32), Instruction::I32Load(MemArg { offset: 0, align: 0, memory_index: 0 })],
+        &[],
+        &[ValType::I32],
+        &[
+            Instruction::I32Const(NATIVE_WASM_MEM as i32),
+            Instruction::I32Load(MemArg {
+                offset: 0,
+                align: 0,
+                memory_index: 0,
+            }),
+        ],
     );
     let code = compile_native_binary(&wasm, arch, abi);
     assert!(!code.is_empty());
@@ -4968,13 +6175,20 @@ fn assert_native_exec_import_call(arch: NativeArch, abi: NativeAbi) {
     let imports: &[(&str, &str)] = &[("env", "add_one")];
     let base_asm = compile_native_asm_with_imports(&wasm, arch, abi, imports);
     assert!(!base_asm.is_empty());
-    if matches!(abi, NativeAbi::Naive) { return; }
+    if matches!(abi, NativeAbi::Naive) {
+        return;
+    }
     let asm = format!("{base_asm}{}", import_stub_add_one(arch));
-    let Some(code) = assemble_or_skip(arch, &asm) else { return };
+    let Some(code) = assemble_or_skip(arch, &asm) else {
+        return;
+    };
     // make_module_with_import: local fn takes i64, passes it to import, returns result.
     // SysV: arg in RDI/X0/A0 → import adds 1 → result in RAX/X0/A0.
-    assert_eq!(run_native_sysv_with_args(arch, &code, &[42]), 43,
-        "env::add_one(42) should return 43 for {arch:?}");
+    assert_eq!(
+        run_native_sysv_with_args(arch, &code, &[42]),
+        43,
+        "env::add_one(42) should return 43 for {arch:?}"
+    );
 }
 native_variants!(exec_import_call, assert_native_exec_import_call);
 
@@ -4985,10 +6199,15 @@ native_variants!(exec_import_call, assert_native_exec_import_call);
 fn assert_native_codegen_throw_catch_matching(arch: NativeArch, abi: NativeAbi) {
     use wasm_encoder::Catch;
     let wasm = make_module_with_tag(
-        &[ValType::I32], &[], &[ValType::I32],
+        &[ValType::I32],
+        &[],
+        &[ValType::I32],
         &[
             Instruction::Block(wasm_encoder::BlockType::Empty),
-            Instruction::TryTable(wasm_encoder::BlockType::Result(ValType::I32), Cow::Borrowed(&[Catch::One { tag: 0, label: 0 }])),
+            Instruction::TryTable(
+                wasm_encoder::BlockType::Result(ValType::I32),
+                Cow::Borrowed(&[Catch::One { tag: 0, label: 0 }]),
+            ),
             Instruction::I32Const(99),
             Instruction::Throw(0),
             Instruction::End,
@@ -4999,19 +6218,24 @@ fn assert_native_codegen_throw_catch_matching(arch: NativeArch, abi: NativeAbi) 
     let asm = compile_native_asm(&wasm, arch, abi);
     assert!(!asm.is_empty());
     // Software EH stack: TryTable open must register a dispatch frame.
-    assert!(asm.contains("__wasm_eh_push"), "TryTable should push EH frame:\n{asm}");
+    assert!(
+        asm.contains("__wasm_eh_push"),
+        "TryTable should push EH frame:\n{asm}"
+    );
 }
-native_variants!(codegen_throw_catch_matching, assert_native_codegen_throw_catch_matching);
+native_variants!(
+    codegen_throw_catch_matching,
+    assert_native_codegen_throw_catch_matching
+);
 
 /// Unmatched `throw` (no enclosing TryTable) must jump to `__wasm_exn_propagate`
 /// (cross-function walk / `__wasm_unhandled_exception`), not silently fall through.
 fn assert_native_codegen_throw_unmatched_propagates(arch: NativeArch, abi: NativeAbi) {
     let wasm = make_module_with_tag(
-        &[ValType::I32], &[], &[],
-        &[
-            Instruction::I32Const(1),
-            Instruction::Throw(0),
-        ],
+        &[ValType::I32],
+        &[],
+        &[],
+        &[Instruction::I32Const(1), Instruction::Throw(0)],
     );
     let asm = compile_native_asm(&wasm, arch, abi);
     assert!(
@@ -5019,15 +6243,23 @@ fn assert_native_codegen_throw_unmatched_propagates(arch: NativeArch, abi: Nativ
         "unmatched throw must reference __wasm_exn_propagate:\n{asm}"
     );
 }
-native_variants!(codegen_throw_unmatched_propagates, assert_native_codegen_throw_unmatched_propagates);
+native_variants!(
+    codegen_throw_unmatched_propagates,
+    assert_native_codegen_throw_unmatched_propagates
+);
 
 fn assert_native_bin_codegen_throw_catch_matching(arch: NativeArch, abi: NativeAbi) {
     use wasm_encoder::Catch;
     let wasm = make_module_with_tag(
-        &[ValType::I32], &[], &[ValType::I32],
+        &[ValType::I32],
+        &[],
+        &[ValType::I32],
         &[
             Instruction::Block(wasm_encoder::BlockType::Empty),
-            Instruction::TryTable(wasm_encoder::BlockType::Result(ValType::I32), Cow::Borrowed(&[Catch::One { tag: 0, label: 0 }])),
+            Instruction::TryTable(
+                wasm_encoder::BlockType::Result(ValType::I32),
+                Cow::Borrowed(&[Catch::One { tag: 0, label: 0 }]),
+            ),
             Instruction::I32Const(99),
             Instruction::Throw(0),
             Instruction::End,
@@ -5038,14 +6270,22 @@ fn assert_native_bin_codegen_throw_catch_matching(arch: NativeArch, abi: NativeA
     let code = compile_native_binary(&wasm, arch, abi);
     assert!(!code.is_empty());
 }
-native_bin_variants!(codegen_throw_catch_matching, assert_native_bin_codegen_throw_catch_matching);
+native_bin_variants!(
+    codegen_throw_catch_matching,
+    assert_native_bin_codegen_throw_catch_matching
+);
 
 fn assert_native_codegen_throw_catch_all(arch: NativeArch, abi: NativeAbi) {
     use wasm_encoder::Catch;
     let wasm = make_module_with_tag(
-        &[], &[], &[ValType::I32],
+        &[],
+        &[],
+        &[ValType::I32],
         &[
-            Instruction::TryTable(wasm_encoder::BlockType::Result(ValType::I32), Cow::Borrowed(&[Catch::All { label: 0 }])),
+            Instruction::TryTable(
+                wasm_encoder::BlockType::Result(ValType::I32),
+                Cow::Borrowed(&[Catch::All { label: 0 }]),
+            ),
             Instruction::Throw(0),
             Instruction::I32Const(0),
             Instruction::End,
@@ -5055,14 +6295,22 @@ fn assert_native_codegen_throw_catch_all(arch: NativeArch, abi: NativeAbi) {
     let asm = compile_native_asm(&wasm, arch, abi);
     assert!(!asm.is_empty());
 }
-native_variants!(codegen_throw_catch_all, assert_native_codegen_throw_catch_all);
+native_variants!(
+    codegen_throw_catch_all,
+    assert_native_codegen_throw_catch_all
+);
 
 fn assert_native_bin_codegen_throw_catch_all(arch: NativeArch, abi: NativeAbi) {
     use wasm_encoder::Catch;
     let wasm = make_module_with_tag(
-        &[], &[], &[ValType::I32],
+        &[],
+        &[],
+        &[ValType::I32],
         &[
-            Instruction::TryTable(wasm_encoder::BlockType::Result(ValType::I32), Cow::Borrowed(&[Catch::All { label: 0 }])),
+            Instruction::TryTable(
+                wasm_encoder::BlockType::Result(ValType::I32),
+                Cow::Borrowed(&[Catch::All { label: 0 }]),
+            ),
             Instruction::Throw(0),
             Instruction::I32Const(0),
             Instruction::End,
@@ -5072,14 +6320,22 @@ fn assert_native_bin_codegen_throw_catch_all(arch: NativeArch, abi: NativeAbi) {
     let code = compile_native_binary(&wasm, arch, abi);
     assert!(!code.is_empty());
 }
-native_bin_variants!(codegen_throw_catch_all, assert_native_bin_codegen_throw_catch_all);
+native_bin_variants!(
+    codegen_throw_catch_all,
+    assert_native_bin_codegen_throw_catch_all
+);
 
 fn assert_native_codegen_no_throw_normal_exit(arch: NativeArch, abi: NativeAbi) {
     use wasm_encoder::Catch;
     let wasm = make_module_with_tag(
-        &[], &[], &[ValType::I32],
+        &[],
+        &[],
+        &[ValType::I32],
         &[
-            Instruction::TryTable(wasm_encoder::BlockType::Result(ValType::I32), Cow::Borrowed(&[Catch::All { label: 0 }])),
+            Instruction::TryTable(
+                wasm_encoder::BlockType::Result(ValType::I32),
+                Cow::Borrowed(&[Catch::All { label: 0 }]),
+            ),
             Instruction::I32Const(42),
             Instruction::End,
             Instruction::I32Const(0),
@@ -5088,14 +6344,22 @@ fn assert_native_codegen_no_throw_normal_exit(arch: NativeArch, abi: NativeAbi) 
     let asm = compile_native_asm(&wasm, arch, abi);
     assert!(!asm.is_empty());
 }
-native_variants!(codegen_no_throw_normal_exit, assert_native_codegen_no_throw_normal_exit);
+native_variants!(
+    codegen_no_throw_normal_exit,
+    assert_native_codegen_no_throw_normal_exit
+);
 
 fn assert_native_bin_codegen_no_throw_normal_exit(arch: NativeArch, abi: NativeAbi) {
     use wasm_encoder::Catch;
     let wasm = make_module_with_tag(
-        &[], &[], &[ValType::I32],
+        &[],
+        &[],
+        &[ValType::I32],
         &[
-            Instruction::TryTable(wasm_encoder::BlockType::Result(ValType::I32), Cow::Borrowed(&[Catch::All { label: 0 }])),
+            Instruction::TryTable(
+                wasm_encoder::BlockType::Result(ValType::I32),
+                Cow::Borrowed(&[Catch::All { label: 0 }]),
+            ),
             Instruction::I32Const(42),
             Instruction::End,
             Instruction::I32Const(0),
@@ -5104,7 +6368,10 @@ fn assert_native_bin_codegen_no_throw_normal_exit(arch: NativeArch, abi: NativeA
     let code = compile_native_binary(&wasm, arch, abi);
     assert!(!code.is_empty());
 }
-native_bin_variants!(codegen_no_throw_normal_exit, assert_native_bin_codegen_no_throw_normal_exit);
+native_bin_variants!(
+    codegen_no_throw_normal_exit,
+    assert_native_bin_codegen_no_throw_normal_exit
+);
 
 // ---------------------------------------------------------------------------
 // Exception handling helpers
@@ -5127,7 +6394,9 @@ fn make_module_with_tag(
     // type 0 — exception tag payload (params only, no results)
     types.ty().function(tag_params.iter().cloned(), []);
     // type 1 — function signature
-    types.ty().function(fn_params.iter().cloned(), fn_results.iter().cloned());
+    types
+        .ty()
+        .function(fn_params.iter().cloned(), fn_results.iter().cloned());
     module.section(&types);
 
     let mut functions = FunctionSection::new();
@@ -5136,7 +6405,10 @@ fn make_module_with_tag(
 
     // TagSection order: Type → Function → Tag → Export → Code (wasmparser Order enum).
     let mut tags = TagSection::new();
-    tags.tag(TagType { kind: wasm_encoder::TagKind::Exception, func_type_idx: 0 });
+    tags.tag(TagType {
+        kind: wasm_encoder::TagKind::Exception,
+        func_type_idx: 0,
+    });
     module.section(&tags);
 
     let mut exports = ExportSection::new();
@@ -5190,8 +6462,17 @@ fn compile_js_exc(wasm: &[u8]) -> String {
 
     for op in ops {
         let op = op.unwrap();
-        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &tags, &[], &mut state, &op, &mut reencoder)
-            .unwrap();
+        JsWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &tags,
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
     out
 }
@@ -5221,8 +6502,17 @@ fn compile_c_exc(wasm: &[u8]) -> String {
 
     for op in ops {
         let op = op.unwrap();
-        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &tags, &[], &mut state, &op, &mut reencoder)
-            .unwrap();
+        CWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &tags,
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
     out
 }
@@ -5236,9 +6526,9 @@ fn compile_c_exc(wasm: &[u8]) -> String {
 fn test_throw_catch_matching_tag_js() {
     // fn(): i64  — push 99, throw tag0, return unreachable; catch returns the value
     let wasm = make_module_with_tag(
-        &[ValType::I64],     // tag params: one i64
-        &[],                  // fn params: none
-        &[ValType::I64],      // fn results: one i64
+        &[ValType::I64], // tag params: one i64
+        &[],             // fn params: none
+        &[ValType::I64], // fn results: one i64
         &[
             // try_table { catch{tag0, label=1} } (label 1 = outer block)
             Instruction::Block(wasm_encoder::BlockType::Result(ValType::I64)),
@@ -5248,9 +6538,9 @@ fn test_throw_catch_matching_tag_js() {
             ),
             Instruction::I64Const(99),
             Instruction::Throw(0),
-            Instruction::End,  // end try_table
+            Instruction::End,         // end try_table
             Instruction::I64Const(0), // unreachable normal exit
-            Instruction::End,  // end block
+            Instruction::End,         // end block
         ],
     );
     let js = compile_js_exc(&wasm);
@@ -5290,20 +6580,20 @@ fn test_throw_catch_matching_tag_c() {
 #[test]
 fn test_throw_catch_all_js() {
     let wasm = make_module_with_tag(
-        &[ValType::I64],   // tag params: one i64
+        &[ValType::I64], // tag params: one i64
         &[],
         &[ValType::I64],
         &[
-            Instruction::Block(wasm_encoder::BlockType::Empty),  // label 1 (empty target for catch_all)
+            Instruction::Block(wasm_encoder::BlockType::Empty), // label 1 (empty target for catch_all)
             Instruction::TryTable(
                 wasm_encoder::BlockType::Empty,
-                Cow::Borrowed(&[Catch::All { label: 1 }]),  // catch_all → exit outer empty block
+                Cow::Borrowed(&[Catch::All { label: 1 }]), // catch_all → exit outer empty block
             ),
             Instruction::I64Const(42),
             Instruction::Throw(0),
-            Instruction::End,        // end try_table
-            Instruction::Br(0),      // normal path: exit outer block (dead code since throw always fires)
-            Instruction::End,        // end outer block
+            Instruction::End,         // end try_table
+            Instruction::Br(0), // normal path: exit outer block (dead code since throw always fires)
+            Instruction::End,   // end outer block
             Instruction::I64Const(1), // both paths converge here; return 1 to signal catch_all was taken
         ],
     );
@@ -5409,7 +6699,7 @@ fn wrap_in_elf64(code: &[u8], machine: u16) -> Vec<u8> {
     let hdr_size: u64 = 64;
     let phdr_size: u64 = 56;
     let code_offset: u64 = 0x1000; // file offset where code starts
-    let vaddr: u64 = 0x1000;       // virtual address of code (32-byte aligned)
+    let vaddr: u64 = 0x1000; // virtual address of code (32-byte aligned)
     let filesz: u64 = code.len() as u64;
     let memsz: u64 = filesz;
 
@@ -5483,16 +6773,15 @@ fn compile_lfi_x64(wasm: &[u8]) -> (String, Vec<u8>) {
         ".intel_syntax noprefix\n.bundle_align_mode 5\n",
         1,
     );
-    let bytes = assemble_native_text(NativeArch::X86_64, &asm)
-        .expect("LFI x86-64 assembly failed");
+    let bytes = assemble_native_text(NativeArch::X86_64, &asm).expect("LFI x86-64 assembly failed");
     (asm, bytes)
 }
 
 /// Compile WASM to LFI AArch64 assembly, assemble it, and return (text, bytes).
 fn compile_lfi_aarch64(wasm: &[u8]) -> (String, Vec<u8>) {
     let asm = compile_native_asm(wasm, NativeArch::AArch64, NativeAbi::Lfi);
-    let bytes = assemble_native_text(NativeArch::AArch64, &asm)
-        .expect("LFI AArch64 assembly failed");
+    let bytes =
+        assemble_native_text(NativeArch::AArch64, &asm).expect("LFI AArch64 assembly failed");
     (asm, bytes)
 }
 
@@ -5513,7 +6802,10 @@ fn assert_lfi_x64_gs_memory(asm: &str) {
     let has_memory_load = asm.lines().any(|l| {
         let t = l.trim();
         (t.starts_with("mov ") || t.starts_with("movzx ") || t.starts_with("movsx "))
-            && t.contains("ptr [") && !t.contains("ptr gs:[") && !t.contains("ptr [rsp") && !t.contains("ptr [r14")
+            && t.contains("ptr [")
+            && !t.contains("ptr gs:[")
+            && !t.contains("ptr [rsp")
+            && !t.contains("ptr [r14")
     });
     if has_memory_load {
         panic!("LFI x86-64 output has unsandboxed memory operand:\n{asm}");
@@ -5525,24 +6817,31 @@ fn assert_lfi_x64_gs_memory(asm: &str) {
 #[test]
 fn test_lfi_x64_no_ret_simple() {
     // A function that returns a constant — must not contain `ret`.
-    let wasm = make_module(&[], &[ValType::I64], &[
-        Instruction::I64Const(42),
-    ]);
+    let wasm = make_module(&[], &[ValType::I64], &[Instruction::I64Const(42)]);
     let (asm, _bytes) = compile_lfi_x64(&wasm);
     assert_lfi_x64_no_ret(&asm);
-    assert!(asm.contains("jmp"), "LFI return should use jmp (rtcall), got:\n{asm}");
-    assert!(asm.contains(".balign 32") || asm.contains(".align 32"),
-        "LFI should emit 32-byte alignment, got:\n{asm}");
+    assert!(
+        asm.contains("jmp"),
+        "LFI return should use jmp (rtcall), got:\n{asm}"
+    );
+    assert!(
+        asm.contains(".balign 32") || asm.contains(".align 32"),
+        "LFI should emit 32-byte alignment, got:\n{asm}"
+    );
 }
 
 #[test]
 fn test_lfi_x64_no_ret_add() {
     // Stack-based add — must not contain `ret` in generated code.
-    let wasm = make_module(&[], &[ValType::I64], &[
-        Instruction::I64Const(5),
-        Instruction::I64Const(3),
-        Instruction::I64Add,
-    ]);
+    let wasm = make_module(
+        &[],
+        &[ValType::I64],
+        &[
+            Instruction::I64Const(5),
+            Instruction::I64Const(3),
+            Instruction::I64Add,
+        ],
+    );
     let (asm, _bytes) = compile_lfi_x64(&wasm);
     assert_lfi_x64_no_ret(&asm);
 }
@@ -5550,11 +6849,12 @@ fn test_lfi_x64_no_ret_add() {
 #[test]
 fn test_lfi_x64_assembles() {
     // The generated LFI assembly must assemble without errors.
-    let wasm = make_module(&[], &[ValType::I64], &[
-        Instruction::I64Const(99),
-    ]);
+    let wasm = make_module(&[], &[ValType::I64], &[Instruction::I64Const(99)]);
     let (asm, bytes) = compile_lfi_x64(&wasm);
-    assert!(!bytes.is_empty(), "assembled output should not be empty, asm:\n{asm}");
+    assert!(
+        !bytes.is_empty(),
+        "assembled output should not be empty, asm:\n{asm}"
+    );
 }
 
 #[test]
@@ -5565,9 +6865,7 @@ fn test_lfi_x64_verify() {
         eprintln!("SKIP: lfi-verify not found; set LFI_VERIFY or build from /tmp/lfi-verifier");
         return;
     }
-    let wasm = make_module(&[], &[ValType::I64], &[
-        Instruction::I64Const(42),
-    ]);
+    let wasm = make_module(&[], &[ValType::I64], &[Instruction::I64Const(42)]);
     let (asm, bytes) = compile_lfi_x64(&wasm);
     // Wrap raw text section bytes in a minimal ELF64 (EM_X86_64 = 62).
     let elf = wrap_in_elf64(&bytes, 62);
@@ -5582,12 +6880,18 @@ fn test_lfi_x64_verify() {
 fn test_lfi_x64_verify_add() {
     // Test stack-based add (not local-based: local variable access via xchg rsp/CTX
     // is not yet LFI-compliant; that requires RSP-relative tracking, future work).
-    if lfi_verify_binary().is_none() { return; }
-    let wasm = make_module(&[], &[ValType::I64], &[
-        Instruction::I64Const(10),
-        Instruction::I64Const(32),
-        Instruction::I64Add,
-    ]);
+    if lfi_verify_binary().is_none() {
+        return;
+    }
+    let wasm = make_module(
+        &[],
+        &[ValType::I64],
+        &[
+            Instruction::I64Const(10),
+            Instruction::I64Const(32),
+            Instruction::I64Add,
+        ],
+    );
     let (asm, bytes) = compile_lfi_x64(&wasm);
     let elf = wrap_in_elf64(&bytes, 62);
     match run_lfi_verify(&elf, "x64") {
@@ -5600,19 +6904,20 @@ fn test_lfi_x64_verify_add() {
 #[test]
 fn test_lfi_aarch64_assembles() {
     // The generated LFI AArch64 assembly must assemble without errors.
-    let wasm = make_module(&[], &[ValType::I64], &[
-        Instruction::I64Const(77),
-    ]);
+    let wasm = make_module(&[], &[ValType::I64], &[Instruction::I64Const(77)]);
     let (asm, bytes) = compile_lfi_aarch64(&wasm);
-    assert!(!bytes.is_empty(), "assembled AArch64 LFI output should not be empty, asm:\n{asm}");
+    assert!(
+        !bytes.is_empty(),
+        "assembled AArch64 LFI output should not be empty, asm:\n{asm}"
+    );
 }
 
 #[test]
 fn test_lfi_aarch64_verify() {
-    if lfi_verify_binary().is_none() { return; }
-    let wasm = make_module(&[], &[ValType::I64], &[
-        Instruction::I64Const(77),
-    ]);
+    if lfi_verify_binary().is_none() {
+        return;
+    }
+    let wasm = make_module(&[], &[ValType::I64], &[Instruction::I64Const(77)]);
     let (asm, bytes) = compile_lfi_aarch64(&wasm);
     // EM_AARCH64 = 183
     let elf = wrap_in_elf64(&bytes, 183);
@@ -5623,15 +6928,14 @@ fn test_lfi_aarch64_verify() {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // JIT tracing / specialization (Items 1–3)
 // ---------------------------------------------------------------------------
 
 /// Compile the loop-counter fn with probes enabled, returning x86-64 naive asm.
 fn compile_x86_naive_with_tracing(wasm: &[u8], base_off: i32) -> (String, u32) {
-    use portal_solutions_blitz_common::ops::{probe_site_count, MachOperator, ProbeTableConfig};
-    use portal_solutions_blitz_x86_64::{naive, X64Arch};
+    use portal_solutions_blitz_common::ops::{MachOperator, ProbeTableConfig, probe_site_count};
+    use portal_solutions_blitz_x86_64::{X64Arch, naive};
 
     let (sigs_wp, _sigs_enc, fsigs) = parse_sigs(wasm);
     let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
@@ -5651,12 +6955,25 @@ fn compile_x86_naive_with_tracing(wasm: &[u8], base_off: i32) -> (String, u32) {
     for op in ops {
         let mut op = op.unwrap();
         if let MachOperator::StartFn { data, .. } = &mut op {
-            data.probes = Some(ProbeTableConfig { enabled: true, num_probes, table_base_off: base_off });
+            data.probes = Some(ProbeTableConfig {
+                enabled: true,
+                num_probes,
+                table_base_off: base_off,
+            });
         }
         naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-            &mut out, &mut ctx, X64Arch::default(),
-            &mut state, &[], &[], &[], &op, &mut reencoder, 0,
-        ).unwrap();
+            &mut out,
+            &mut ctx,
+            X64Arch::default(),
+            &mut state,
+            &[],
+            &[],
+            &[],
+            &op,
+            &mut reencoder,
+            0,
+        )
+        .unwrap();
     }
     (out.0, num_probes)
 }
@@ -5677,14 +6994,29 @@ fn test_tracing_site_per_loop_and_entry() {
     // One preamble per probe: each loads the runtime probe-table base from the
     // CTX-relative slot (CTX = r15, base_off = 0x60 = 96).
     let base_loads = asm.matches("qword ptr [r15+96]").count();
-    assert_eq!(base_loads, 2, "one CTX-relative base load per probe:\n{asm}");
+    assert_eq!(
+        base_loads, 2,
+        "one CTX-relative base load per probe:\n{asm}"
+    );
 
     // Probe 0 (function entry) indexes ProbeSlot[0]; probe 1 (loop) indexes
     // ProbeSlot[1] = +16 bytes.  counter at +0, handler ptr at +8.
-    assert!(asm.contains("add qword ptr [rdx+0],1"), "probe 0 counter:\n{asm}");
-    assert!(asm.contains("mov rdx, qword ptr [rdx+8]"), "probe 0 handler ptr:\n{asm}");
-    assert!(asm.contains("add qword ptr [rdx+16],1"), "probe 1 counter:\n{asm}");
-    assert!(asm.contains("mov rdx, qword ptr [rdx+24]"), "probe 1 handler ptr:\n{asm}");
+    assert!(
+        asm.contains("add qword ptr [rdx+0],1"),
+        "probe 0 counter:\n{asm}"
+    );
+    assert!(
+        asm.contains("mov rdx, qword ptr [rdx+8]"),
+        "probe 0 handler ptr:\n{asm}"
+    );
+    assert!(
+        asm.contains("add qword ptr [rdx+16],1"),
+        "probe 1 counter:\n{asm}"
+    );
+    assert!(
+        asm.contains("mov rdx, qword ptr [rdx+24]"),
+        "probe 1 handler ptr:\n{asm}"
+    );
     // Tail-jump to the handler through the loaded pointer.
     assert!(asm.contains("jmp rdx"), "handler tail-jump:\n{asm}");
 }
@@ -5695,7 +7027,10 @@ fn test_tracing_uses_no_baked_address() {
     // CTX-relative, never by baking an absolute 64-bit address into the code.
     let wasm = make_loop_counter_wasm();
     let (asm, _) = compile_x86_naive_with_tracing(&wasm, 0x60);
-    assert!(!asm.contains("movabs"), "preamble must not bake an absolute address:\n{asm}");
+    assert!(
+        !asm.contains("movabs"),
+        "preamble must not bake an absolute address:\n{asm}"
+    );
 }
 
 #[test]
@@ -5704,7 +7039,10 @@ fn test_tracing_disabled_is_zero_overhead() {
     // code must be what it was before probes existed.
     let wasm = make_loop_counter_wasm();
     let asm_off = compile_x86_naive_no_tracing(&wasm);
-    assert!(!asm_off.contains("qword ptr [r15+96]"), "no probe-base load when disabled");
+    assert!(
+        !asm_off.contains("qword ptr [r15+96]"),
+        "no probe-base load when disabled"
+    );
 
     // And the enabled build is strictly a superset (longer) of the disabled one.
     let (asm_on, _) = compile_x86_naive_with_tracing(&wasm, 0x60);
@@ -5713,8 +7051,10 @@ fn test_tracing_disabled_is_zero_overhead() {
 
 #[test]
 fn test_probe_plan_control_flow_sites_matches_probe_site_count() {
-    use portal_solutions_blitz_common::ops::{probe_site_count, ProbeMode, ProbePlacement, ProbePlan};
     use portal_solutions_blitz_codegen::ProbeBinding;
+    use portal_solutions_blitz_common::ops::{
+        ProbeMode, ProbePlacement, ProbePlan, probe_site_count,
+    };
 
     let wasm = make_loop_counter_wasm();
     let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
@@ -5800,9 +7140,18 @@ fn test_sysv_tracing_specialization_tailjump() {
     let stub: &[u8] = &[0xB8, 0xCD, 0xAB, 0x00, 0x00, 0xC3]; // mov eax,0xABCD ; ret
     let (result, counters) = run_x86_sysv_traced(&code, &[5], num_probes, Some((0, stub)));
 
-    assert_eq!(result as u32, 0xABCD, "entry specialization tail-jump taken");
-    assert_eq!(counters[0], 1, "entry counter still incremented before the jump");
-    assert_eq!(counters[1], 0, "loop probe never reached (specialized away)");
+    assert_eq!(
+        result as u32, 0xABCD,
+        "entry specialization tail-jump taken"
+    );
+    assert_eq!(
+        counters[0], 1,
+        "entry counter still incremented before the jump"
+    );
+    assert_eq!(
+        counters[1], 0,
+        "loop probe never reached (specialized away)"
+    );
 }
 
 #[test]
@@ -5818,7 +7167,10 @@ fn test_sysv_tracing_loop_site_specialization() {
     let stub: &[u8] = &[0xB8, 0x63, 0x00, 0x00, 0x00, 0x48, 0x89, 0xEC, 0x5D, 0xC3];
     let (result, counters) = run_x86_sysv_traced(&code, &[5], num_probes, Some((1, stub)));
 
-    assert_eq!(result as u32, 99, "loop-site specialization tail-jump taken");
+    assert_eq!(
+        result as u32, 99,
+        "loop-site specialization tail-jump taken"
+    );
     assert_eq!(counters[0], 1, "entry counter incremented");
     assert_eq!(counters[1], 1, "loop entered once before tail-jump");
 }
@@ -5830,7 +7182,7 @@ fn test_sysv_tracing_loop_site_specialization() {
 /// Compile `wasm` for the given arch's SysV ABI with probes enabled, into raw
 /// machine code (loaded at 0x100000 under Unicorn).  Returns `(code, num_probes)`.
 fn compile_native_sysv_binary_traced(wasm: &[u8], arch: NativeArch) -> (Vec<u8>, u32) {
-    use portal_solutions_blitz_common::ops::{probe_site_count, MachOperator, ProbeTableConfig};
+    use portal_solutions_blitz_common::ops::{MachOperator, ProbeTableConfig, probe_site_count};
 
     let (sigs_wp, _, fsigs) = parse_sigs(wasm);
     let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
@@ -5848,53 +7200,78 @@ fn compile_native_sysv_binary_traced(wasm: &[u8], arch: NativeArch) -> (Vec<u8>,
     // Inject probes into the StartFn FnData of every op.
     let inject = |op: &mut MachOperator<'_, ()>| {
         if let MachOperator::StartFn { data, .. } = op {
-            data.probes = Some(ProbeTableConfig { enabled: true, num_probes, table_base_off: 0 });
+            data.probes = Some(ProbeTableConfig {
+                enabled: true,
+                num_probes,
+                table_base_off: 0,
+            });
         }
     };
 
     let code = match arch {
         NativeArch::X86_64 => {
-            use portal_solutions_blitz_x86_64::{sysv, X64Arch, X64Label};
             use portal_solutions_asm_x86_64::out::iced::IcedWriter;
+            use portal_solutions_blitz_x86_64::{X64Arch, X64Label, sysv};
             let mut out = IcedWriter::<X64Label>::new(0x100000);
             let mut state = sysv::SysVState::default();
             for op in ops {
                 let mut op = op.unwrap();
                 inject(&mut op);
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, X64Arch::default(),
-                    &mut state, &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    X64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
             out.into_bytes()
         }
         NativeArch::AArch64 => {
-            use portal_solutions_blitz_aarch64::{naive, sysv, AArch64Arch, AArch64Label};
             use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+            use portal_solutions_blitz_aarch64::{AArch64Arch, AArch64Label, naive, sysv};
             let mut out = AArch64Writer::<AArch64Label>::new();
             let mut state = naive::State::default();
             for op in ops {
                 let mut op = op.unwrap();
                 inject(&mut op);
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, AArch64Arch::default(),
-                    &mut state, &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    AArch64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
             out.into_bytes()
         }
         NativeArch::Riscv64 => {
-            use portal_solutions_blitz_riscv64::{naive, sysv, RiscV64Arch, RiscvLabel};
             use portal_solutions_asm_riscv64::out::rv_asm_backend::RvAsmWriter;
+            use portal_solutions_blitz_riscv64::{RiscV64Arch, RiscvLabel, naive, sysv};
             let mut out = RvAsmWriter::<RiscvLabel>::new();
             let mut state = naive::State::default();
             for op in ops {
                 let mut op = op.unwrap();
                 inject(&mut op);
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, RiscV64Arch::default(),
-                    &mut state, &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    RiscV64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
             out.into_bytes()
         }
@@ -5949,7 +7326,10 @@ fn run_native_sysv_traced(
     num_probes: u32,
     spec: Option<(u32, &[u8])>,
 ) -> (u64, Vec<u64>) {
-    use unicorn_engine::{unicorn_const::{Arch, Mode, Prot}, Unicorn};
+    use unicorn_engine::{
+        Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
+    };
 
     const CODE: u64 = 0x100000;
     const STACK: u64 = 0x200000;
@@ -5965,7 +7345,8 @@ fn run_native_sysv_traced(
             $uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             $uc.mem_map(PROBE_TABLE, 0x1000, Prot::ALL).unwrap();
             $uc.mem_write(CODE, code).unwrap();
-            $uc.mem_write(PROBE_TABLE, &vec![0u8; num_probes as usize * 16]).unwrap();
+            $uc.mem_write(PROBE_TABLE, &vec![0u8; num_probes as usize * 16])
+                .unwrap();
             if let Some((probe_id, stub)) = spec {
                 let stub_addr = CODE + ((code.len() as u64 + 15) & !15);
                 $uc.mem_write(stub_addr, stub).unwrap();
@@ -5995,8 +7376,15 @@ fn run_native_sysv_traced(
             uc.mem_write(rsp, &HALT.to_le_bytes()).unwrap();
             uc.reg_write(RegisterX86::RSP, rsp).unwrap();
             uc.reg_write(RegisterX86::R11, PROBE_TABLE).unwrap(); // virtual param
-            let arg_regs = [RegisterX86::RDI, RegisterX86::RSI, RegisterX86::RDX, RegisterX86::RCX];
-            for (i, &v) in args.iter().enumerate().take(4) { uc.reg_write(arg_regs[i], v).unwrap(); }
+            let arg_regs = [
+                RegisterX86::RDI,
+                RegisterX86::RSI,
+                RegisterX86::RDX,
+                RegisterX86::RCX,
+            ];
+            for (i, &v) in args.iter().enumerate().take(4) {
+                uc.reg_write(arg_regs[i], v).unwrap();
+            }
             uc.emu_start(CODE, HALT, 0, 100_000).unwrap();
             (uc.reg_read(RegisterX86::RAX).unwrap(), read_counters!(uc))
         }
@@ -6004,11 +7392,19 @@ fn run_native_sysv_traced(
             use unicorn_engine::RegisterARM64;
             let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
             common_mem!(uc);
-            uc.reg_write(RegisterARM64::SP, STACK + STACK_SIZE - 16).unwrap();
+            uc.reg_write(RegisterARM64::SP, STACK + STACK_SIZE - 16)
+                .unwrap();
             uc.reg_write(RegisterARM64::LR, HALT).unwrap();
             uc.reg_write(RegisterARM64::X12, PROBE_TABLE).unwrap(); // virtual param
-            let arg_regs = [RegisterARM64::X0, RegisterARM64::X1, RegisterARM64::X2, RegisterARM64::X3];
-            for (i, &v) in args.iter().enumerate().take(4) { uc.reg_write(arg_regs[i], v).unwrap(); }
+            let arg_regs = [
+                RegisterARM64::X0,
+                RegisterARM64::X1,
+                RegisterARM64::X2,
+                RegisterARM64::X3,
+            ];
+            for (i, &v) in args.iter().enumerate().take(4) {
+                uc.reg_write(arg_regs[i], v).unwrap();
+            }
             uc.emu_start(CODE, HALT, 0, 100_000).unwrap();
             (uc.reg_read(RegisterARM64::X0).unwrap(), read_counters!(uc))
         }
@@ -6016,11 +7412,19 @@ fn run_native_sysv_traced(
             use unicorn_engine::RegisterRISCV;
             let mut uc = Unicorn::new(Arch::RISCV, Mode::RISCV64).unwrap();
             common_mem!(uc);
-            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16).unwrap();
+            uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 16)
+                .unwrap();
             uc.reg_write(RegisterRISCV::RA, HALT).unwrap();
             uc.reg_write(RegisterRISCV::T2, PROBE_TABLE).unwrap(); // virtual param
-            let arg_regs = [RegisterRISCV::A0, RegisterRISCV::A1, RegisterRISCV::A2, RegisterRISCV::A3];
-            for (i, &v) in args.iter().enumerate().take(4) { uc.reg_write(arg_regs[i], v).unwrap(); }
+            let arg_regs = [
+                RegisterRISCV::A0,
+                RegisterRISCV::A1,
+                RegisterRISCV::A2,
+                RegisterRISCV::A3,
+            ];
+            for (i, &v) in args.iter().enumerate().take(4) {
+                uc.reg_write(arg_regs[i], v).unwrap();
+            }
             uc.emu_start(CODE, HALT, 0, 100_000).unwrap();
             (uc.reg_read(RegisterRISCV::A0).unwrap(), read_counters!(uc))
         }
@@ -6046,16 +7450,35 @@ fn assert_sysv_tracing_entry_spec(arch: NativeArch) {
     let wasm = make_loop_counter_wasm();
     let (code, num_probes) = compile_native_sysv_binary_traced(&wasm, arch);
     let stub = sysv_entry_stub(arch, 1234);
-    let (result, counters) = run_native_sysv_traced(arch, &code, &[5], num_probes, Some((0, &stub)));
-    assert_eq!(result as u32, 1234, "{arch:?}: entry specialization tail-jump taken");
-    assert_eq!(counters[0], 1, "{arch:?}: entry counter incremented before jump");
+    let (result, counters) =
+        run_native_sysv_traced(arch, &code, &[5], num_probes, Some((0, &stub)));
+    assert_eq!(
+        result as u32, 1234,
+        "{arch:?}: entry specialization tail-jump taken"
+    );
+    assert_eq!(
+        counters[0], 1,
+        "{arch:?}: entry counter incremented before jump"
+    );
     assert_eq!(counters[1], 0, "{arch:?}: loop probe never reached");
 }
 
-#[test] fn test_sysv_tracing_counters_aarch64() { assert_sysv_tracing_counters(NativeArch::AArch64); }
-#[test] fn test_sysv_tracing_counters_riscv64() { assert_sysv_tracing_counters(NativeArch::Riscv64); }
-#[test] fn test_sysv_tracing_entry_spec_aarch64() { assert_sysv_tracing_entry_spec(NativeArch::AArch64); }
-#[test] fn test_sysv_tracing_entry_spec_riscv64() { assert_sysv_tracing_entry_spec(NativeArch::Riscv64); }
+#[test]
+fn test_sysv_tracing_counters_aarch64() {
+    assert_sysv_tracing_counters(NativeArch::AArch64);
+}
+#[test]
+fn test_sysv_tracing_counters_riscv64() {
+    assert_sysv_tracing_counters(NativeArch::Riscv64);
+}
+#[test]
+fn test_sysv_tracing_entry_spec_aarch64() {
+    assert_sysv_tracing_entry_spec(NativeArch::AArch64);
+}
+#[test]
+fn test_sysv_tracing_entry_spec_riscv64() {
+    assert_sysv_tracing_entry_spec(NativeArch::Riscv64);
+}
 
 // ---------------------------------------------------------------------------
 // Test — arbitrary-point probes via `ProbePlan` (x86-64 SysV)
@@ -6090,7 +7513,10 @@ fn ret_only_stub(arch: NativeArch) -> Vec<u8> {
 /// ordinal `op_index` lines up exactly with the raw operator indices `plan`
 /// was computed against (DCE can renumber/remove ops).
 fn compile_native_sysv_binary_with_plan(
-    wasm: &[u8], arch: NativeArch, plan: &portal_solutions_blitz_common::ops::ProbePlan, num_probes: u32,
+    wasm: &[u8],
+    arch: NativeArch,
+    plan: &portal_solutions_blitz_common::ops::ProbePlan,
+    num_probes: u32,
 ) -> Vec<u8> {
     use portal_solutions_blitz_common::ops::{MachOperator, ProbeTableConfig};
 
@@ -6107,51 +7533,79 @@ fn compile_native_sysv_binary_with_plan(
 
     let inject = |op: &mut MachOperator<'_, ()>| {
         if let MachOperator::StartFn { data, .. } = op {
-            data.probes = Some(ProbeTableConfig { enabled: true, num_probes, table_base_off: 0 });
+            data.probes = Some(ProbeTableConfig {
+                enabled: true,
+                num_probes,
+                table_base_off: 0,
+            });
             data.probe_plan = Some(plan.clone());
         }
     };
 
     match arch {
         NativeArch::X86_64 => {
-            use portal_solutions_blitz_x86_64::{sysv, X64Arch, X64Label};
             use portal_solutions_asm_x86_64::out::iced::IcedWriter;
+            use portal_solutions_blitz_x86_64::{X64Arch, X64Label, sysv};
             let mut out = IcedWriter::<X64Label>::new(0x100000);
             let mut state = sysv::SysVState::default();
             for op in raw_ops {
                 let mut op = op.unwrap();
                 inject(&mut op);
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, X64Arch::default(), &mut state, &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    X64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
             out.into_bytes()
         }
         NativeArch::AArch64 => {
-            use portal_solutions_blitz_aarch64::{naive, sysv, AArch64Arch, AArch64Label};
             use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+            use portal_solutions_blitz_aarch64::{AArch64Arch, AArch64Label, naive, sysv};
             let mut out = AArch64Writer::<AArch64Label>::new();
             let mut state = naive::State::default();
             for op in raw_ops {
                 let mut op = op.unwrap();
                 inject(&mut op);
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, AArch64Arch::default(), &mut state, &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    AArch64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
             out.into_bytes()
         }
         NativeArch::Riscv64 => {
-            use portal_solutions_blitz_riscv64::{naive, sysv, RiscV64Arch, RiscvLabel};
             use portal_solutions_asm_riscv64::out::rv_asm_backend::RvAsmWriter;
+            use portal_solutions_blitz_riscv64::{RiscV64Arch, RiscvLabel, naive, sysv};
             let mut out = RvAsmWriter::<RiscvLabel>::new();
             let mut state = naive::State::default();
             for op in raw_ops {
                 let mut op = op.unwrap();
                 inject(&mut op);
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, RiscV64Arch::default(), &mut state, &[], &op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    RiscV64Arch::default(),
+                    &mut state,
+                    &[],
+                    &op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
             }
             out.into_bytes()
         }
@@ -6169,9 +7623,13 @@ const LOOP_COUNTER_I32ADD_INDEX: usize = 5;
 const LOOP_COUNTER_AFTER_I32ADD_INDEX: usize = 6;
 
 fn assert_indexed_call_probe_fires_inside_loop(
-    arch: NativeArch, mode: portal_solutions_blitz_common::ops::ProbeMode, probe_index: usize,
+    arch: NativeArch,
+    mode: portal_solutions_blitz_common::ops::ProbeMode,
+    probe_index: usize,
 ) {
-    use portal_solutions_blitz_common::ops::{probe_site_count, ProbePlacement, ProbePlan, ProbeSpec};
+    use portal_solutions_blitz_common::ops::{
+        ProbePlacement, ProbePlan, ProbeSpec, probe_site_count,
+    };
 
     let wasm = make_loop_counter_wasm();
     let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
@@ -6185,35 +7643,58 @@ fn assert_indexed_call_probe_fires_inside_loop(
 
     const EXTRA_PROBE_ID: u32 = 2; // right after the 2 auto-identified probes
     let mut plan = ProbePlan::default();
-    plan.by_index.insert(probe_index, vec![ProbeSpec {
-        probe_id: EXTRA_PROBE_ID,
-        binding: portal_solutions_blitz_codegen::ProbeBinding::Call,
-        mode,
-        placement: ProbePlacement::Before,
-    }]);
+    plan.by_index.insert(
+        probe_index,
+        vec![ProbeSpec {
+            probe_id: EXTRA_PROBE_ID,
+            binding: portal_solutions_blitz_codegen::ProbeBinding::Call,
+            mode,
+            placement: ProbePlacement::Before,
+        }],
+    );
 
     let code = compile_native_sysv_binary_with_plan(&wasm, arch, &plan, EXTRA_PROBE_ID + 1);
     let handler = ret_only_stub(arch);
     let (result, counters) = run_native_sysv_traced(
-        arch, &code, &[5], EXTRA_PROBE_ID + 1, Some((EXTRA_PROBE_ID, &handler)),
+        arch,
+        &code,
+        &[5],
+        EXTRA_PROBE_ID + 1,
+        Some((EXTRA_PROBE_ID, &handler)),
     );
 
-    assert_eq!(result as u32, 5, "{arch:?}/{mode:?}: loop result unaffected by the mid-expression probe");
-    assert_eq!(counters[0], 1, "{arch:?}/{mode:?}: entry probe still fires once, unaffected by the new probe");
-    assert_eq!(counters[1], 6, "{arch:?}/{mode:?}: loop probe still fires 6× for n=5, unaffected by the new probe");
-    assert_eq!(counters[2], 5, "{arch:?}/{mode:?}: probe fires once per loop iteration (n=5), call-and-returns each time");
+    assert_eq!(
+        result as u32, 5,
+        "{arch:?}/{mode:?}: loop result unaffected by the mid-expression probe"
+    );
+    assert_eq!(
+        counters[0], 1,
+        "{arch:?}/{mode:?}: entry probe still fires once, unaffected by the new probe"
+    );
+    assert_eq!(
+        counters[1], 6,
+        "{arch:?}/{mode:?}: loop probe still fires 6× for n=5, unaffected by the new probe"
+    );
+    assert_eq!(
+        counters[2], 5,
+        "{arch:?}/{mode:?}: probe fires once per loop iteration (n=5), call-and-returns each time"
+    );
 }
 
 #[test]
 fn test_indexed_call_probe_fires_inside_loop_x86_64() {
     assert_indexed_call_probe_fires_inside_loop(
-        NativeArch::X86_64, portal_solutions_blitz_common::ops::ProbeMode::Active, LOOP_COUNTER_I32ADD_INDEX,
+        NativeArch::X86_64,
+        portal_solutions_blitz_common::ops::ProbeMode::Active,
+        LOOP_COUNTER_I32ADD_INDEX,
     );
 }
 #[test]
 fn test_indexed_call_probe_fires_inside_loop_aarch64() {
     assert_indexed_call_probe_fires_inside_loop(
-        NativeArch::AArch64, portal_solutions_blitz_common::ops::ProbeMode::Active, LOOP_COUNTER_I32ADD_INDEX,
+        NativeArch::AArch64,
+        portal_solutions_blitz_common::ops::ProbeMode::Active,
+        LOOP_COUNTER_I32ADD_INDEX,
     );
 }
 #[test]
@@ -6227,7 +7708,9 @@ fn test_indexed_call_probe_fires_inside_loop_riscv64_active() {
     // operands) is not — see `test_indexed_call_probe_fires_inside_loop_riscv64_passive`,
     // which probes that exact point correctly using Passive mode instead.
     assert_indexed_call_probe_fires_inside_loop(
-        NativeArch::Riscv64, portal_solutions_blitz_common::ops::ProbeMode::Active, LOOP_COUNTER_AFTER_I32ADD_INDEX,
+        NativeArch::Riscv64,
+        portal_solutions_blitz_common::ops::ProbeMode::Active,
+        LOOP_COUNTER_AFTER_I32ADD_INDEX,
     );
 }
 #[test]
@@ -6236,7 +7719,9 @@ fn test_indexed_call_probe_fires_inside_loop_riscv64_passive() {
     // it correctly handles the two-pending-operand point right before
     // `I32Add` that Active mode cannot (see the comment above).
     assert_indexed_call_probe_fires_inside_loop(
-        NativeArch::Riscv64, portal_solutions_blitz_common::ops::ProbeMode::Passive, LOOP_COUNTER_I32ADD_INDEX,
+        NativeArch::Riscv64,
+        portal_solutions_blitz_common::ops::ProbeMode::Passive,
+        LOOP_COUNTER_I32ADD_INDEX,
     );
 }
 
@@ -6260,8 +7745,11 @@ fn test_indexed_call_probe_fires_inside_loop_riscv64_passive() {
 /// are poisoned with `0xFFFF_FFFF` before running, so a leftover poison value
 /// unambiguously means "never written".
 fn run_call_probe(arch: NativeArch, install_handler: bool) -> (u64, u64, u64) {
-    use portal_solutions_blitz_codegen::{emit_probe_site, BlitzWriter, ProbeBinding};
-    use unicorn_engine::{unicorn_const::{Arch, Mode, Prot}, Unicorn};
+    use portal_solutions_blitz_codegen::{BlitzWriter, ProbeBinding, emit_probe_site};
+    use unicorn_engine::{
+        Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
+    };
 
     const CODE: u64 = 0x100000;
     const STUB_ADDR: u64 = CODE + 0x800;
@@ -6287,11 +7775,21 @@ fn run_call_probe(arch: NativeArch, install_handler: bool) -> (u64, u64, u64) {
             let mut out = IcedWriter::<X64Label>::new(CODE);
             let mut ctx = ();
             let mut bw = BlitzW {
-                writer: &mut out, ctx: &mut ctx, arch: X64Arch::default(),
+                writer: &mut out,
+                ctx: &mut ctx,
+                arch: X64Arch::default(),
                 probe_base: ProbeBase::Reg(PROBE_BASE_REG),
             };
             let mut label_counter = 0usize;
-            emit_probe_site(&mut bw, 0, 0, 2 /* RDX */, ProbeBinding::Call, &mut label_counter).unwrap();
+            emit_probe_site(
+                &mut bw,
+                0,
+                0,
+                2, /* RDX */
+                ProbeBinding::Call,
+                &mut label_counter,
+            )
+            .unwrap();
             bw.load_u64_imm(1 /* RCX */, MARKER_SENTINEL).unwrap();
             let code = out.into_bytes();
             let halt = CODE + code.len() as u64;
@@ -6303,12 +7801,14 @@ fn run_call_probe(arch: NativeArch, install_handler: bool) -> (u64, u64, u64) {
             // `bl`/AArch64 `ret` or RISC-V's `jalr ra`, which thread the return
             // address through a link register instead) — needs a real stack.
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
-            uc.reg_write(RegisterX86::RSP, STACK + STACK_SIZE - 8).unwrap();
+            uc.reg_write(RegisterX86::RSP, STACK + STACK_SIZE - 8)
+                .unwrap();
             uc.mem_write(CODE, &code).unwrap();
             uc.mem_write(PROBE_TABLE, &[0u8; 16]).unwrap();
             if install_handler {
                 uc.mem_write(STUB_ADDR, &handler_stub).unwrap();
-                uc.mem_write(PROBE_TABLE + 8, &STUB_ADDR.to_le_bytes()).unwrap();
+                uc.mem_write(PROBE_TABLE + 8, &STUB_ADDR.to_le_bytes())
+                    .unwrap();
             }
             uc.reg_write(RegisterX86::R11, PROBE_TABLE).unwrap();
             uc.reg_write(RegisterX86::RAX, POISON).unwrap();
@@ -6332,7 +7832,10 @@ fn run_call_probe(arch: NativeArch, install_handler: bool) -> (u64, u64, u64) {
             let mut out = AArch64Writer::<AArch64Label>::new();
             let mut ctx = ();
             let mut bw = BlitzW {
-                writer: &mut out, ctx: &mut ctx, arch: AArch64Arch::default(), scratch2: 10,
+                writer: &mut out,
+                ctx: &mut ctx,
+                arch: AArch64Arch::default(),
+                scratch2: 10,
                 probe_base: ProbeBase::Reg(PROBE_BASE_REG),
             };
             let mut label_counter = 0usize;
@@ -6348,7 +7851,8 @@ fn run_call_probe(arch: NativeArch, install_handler: bool) -> (u64, u64, u64) {
             uc.mem_write(PROBE_TABLE, &[0u8; 16]).unwrap();
             if install_handler {
                 uc.mem_write(STUB_ADDR, &handler_stub).unwrap();
-                uc.mem_write(PROBE_TABLE + 8, &STUB_ADDR.to_le_bytes()).unwrap();
+                uc.mem_write(PROBE_TABLE + 8, &STUB_ADDR.to_le_bytes())
+                    .unwrap();
             }
             uc.reg_write(RegisterARM64::X12, PROBE_TABLE).unwrap();
             uc.reg_write(RegisterARM64::X0, POISON).unwrap();
@@ -6372,7 +7876,10 @@ fn run_call_probe(arch: NativeArch, install_handler: bool) -> (u64, u64, u64) {
             let mut out = RvAsmWriter::<RiscvLabel>::new();
             let mut ctx = ();
             let mut bw = BlitzW {
-                writer: &mut out, ctx: &mut ctx, arch: RiscV64Arch::default(), scratch2: 6,
+                writer: &mut out,
+                ctx: &mut ctx,
+                arch: RiscV64Arch::default(),
+                scratch2: 6,
                 probe_base: ProbeBase::Reg(PROBE_BASE_REG),
             };
             let mut label_counter = 0usize;
@@ -6388,7 +7895,8 @@ fn run_call_probe(arch: NativeArch, install_handler: bool) -> (u64, u64, u64) {
             uc.mem_write(PROBE_TABLE, &[0u8; 16]).unwrap();
             if install_handler {
                 uc.mem_write(STUB_ADDR, &handler_stub).unwrap();
-                uc.mem_write(PROBE_TABLE + 8, &STUB_ADDR.to_le_bytes()).unwrap();
+                uc.mem_write(PROBE_TABLE + 8, &STUB_ADDR.to_le_bytes())
+                    .unwrap();
             }
             uc.reg_write(RegisterRISCV::T2, PROBE_TABLE).unwrap();
             uc.reg_write(RegisterRISCV::A0, POISON).unwrap();
@@ -6411,23 +7919,44 @@ fn assert_call_probe(arch: NativeArch) {
     // the hit counter and fall through to the marker — proving `Call`
     // binding never blocks execution even when no handler is installed.
     let (handler_ret, marker, counter) = run_call_probe(arch, false);
-    assert_eq!(handler_ret, 0xFFFF_FFFF, "{arch:?}: handler reg untouched when disabled");
+    assert_eq!(
+        handler_ret, 0xFFFF_FFFF,
+        "{arch:?}: handler reg untouched when disabled"
+    );
     assert_eq!(marker, 0x333, "{arch:?}: marker always reached (disabled)");
-    assert_eq!(counter, 1, "{arch:?}: hit counter increments even when disabled");
+    assert_eq!(
+        counter, 1,
+        "{arch:?}: hit counter increments even when disabled"
+    );
 
     // Handler installed: it must run (its write is observed) *and* control
     // must return to the probe site afterward (the marker write is also
     // observed) — the defining difference from `TailTakeover`, which would
     // never reach the marker at all.
     let (handler_ret, marker, counter) = run_call_probe(arch, true);
-    assert_eq!(handler_ret, 0x222, "{arch:?}: handler ran and its write survived the return");
-    assert_eq!(marker, 0x333, "{arch:?}: control resumed at the probe site after the call");
+    assert_eq!(
+        handler_ret, 0x222,
+        "{arch:?}: handler ran and its write survived the return"
+    );
+    assert_eq!(
+        marker, 0x333,
+        "{arch:?}: control resumed at the probe site after the call"
+    );
     assert_eq!(counter, 1, "{arch:?}: hit counter incremented once");
 }
 
-#[test] fn test_call_probe_x86_64() { assert_call_probe(NativeArch::X86_64); }
-#[test] fn test_call_probe_aarch64() { assert_call_probe(NativeArch::AArch64); }
-#[test] fn test_call_probe_riscv64() { assert_call_probe(NativeArch::Riscv64); }
+#[test]
+fn test_call_probe_x86_64() {
+    assert_call_probe(NativeArch::X86_64);
+}
+#[test]
+fn test_call_probe_aarch64() {
+    assert_call_probe(NativeArch::AArch64);
+}
+#[test]
+fn test_call_probe_riscv64() {
+    assert_call_probe(NativeArch::Riscv64);
+}
 
 // ---------------------------------------------------------------------------
 // Test — Passive-mode `Call` probe on RISC-V 64
@@ -6450,9 +7979,12 @@ fn test_passive_call_probe_preserves_regalloc_riscv64() {
     use portal_solutions_blitz_common::asm::Reg;
     use portal_solutions_blitz_common::ops::ProbeTableConfig;
     use portal_solutions_blitz_riscv64::{
-        codegen::ProbeBase, naive, sysv::PROBE_BASE_REG, RiscV64Arch, RiscvLabel,
+        RiscV64Arch, RiscvLabel, codegen::ProbeBase, naive, sysv::PROBE_BASE_REG,
     };
-    use unicorn_engine::{unicorn_const::{Arch, Mode, Prot}, RegisterRISCV, Unicorn};
+    use unicorn_engine::{
+        RegisterRISCV, Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
+    };
 
     const CODE: u64 = 0x100000;
     const STUB_ADDR: u64 = CODE + 0x800;
@@ -6466,23 +7998,38 @@ fn test_passive_call_probe_preserves_regalloc_riscv64() {
     let mut out = RvAsmWriter::<RiscvLabel>::new();
     let mut ctx = ();
     let mut state = naive::State::default();
-    state.probes = Some(ProbeTableConfig { enabled: true, num_probes: 1, table_base_off: 0 });
+    state.probes = Some(ProbeTableConfig {
+        enabled: true,
+        num_probes: 1,
+        table_base_off: 0,
+    });
     state.probe_base = ProbeBase::Reg(PROBE_BASE_REG);
 
     // Lazily initialize the allocator exactly like production code does, then
     // push one int value without flushing — it lands in a live register.
     let ralloc = state.regalloc.get_or_insert_with(|| {
         let r = riscv_regalloc::init_regalloc::<32>(arch);
-        portal_solutions_asm_regalloc::RegAlloc { frames: naive::Frames(r.frames), tos: r.tos }
+        portal_solutions_asm_regalloc::RegAlloc {
+            frames: naive::Frames(r.frames),
+            tos: r.tos,
+        }
     });
     let (live_reg, cmds) = ralloc.push(riscv_regalloc::RegKind::Int).unwrap();
-    assert_eq!(cmds.count(), 0, "first push into an empty allocator needs no eviction");
+    assert_eq!(
+        cmds.count(),
+        0,
+        "first push into an empty allocator needs no eviction"
+    );
     // Registers 0/1/2/3/4 (zero/ra/sp/gp/tp) and 8 (fp) are reserved, so the
     // first int push lands in t0 (Reg 5) — which `emit_passive_call_probe`
     // also uses as its own scratch register, the exact collision this test
     // is meant to exercise.
-    assert_eq!(live_reg, 5, "first allocated int register is t0 — update this test if regalloc's reserved set changes");
-    out.li(&mut ctx, arch, &Reg(live_reg), LIVE_SENTINEL).unwrap();
+    assert_eq!(
+        live_reg, 5,
+        "first allocated int register is t0 — update this test if regalloc's reserved set changes"
+    );
+    out.li(&mut ctx, arch, &Reg(live_reg), LIVE_SENTINEL)
+        .unwrap();
 
     naive::emit_passive_call_probe(&mut out, &mut ctx, arch, &mut state).unwrap();
 
@@ -6497,8 +8044,10 @@ fn test_passive_call_probe_preserves_regalloc_riscv64() {
     uc.mem_write(CODE, &code).unwrap();
     uc.mem_write(PROBE_TABLE, &[0u8; 16]).unwrap();
     uc.mem_write(STUB_ADDR, &handler_stub).unwrap();
-    uc.mem_write(PROBE_TABLE + 8, &STUB_ADDR.to_le_bytes()).unwrap();
-    uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 8).unwrap();
+    uc.mem_write(PROBE_TABLE + 8, &STUB_ADDR.to_le_bytes())
+        .unwrap();
+    uc.reg_write(RegisterRISCV::SP, STACK + STACK_SIZE - 8)
+        .unwrap();
     uc.reg_write(RegisterRISCV::T2, PROBE_TABLE).unwrap();
     uc.emu_start(CODE, halt, 0, 100_000).unwrap();
 
@@ -6512,7 +8061,11 @@ fn test_passive_call_probe_preserves_regalloc_riscv64() {
     );
     let mut counter = [0u8; 8];
     uc.mem_read(PROBE_TABLE, &mut counter).unwrap();
-    assert_eq!(u64::from_le_bytes(counter), 1, "hit counter incremented once");
+    assert_eq!(
+        u64::from_le_bytes(counter),
+        1,
+        "hit counter incremented once"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -6598,8 +8151,8 @@ fn make_eight_param_return_last_module() -> Vec<u8> {
 #[test]
 fn test_native_x86_64_sysv_stack_params() {
     use unicorn_engine::{
-        unicorn_const::{Arch, Mode, Prot},
         RegisterX86, Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
     };
 
     let wasm = make_eight_param_return_last_module();
@@ -6625,13 +8178,19 @@ fn test_native_x86_64_sysv_stack_params() {
     // Stack args 7,8 (index 6,7) sit above the return address:
     //   [rsp] = return addr, [rsp+8] = arg6, [rsp+16] = arg7.
     let rsp = STACK + STACK_SIZE - 64;
-    uc.mem_write(rsp, &(CODE + code.len() as u64).to_le_bytes()).unwrap();
+    uc.mem_write(rsp, &(CODE + code.len() as u64).to_le_bytes())
+        .unwrap();
     uc.mem_write(rsp + 8, &args[6].to_le_bytes()).unwrap();
     uc.mem_write(rsp + 16, &args[7].to_le_bytes()).unwrap();
     uc.reg_write(RegisterX86::RSP, rsp).unwrap();
 
-    uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
-    assert_eq!(uc.reg_read(RegisterX86::RAX).unwrap(), 17, "should return the 8th argument");
+    uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+        .unwrap();
+    assert_eq!(
+        uc.reg_read(RegisterX86::RAX).unwrap(),
+        17,
+        "should return the 8th argument"
+    );
 }
 
 /// Build a module with one exported function `(i64 x10) -> i64` that returns its
@@ -6663,8 +8222,8 @@ fn make_ten_param_return_last_module() -> Vec<u8> {
 #[test]
 fn test_native_aarch64_sysv_stack_params() {
     use unicorn_engine::{
-        unicorn_const::{Arch, Mode, Prot},
         RegisterARM64, Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
     };
 
     let wasm = make_ten_param_return_last_module();
@@ -6681,8 +8240,14 @@ fn test_native_aarch64_sysv_stack_params() {
 
     let args: [u64; 10] = [20, 21, 22, 23, 24, 25, 26, 27, 28, 29];
     let arg_regs = [
-        RegisterARM64::X0, RegisterARM64::X1, RegisterARM64::X2, RegisterARM64::X3,
-        RegisterARM64::X4, RegisterARM64::X5, RegisterARM64::X6, RegisterARM64::X7,
+        RegisterARM64::X0,
+        RegisterARM64::X1,
+        RegisterARM64::X2,
+        RegisterARM64::X3,
+        RegisterARM64::X4,
+        RegisterARM64::X5,
+        RegisterARM64::X6,
+        RegisterARM64::X7,
     ];
     for (r, &v) in arg_regs.iter().zip(args.iter()) {
         uc.reg_write(*r, v).unwrap();
@@ -6693,10 +8258,16 @@ fn test_native_aarch64_sysv_stack_params() {
     uc.mem_write(sp, &args[8].to_le_bytes()).unwrap();
     uc.mem_write(sp + 8, &args[9].to_le_bytes()).unwrap();
     uc.reg_write(RegisterARM64::SP, sp).unwrap();
-    uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64).unwrap();
+    uc.reg_write(RegisterARM64::LR, CODE + code.len() as u64)
+        .unwrap();
 
-    uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000).unwrap();
-    assert_eq!(uc.reg_read(RegisterARM64::X0).unwrap(), 29, "should return the 10th argument");
+    uc.emu_start(CODE, CODE + code.len() as u64, 0, 5000)
+        .unwrap();
+    assert_eq!(
+        uc.reg_read(RegisterARM64::X0).unwrap(),
+        29,
+        "should return the 10th argument"
+    );
 }
 
 /// Compile `wasm` to N C shards using `RoundRobinShardMap`.
@@ -6704,14 +8275,16 @@ fn test_native_aarch64_sysv_stack_params() {
 /// `cross_shard_decls_per_shard[k]` contains extern declarations for functions NOT in shard k.
 /// `shard_bodies[k]` contains the function bodies for shard k.
 fn compile_c_sharded_raw(wasm: &[u8], n: usize) -> (Vec<String>, Vec<String>) {
-    use portal_solutions_blitz_common::shard::{RoundRobinShardMap, ShardMap};
     use portal_solutions_blitz_c::shard::c_emit_cross_shard_decls;
+    use portal_solutions_blitz_common::shard::{RoundRobinShardMap, ShardMap};
 
     let (sigs_wp, sigs_enc, fsigs) = parse_sigs(wasm);
     let imports_len = {
         let mut body_count = 0u32;
         for p in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
-            if let wasmparser::Payload::CodeSectionEntry(_) = p { body_count += 1; }
+            if let wasmparser::Payload::CodeSectionEntry(_) = p {
+                body_count += 1;
+            }
         }
         fsigs.len() as u32 - body_count
     };
@@ -6728,13 +8301,22 @@ fn compile_c_sharded_raw(wasm: &[u8], n: usize) -> (Vec<String>, Vec<String>) {
     let mut bodies_out: Vec<String> = (0..n).map(|_| String::new()).collect();
 
     for shard_idx in 0..n {
-        c_emit_cross_shard_decls(&mut decls[shard_idx], shard_idx, &sigs_enc, &fsigs, imports_len, &shard_map).unwrap();
+        c_emit_cross_shard_decls(
+            &mut decls[shard_idx],
+            shard_idx,
+            &sigs_enc,
+            &fsigs,
+            imports_len,
+            &shard_map,
+        )
+        .unwrap();
     }
 
     let mut current_shard = 0usize;
     let mut state = CState::default();
     let mut reencoder = RoundtripReencoder;
-    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, imports_len);
+    let raw_ops =
+        mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, imports_len);
     let ops = dce_pass!(raw_ops);
     for op in ops {
         let op = op.unwrap();
@@ -6742,7 +8324,17 @@ fn compile_c_sharded_raw(wasm: &[u8], n: usize) -> (Vec<String>, Vec<String>) {
             current_shard = shard_map.shard_for(*id + imports_len);
             state = CState::default();
         }
-        CWrite::on_mach(&mut bodies_out[current_shard], &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+        CWrite::on_mach(
+            &mut bodies_out[current_shard],
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
     (decls, bodies_out)
 }
@@ -6778,7 +8370,9 @@ fn compile_c_sharded_with_preamble(wasm: &[u8], n: usize) -> (String, Vec<String
         let n_str = &rest[..end];
         if n_str.chars().all(|c| c.is_ascii_digit()) {
             let fwd = format!("static uint64_t*fn_{n_str}(uint64_t*restrict);\n");
-            if !preamble.contains(&fwd) { preamble.push_str(&fwd); }
+            if !preamble.contains(&fwd) {
+                preamble.push_str(&fwd);
+            }
         }
         s = &s[pos + 1..];
     }
@@ -6787,7 +8381,10 @@ fn compile_c_sharded_with_preamble(wasm: &[u8], n: usize) -> (String, Vec<String
     while let Some(pos) = s.find("static uint64_t __rets_") {
         let semicolon = s[pos..].find(';').map(|e| pos + e + 1).unwrap_or(s.len());
         let decl = &s[pos..semicolon];
-        if !preamble.contains(decl) { preamble.push_str(decl); preamble.push('\n'); }
+        if !preamble.contains(decl) {
+            preamble.push_str(decl);
+            preamble.push('\n');
+        }
         s = &s[pos + 1..];
     }
 
@@ -6805,7 +8402,13 @@ fn compile_c_sharded(wasm: &[u8], n: usize) -> Vec<String> {
 /// The C backend emits `static` functions, so separate-TU linking doesn't work.
 /// We need a preamble with forward declarations so all functions are visible before
 /// their definitions appear. Use `compile_c_sharded_with_preamble` to get the preamble.
-fn run_c_sharded_with_preamble(preamble: &str, shards: &[String], fn_id: u32, args: &[u64], rets: usize) -> Vec<u64> {
+fn run_c_sharded_with_preamble(
+    preamble: &str,
+    shards: &[String],
+    fn_id: u32,
+    args: &[u64],
+    rets: usize,
+) -> Vec<u64> {
     let combined = format!("{preamble}\n{}", shards.join("\n"));
     run_c(&combined, fn_id, args, rets)
 }
@@ -6832,14 +8435,18 @@ fn run_c_sharded(shards: &[String], fn_id: u32, args: &[u64], rets: usize) -> Ve
                 if let Some(fn_rel) = s.find(fn_tag) {
                     // Headers: __sig_ + __rets_ definitions before fn_tag.
                     let header = &s[..fn_rel];
-                    if !preamble.contains(header) { preamble.push_str(header); }
+                    if !preamble.contains(header) {
+                        preamble.push_str(header);
+                    }
                     // Function forward declaration.
                     let rest = &s[fn_rel + fn_tag.len()..];
                     let idx_end = rest.find('(').unwrap_or(rest.len());
                     let n_str = &rest[..idx_end];
                     if n_str.chars().all(|c: char| c.is_ascii_digit()) {
                         let fwd = format!("{fn_tag}{n_str}(uint64_t*restrict);\n");
-                        if !preamble.contains(&fwd) { preamble.push_str(&fwd); }
+                        if !preamble.contains(&fwd) {
+                            preamble.push_str(&fwd);
+                        }
                     }
                     // Function body: from fn_tag to the next __sig_ or end.
                     let fn_start = fn_rel;
@@ -6873,7 +8480,9 @@ fn compile_js_sharded(wasm: &[u8], n: usize, shard_paths: &[&str]) -> Vec<String
     let imports_len = {
         let mut body_count = 0u32;
         for p in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
-            if let wasmparser::Payload::CodeSectionEntry(_) = p { body_count += 1; }
+            if let wasmparser::Payload::CodeSectionEntry(_) = p {
+                body_count += 1;
+            }
         }
         fsigs.len() as u32 - body_count
     };
@@ -6891,14 +8500,23 @@ fn compile_js_sharded(wasm: &[u8], n: usize, shard_paths: &[&str]) -> Vec<String
 
     // Emit ESM imports at the top of each shard.
     for shard_idx in 0..n {
-        js_emit_cross_shard_imports(&mut shards[shard_idx], shard_idx, imports_len, local_fn_count, &shard_map, shard_paths).unwrap();
+        js_emit_cross_shard_imports(
+            &mut shards[shard_idx],
+            shard_idx,
+            imports_len,
+            local_fn_count,
+            &shard_map,
+            shard_paths,
+        )
+        .unwrap();
     }
 
     // Route operators to the correct shard.
     let mut current_shard = 0usize;
     let mut state = JsState::default();
     let mut reencoder = RoundtripReencoder;
-    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, imports_len);
+    let raw_ops =
+        mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, imports_len);
     let ops = dce_pass!(raw_ops);
     for op in ops {
         let op = op.unwrap();
@@ -6906,12 +8524,29 @@ fn compile_js_sharded(wasm: &[u8], n: usize, shard_paths: &[&str]) -> Vec<String
             current_shard = shard_map.shard_for(*id + imports_len);
             state = JsState::default();
         }
-        JsWrite::on_mach(&mut shards[current_shard], &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+        JsWrite::on_mach(
+            &mut shards[current_shard],
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
 
     // Emit ESM exports at the bottom of each shard.
     for shard_idx in 0..n {
-        js_emit_shard_exports(&mut shards[shard_idx], shard_idx, imports_len, local_fn_count, &shard_map).unwrap();
+        js_emit_shard_exports(
+            &mut shards[shard_idx],
+            shard_idx,
+            imports_len,
+            local_fn_count,
+            &shard_map,
+        )
+        .unwrap();
     }
 
     shards
@@ -6951,10 +8586,17 @@ fn run_js_sharded_esm(wasm: &[u8], n: usize, entry_shard: usize, harness: &str) 
         .output()
         .expect("node not found in PATH");
 
-    for path in &paths { let _ = std::fs::remove_file(path); }
+    for path in &paths {
+        let _ = std::fs::remove_file(path);
+    }
 
-    assert!(out.status.success(), "node exited non-zero:\nstderr: {}\n", String::from_utf8_lossy(&out.stderr));
-    String::from_utf8(out.stdout).unwrap()
+    assert!(
+        out.status.success(),
+        "node exited non-zero:\nstderr: {}\n",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout)
+        .unwrap()
         .lines()
         .filter(|l| !l.is_empty())
         .map(|l| l.trim().parse::<i64>().expect("expected int from node"))
@@ -6962,7 +8604,12 @@ fn run_js_sharded_esm(wasm: &[u8], n: usize, entry_shard: usize, harness: &str) 
 }
 
 /// Compile `wasm` to N native ASM shards (text), with sharding enabled.
-fn compile_native_asm_sharded(wasm: &[u8], arch: NativeArch, abi: NativeAbi, n: usize) -> Vec<String> {
+fn compile_native_asm_sharded(
+    wasm: &[u8],
+    arch: NativeArch,
+    abi: NativeAbi,
+    n: usize,
+) -> Vec<String> {
     use portal_solutions_blitz_common::shard::{
         RoundRobinShardMap, SecondCtxConfig, ShardConfig, ShardMap,
     };
@@ -6971,7 +8618,9 @@ fn compile_native_asm_sharded(wasm: &[u8], arch: NativeArch, abi: NativeAbi, n: 
     let imports_len = {
         let mut bodies = 0u32;
         for p in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
-            if let wasmparser::Payload::CodeSectionEntry(_) = p { bodies += 1; }
+            if let wasmparser::Payload::CodeSectionEntry(_) = p {
+                bodies += 1;
+            }
         }
         fsigs.len() as u32 - bodies
     };
@@ -6985,17 +8634,21 @@ fn compile_native_asm_sharded(wasm: &[u8], arch: NativeArch, abi: NativeAbi, n: 
 
     let shard_map = RoundRobinShardMap { n };
     let total_fns = fsigs.len() as u32;
-    let second_ctx = SecondCtxConfig::for_shard(ShardConfig { imports_len, total_fns });
+    let second_ctx = SecondCtxConfig::for_shard(ShardConfig {
+        imports_len,
+        total_fns,
+    });
 
     let mut shards: Vec<String> = (0..n).map(|_| String::new()).collect();
     let mut reencoder = RoundtripReencoder;
 
-    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, imports_len);
+    let raw_ops =
+        mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, imports_len);
     let ops: Vec<_> = dce_pass!(raw_ops).collect::<Result<Vec<_>, _>>().unwrap();
 
     match (arch, abi) {
         (NativeArch::X86_64, NativeAbi::Naive) => {
-            use portal_solutions_blitz_x86_64::{naive, X64Arch};
+            use portal_solutions_blitz_x86_64::{X64Arch, naive};
             let mut state = naive::State::default();
             let mut current_shard = 0usize;
             let mut ctx = ();
@@ -7003,20 +8656,34 @@ fn compile_native_asm_sharded(wasm: &[u8], arch: NativeArch, abi: NativeAbi, n: 
                 if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = op {
                     current_shard = shard_map.shard_for(*id + imports_len);
                     state = naive::State {
-                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map)),
+                        shard: Some(naive::NaiveShardState::new(
+                            second_ctx,
+                            current_shard,
+                            imports_len,
+                            &shard_map,
+                        )),
                         ..Default::default()
                     };
                 }
                 let mut out = NativeAsmWriter(String::new());
                 naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, X64Arch::default(),
-                    &mut state, &[], &[], &[], op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    X64Arch::default(),
+                    &mut state,
+                    &[],
+                    &[],
+                    &[],
+                    op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
                 shards[current_shard].push_str(&out.0);
             }
         }
         (NativeArch::X86_64, NativeAbi::Sysv) => {
-            use portal_solutions_blitz_x86_64::{naive, sysv, X64Arch};
+            use portal_solutions_blitz_x86_64::{X64Arch, naive, sysv};
             let mut state = sysv::SysVState::default();
             let mut current_shard = 0usize;
             let mut ctx = ();
@@ -7024,20 +8691,32 @@ fn compile_native_asm_sharded(wasm: &[u8], arch: NativeArch, abi: NativeAbi, n: 
                 if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = op {
                     current_shard = shard_map.shard_for(*id + imports_len);
                     state = sysv::SysVState {
-                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map)),
+                        shard: Some(naive::NaiveShardState::new(
+                            second_ctx,
+                            current_shard,
+                            imports_len,
+                            &shard_map,
+                        )),
                         ..Default::default()
                     };
                 }
                 let mut out = NativeAsmWriter(String::new());
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, X64Arch::default(),
-                    &mut state, &[], op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    X64Arch::default(),
+                    &mut state,
+                    &[],
+                    op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
                 shards[current_shard].push_str(&out.0);
             }
         }
         (NativeArch::AArch64, NativeAbi::Naive) => {
-            use portal_solutions_blitz_aarch64::{naive, AArch64Arch};
+            use portal_solutions_blitz_aarch64::{AArch64Arch, naive};
             let mut state = naive::State::default();
             let mut current_shard = 0usize;
             let mut ctx = ();
@@ -7045,20 +8724,34 @@ fn compile_native_asm_sharded(wasm: &[u8], arch: NativeArch, abi: NativeAbi, n: 
                 if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = op {
                     current_shard = shard_map.shard_for(*id + imports_len);
                     state = naive::State {
-                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map)),
+                        shard: Some(naive::NaiveShardState::new(
+                            second_ctx,
+                            current_shard,
+                            imports_len,
+                            &shard_map,
+                        )),
                         ..Default::default()
                     };
                 }
                 let mut out = NativeAsmWriter(String::new());
                 naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, AArch64Arch::default(),
-                    &mut state, &[], &[], &[], op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    AArch64Arch::default(),
+                    &mut state,
+                    &[],
+                    &[],
+                    &[],
+                    op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
                 shards[current_shard].push_str(&out.0);
             }
         }
         (NativeArch::AArch64, NativeAbi::Sysv) => {
-            use portal_solutions_blitz_aarch64::{naive, sysv, AArch64Arch};
+            use portal_solutions_blitz_aarch64::{AArch64Arch, naive, sysv};
             let mut state = naive::State::default();
             let mut current_shard = 0usize;
             let mut ctx = ();
@@ -7066,20 +8759,32 @@ fn compile_native_asm_sharded(wasm: &[u8], arch: NativeArch, abi: NativeAbi, n: 
                 if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = op {
                     current_shard = shard_map.shard_for(*id + imports_len);
                     state = naive::State {
-                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map)),
+                        shard: Some(naive::NaiveShardState::new(
+                            second_ctx,
+                            current_shard,
+                            imports_len,
+                            &shard_map,
+                        )),
                         ..Default::default()
                     };
                 }
                 let mut out = NativeAsmWriter(String::new());
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, AArch64Arch::default(),
-                    &mut state, &[], op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    AArch64Arch::default(),
+                    &mut state,
+                    &[],
+                    op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
                 shards[current_shard].push_str(&out.0);
             }
         }
         (NativeArch::Riscv64, NativeAbi::Naive) => {
-            use portal_solutions_blitz_riscv64::{naive, RiscV64Arch};
+            use portal_solutions_blitz_riscv64::{RiscV64Arch, naive};
             let mut state = naive::State::default();
             let mut current_shard = 0usize;
             let mut ctx = ();
@@ -7087,20 +8792,34 @@ fn compile_native_asm_sharded(wasm: &[u8], arch: NativeArch, abi: NativeAbi, n: 
                 if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = op {
                     current_shard = shard_map.shard_for(*id + imports_len);
                     state = naive::State {
-                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map)),
+                        shard: Some(naive::NaiveShardState::new(
+                            second_ctx,
+                            current_shard,
+                            imports_len,
+                            &shard_map,
+                        )),
                         ..Default::default()
                     };
                 }
                 let mut out = NativeAsmWriter(String::new());
                 naive::WriterExt::handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, RiscV64Arch::default(),
-                    &mut state, &[], &[], &[], op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    RiscV64Arch::default(),
+                    &mut state,
+                    &[],
+                    &[],
+                    &[],
+                    op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
                 shards[current_shard].push_str(&out.0);
             }
         }
         (NativeArch::Riscv64, NativeAbi::Sysv) => {
-            use portal_solutions_blitz_riscv64::{naive, sysv, RiscV64Arch};
+            use portal_solutions_blitz_riscv64::{RiscV64Arch, naive, sysv};
             let mut state = naive::State::default();
             let mut current_shard = 0usize;
             let mut ctx = ();
@@ -7108,15 +8827,27 @@ fn compile_native_asm_sharded(wasm: &[u8], arch: NativeArch, abi: NativeAbi, n: 
                 if let portal_solutions_blitz_common::MachOperator::StartFn { id, .. } = op {
                     current_shard = shard_map.shard_for(*id + imports_len);
                     state = naive::State {
-                        shard: Some(naive::NaiveShardState::new(second_ctx, current_shard, imports_len, &shard_map)),
+                        shard: Some(naive::NaiveShardState::new(
+                            second_ctx,
+                            current_shard,
+                            imports_len,
+                            &shard_map,
+                        )),
                         ..Default::default()
                     };
                 }
                 let mut out = NativeAsmWriter(String::new());
                 sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-                    &mut out, &mut ctx, RiscV64Arch::default(),
-                    &mut state, &[], op, &mut reencoder, 0,
-                ).unwrap();
+                    &mut out,
+                    &mut ctx,
+                    RiscV64Arch::default(),
+                    &mut state,
+                    &[],
+                    op,
+                    &mut reencoder,
+                    0,
+                )
+                .unwrap();
                 shards[current_shard].push_str(&out.0);
             }
         }
@@ -7130,11 +8861,15 @@ fn compile_native_asm_sharded(wasm: &[u8], arch: NativeArch, abi: NativeAbi, n: 
 
 #[test]
 fn shard_single_equiv_c() {
-    let wasm = make_module(&[ValType::I64], &[ValType::I64], &[
-        Instruction::LocalGet(0),
-        Instruction::I64Const(10),
-        Instruction::I64Add,
-    ]);
+    let wasm = make_module(
+        &[ValType::I64],
+        &[ValType::I64],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::I64Const(10),
+            Instruction::I64Add,
+        ],
+    );
     let shards = compile_c_sharded(&wasm, 1);
     // Single-shard output contains fn_0 and no cross-shard calls.
     assert!(shards[0].contains("fn_0"), "shard 0 must contain fn_0 body");
@@ -7146,14 +8881,22 @@ fn shard_single_equiv_c() {
 
 #[test]
 fn shard_single_equiv_js() {
-    let wasm = make_module(&[ValType::I64], &[ValType::I64], &[
-        Instruction::LocalGet(0),
-        Instruction::I64Const(10),
-        Instruction::I64Add,
-    ]);
+    let wasm = make_module(
+        &[ValType::I64],
+        &[ValType::I64],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::I64Const(10),
+            Instruction::I64Add,
+        ],
+    );
     // Verify shard body contains fn definition.
     let check_shards = compile_js_sharded(&wasm, 1, &["./shard_0.mjs"]);
-    assert!(check_shards[0].contains("$0"), "shard 0 must contain $0 body\n{}", check_shards[0]);
+    assert!(
+        check_shards[0].contains("$0"),
+        "shard 0 must contain $0 body\n{}",
+        check_shards[0]
+    );
     // Run via ESM.
     let result = run_js_sharded_esm(&wasm, 1, 0, "console.log(String($0(5n)));");
     assert_eq!(result, vec![15]);
@@ -7168,8 +8911,12 @@ fn shard_two_fn_cross_call_c() {
     let wasm = make_two_func_cross_call_module();
     let (decls, shards) = compile_c_sharded_raw(&wasm, 2);
     // Verify cross-shard extern declarations are present in at least one shard.
-    assert!(decls[0].contains("extern") || decls[1].contains("extern"),
-        "at least one shard must have cross-shard extern decl\ndecls[0]:\n{}\ndecls[1]:\n{}", decls[0], decls[1]);
+    assert!(
+        decls[0].contains("extern") || decls[1].contains("extern"),
+        "at least one shard must have cross-shard extern decl\ndecls[0]:\n{}\ndecls[1]:\n{}",
+        decls[0],
+        decls[1]
+    );
     // Execute: call fn0 (which calls fn1) and expect 43.
     let result = run_c_sharded(&shards, 0, &[], 1);
     assert_eq!(result, vec![43], "fn0() must return fn1(42) = 43");
@@ -7180,7 +8927,11 @@ fn shard_two_fn_cross_call_js() {
     let wasm = make_two_func_cross_call_module();
     // Entry shard is shard 0 (fn0 is WASM idx 0, 0 % 2 = 0).
     let result = run_js_sharded_esm(&wasm, 2, 0, "console.log(String($0()));");
-    assert_eq!(result, vec![43], "fn0() must return fn1(42n) = 43n via cross-shard ESM import");
+    assert_eq!(
+        result,
+        vec![43],
+        "fn0() must return fn1(42n) = 43n via cross-shard ESM import"
+    );
 }
 
 #[test]
@@ -7194,11 +8945,13 @@ fn shard_three_fn_mixed_c() {
     // fn1(i64) → i64: arg + 10
     // fn2(i64) → i64: arg * 2
     // fn0 passes 5 to fn1 → 15, then passes 15 to fn2 → 30.
-    use wasm_encoder::{CodeSection, ExportKind, ExportSection, Function, FunctionSection, TypeSection};
+    use wasm_encoder::{
+        CodeSection, ExportKind, ExportSection, Function, FunctionSection, TypeSection,
+    };
 
     let mut module = wasm_encoder::Module::new();
     let mut types = TypeSection::new();
-    types.ty().function([], [ValType::I64]);         // type 0: fn0
+    types.ty().function([], [ValType::I64]); // type 0: fn0
     types.ty().function([ValType::I64], [ValType::I64]); // type 1: fn1, fn2
     module.section(&types);
 
@@ -7242,20 +8995,31 @@ fn shard_three_fn_mixed_c() {
 
     let shards = compile_c_sharded(&wasm, 2);
     let result = run_c_sharded(&shards, 0, &[], 1);
-    assert_eq!(result, vec![30], "fn0 should return fn2(fn1(5)) = fn2(15) = 30");
+    assert_eq!(
+        result,
+        vec![30],
+        "fn0 should return fn2(fn1(5)) = fn2(15) = 30"
+    );
 }
 
 // ---- shard_asm_*: native assembly backend structural tests -----------------
 
 /// Single-shard native ASM sharding produces non-empty output that
 /// contains the expected intra-shard call pattern (direct label call, no SCR load).
-fn assert_shard_single_asm_contains_no_scr_load(arch: NativeArch, abi: NativeAbi, scr_pattern: &str) {
+fn assert_shard_single_asm_contains_no_scr_load(
+    arch: NativeArch,
+    abi: NativeAbi,
+    scr_pattern: &str,
+) {
     let wasm = make_two_func_cross_call_module();
     // n=1: both functions in shard 0, call is intra-shard, no SCR-relative load.
     let shards = compile_native_asm_sharded(&wasm, arch, abi, 1);
     assert!(!shards[0].is_empty(), "single-shard asm must be non-empty");
-    assert!(!shards[0].contains(scr_pattern),
-        "single-shard must not emit cross-shard SCR load (all calls are intra-shard):\n{}", shards[0]);
+    assert!(
+        !shards[0].contains(scr_pattern),
+        "single-shard must not emit cross-shard SCR load (all calls are intra-shard):\n{}",
+        shards[0]
+    );
 }
 
 /// Two-shard native ASM sharding: the shard containing fn0 must emit a
@@ -7265,8 +9029,12 @@ fn assert_shard_cross_asm_contains_scr_load(arch: NativeArch, abi: NativeAbi, sc
     let shards = compile_native_asm_sharded(&wasm, arch, abi, 2);
     assert!(!shards[0].is_empty(), "shard 0 must be non-empty");
     assert!(!shards[1].is_empty(), "shard 1 must be non-empty");
-    assert!(shards[0].contains(scr_pattern) || shards[1].contains(scr_pattern),
-        "at least one shard must contain the SCR-relative indirect load\nshard0:\n{}\nshard1:\n{}", shards[0], shards[1]);
+    assert!(
+        shards[0].contains(scr_pattern) || shards[1].contains(scr_pattern),
+        "at least one shard must contain the SCR-relative indirect load\nshard0:\n{}\nshard1:\n{}",
+        shards[0],
+        shards[1]
+    );
 }
 
 // Cross-shard loads use `[r14+...` (x86-64) or `[x27,...` / `[x27` (AArch64).
@@ -7320,7 +9088,9 @@ fn make_module_2fn(
 ) -> Vec<u8> {
     let mut module = Module::new();
     let mut types = TypeSection::new();
-    types.ty().function(ty.0.iter().cloned(), ty.1.iter().cloned());
+    types
+        .ty()
+        .function(ty.0.iter().cloned(), ty.1.iter().cloned());
     module.section(&types);
 
     let mut functions = FunctionSection::new();
@@ -7330,7 +9100,13 @@ fn make_module_2fn(
 
     if with_mem {
         let mut memories = MemorySection::new();
-        memories.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+        memories.memory(MemoryType {
+            minimum: 1,
+            maximum: None,
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
         module.section(&memories);
     }
 
@@ -7351,11 +9127,19 @@ fn make_module_2fn(
 fn test_call_indirect_c() {
     let wasm = make_module_2fn(
         (&[ValType::I64], &[ValType::I64]),
-        &[Instruction::LocalGet(0), Instruction::I64Const(1), Instruction::I64Add, Instruction::Return],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::I64Const(1),
+            Instruction::I64Add,
+            Instruction::Return,
+        ],
         &[
             Instruction::LocalGet(0),
             Instruction::I32Const(0),
-            Instruction::CallIndirect { type_index: 0, table_index: 0 },
+            Instruction::CallIndirect {
+                type_index: 0,
+                table_index: 0,
+            },
             Instruction::Return,
         ],
         false,
@@ -7378,7 +9162,17 @@ fn test_call_indirect_c() {
     let mut reencoder = RoundtripReencoder;
     for op in ops {
         let op = op.unwrap();
-        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+        CWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
     eprintln!("=== call_indirect C ===\n{out}");
     // fn_1(41) -> call_indirect through table[0] = fn_0 -> 41+1 = 42
@@ -7389,7 +9183,12 @@ fn test_call_indirect_c() {
 fn test_return_call_c() {
     let wasm = make_module_2fn(
         (&[ValType::I64], &[ValType::I64]),
-        &[Instruction::LocalGet(0), Instruction::I64Const(1), Instruction::I64Add, Instruction::Return],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::I64Const(1),
+            Instruction::I64Add,
+            Instruction::Return,
+        ],
         &[Instruction::LocalGet(0), Instruction::ReturnCall(0)],
         false,
     );
@@ -7408,7 +9207,17 @@ fn test_return_call_c() {
     let mut reencoder = RoundtripReencoder;
     for op in ops {
         let op = op.unwrap();
-        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+        CWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
     eprintln!("=== return_call C ===\n{out}");
     assert_eq!(run_c(&out, 1, &[41], 1), vec![42]);
@@ -7418,11 +9227,19 @@ fn test_return_call_c() {
 fn test_return_call_indirect_c() {
     let wasm = make_module_2fn(
         (&[ValType::I64], &[ValType::I64]),
-        &[Instruction::LocalGet(0), Instruction::I64Const(1), Instruction::I64Add, Instruction::Return],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::I64Const(1),
+            Instruction::I64Add,
+            Instruction::Return,
+        ],
         &[
             Instruction::LocalGet(0),
             Instruction::I32Const(0),
-            Instruction::ReturnCallIndirect { type_index: 0, table_index: 0 },
+            Instruction::ReturnCallIndirect {
+                type_index: 0,
+                table_index: 0,
+            },
         ],
         false,
     );
@@ -7442,7 +9259,17 @@ fn test_return_call_indirect_c() {
     let mut reencoder = RoundtripReencoder;
     for op in ops {
         let op = op.unwrap();
-        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+        CWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
     eprintln!("=== return_call_indirect C ===\n{out}");
     assert_eq!(run_c(&out, 1, &[41], 1), vec![42]);
@@ -7452,11 +9279,19 @@ fn test_return_call_indirect_c() {
 fn test_call_indirect_js() {
     let wasm = make_module_2fn(
         (&[ValType::I64], &[ValType::I64]),
-        &[Instruction::LocalGet(0), Instruction::I64Const(1), Instruction::I64Add, Instruction::Return],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::I64Const(1),
+            Instruction::I64Add,
+            Instruction::Return,
+        ],
         &[
             Instruction::LocalGet(0),
             Instruction::I32Const(0),
-            Instruction::CallIndirect { type_index: 0, table_index: 0 },
+            Instruction::CallIndirect {
+                type_index: 0,
+                table_index: 0,
+            },
             Instruction::Return,
         ],
         false,
@@ -7477,7 +9312,17 @@ fn test_call_indirect_js() {
     let mut reencoder = RoundtripReencoder;
     for op in ops {
         let op = op.unwrap();
-        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+        JsWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
     eprintln!("=== call_indirect JS ===\n{out}");
     assert_eq!(run_js(&out, &[41]), vec![42]);
@@ -7487,7 +9332,12 @@ fn test_call_indirect_js() {
 fn test_return_call_js() {
     let wasm = make_module_2fn(
         (&[ValType::I64], &[ValType::I64]),
-        &[Instruction::LocalGet(0), Instruction::I64Const(1), Instruction::I64Add, Instruction::Return],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::I64Const(1),
+            Instruction::I64Add,
+            Instruction::Return,
+        ],
         &[Instruction::LocalGet(0), Instruction::ReturnCall(0)],
         false,
     );
@@ -7506,7 +9356,17 @@ fn test_return_call_js() {
     let mut reencoder = RoundtripReencoder;
     for op in ops {
         let op = op.unwrap();
-        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+        JsWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
     eprintln!("=== return_call JS ===\n{out}");
     assert_eq!(run_js(&out, &[41]), vec![42]);
@@ -7516,21 +9376,41 @@ fn test_return_call_js() {
 fn test_bulk_memory_c() {
     // fn0: fill mem[0..10]=0xAB; copy mem[0..10]->mem[20..30]; load i32 @20.
     let fn0: &[Instruction<'_>] = &[
-        Instruction::I32Const(0), Instruction::I32Const(0xAB), Instruction::I32Const(10),
+        Instruction::I32Const(0),
+        Instruction::I32Const(0xAB),
+        Instruction::I32Const(10),
         Instruction::MemoryFill(0),
-        Instruction::I32Const(20), Instruction::I32Const(0), Instruction::I32Const(10),
-        Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 },
         Instruction::I32Const(20),
-        Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }),
+        Instruction::I32Const(0),
+        Instruction::I32Const(10),
+        Instruction::MemoryCopy {
+            src_mem: 0,
+            dst_mem: 0,
+        },
+        Instruction::I32Const(20),
+        Instruction::I32Load(MemArg {
+            offset: 0,
+            align: 2,
+            memory_index: 0,
+        }),
         Instruction::Return,
     ];
     // fn1: memory.init(seg0, src=0, dest=100, len=4); data.drop(0); load i32 @100.
     let fn1: &[Instruction<'_>] = &[
-        Instruction::I32Const(100), Instruction::I32Const(0), Instruction::I32Const(4),
-        Instruction::MemoryInit { mem: 0, data_index: 0 },
+        Instruction::I32Const(100),
+        Instruction::I32Const(0),
+        Instruction::I32Const(4),
+        Instruction::MemoryInit {
+            mem: 0,
+            data_index: 0,
+        },
         Instruction::DataDrop(0),
         Instruction::I32Const(100),
-        Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }),
+        Instruction::I32Load(MemArg {
+            offset: 0,
+            align: 2,
+            memory_index: 0,
+        }),
         Instruction::Return,
     ];
     let wasm = make_module_2fn((&[], &[ValType::I32]), fn0, fn1, true);
@@ -7550,7 +9430,17 @@ fn test_bulk_memory_c() {
     let mut reencoder = RoundtripReencoder;
     for op in ops {
         let op = op.unwrap();
-        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+        CWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
     eprintln!("=== bulk memory C ===\n{out}");
     assert_eq!(run_c_with_grow(&out, 1, 0, &[], 1), vec![0xABABABAB]);
@@ -7560,20 +9450,40 @@ fn test_bulk_memory_c() {
 #[test]
 fn test_bulk_memory_js() {
     let fn0: &[Instruction<'_>] = &[
-        Instruction::I32Const(0), Instruction::I32Const(0xAB), Instruction::I32Const(10),
+        Instruction::I32Const(0),
+        Instruction::I32Const(0xAB),
+        Instruction::I32Const(10),
         Instruction::MemoryFill(0),
-        Instruction::I32Const(20), Instruction::I32Const(0), Instruction::I32Const(10),
-        Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 },
         Instruction::I32Const(20),
-        Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }),
+        Instruction::I32Const(0),
+        Instruction::I32Const(10),
+        Instruction::MemoryCopy {
+            src_mem: 0,
+            dst_mem: 0,
+        },
+        Instruction::I32Const(20),
+        Instruction::I32Load(MemArg {
+            offset: 0,
+            align: 2,
+            memory_index: 0,
+        }),
         Instruction::Return,
     ];
     let fn1: &[Instruction<'_>] = &[
-        Instruction::I32Const(100), Instruction::I32Const(0), Instruction::I32Const(4),
-        Instruction::MemoryInit { mem: 0, data_index: 0 },
+        Instruction::I32Const(100),
+        Instruction::I32Const(0),
+        Instruction::I32Const(4),
+        Instruction::MemoryInit {
+            mem: 0,
+            data_index: 0,
+        },
         Instruction::DataDrop(0),
         Instruction::I32Const(100),
-        Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }),
+        Instruction::I32Load(MemArg {
+            offset: 0,
+            align: 2,
+            memory_index: 0,
+        }),
         Instruction::Return,
     ];
     let wasm = make_module_2fn((&[], &[ValType::I32]), fn0, fn1, true);
@@ -7593,17 +9503,45 @@ fn test_bulk_memory_js() {
     let mut reencoder = RoundtripReencoder;
     for op in ops {
         let op = op.unwrap();
-        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+        JsWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
     eprintln!("=== bulk memory JS ===\n{out}");
     let mem = vec![0u8; 65536];
-    assert_eq!(run_js_with_mem(&out, &mem, &[]).iter().map(|v| *v as u32).collect::<Vec<_>>(), vec![0xABABABAB]);
+    assert_eq!(
+        run_js_with_mem(&out, &mem, &[])
+            .iter()
+            .map(|v| *v as u32)
+            .collect::<Vec<_>>(),
+        vec![0xABABABAB]
+    );
     // second call needs its own harness invocation ($1)
     let harness = "\n$mem=new Uint8Array(65536);$mem_dv=new DataView($mem.buffer);\nconst __r=$1();console.log(String(__r));";
     let code = format!("{out}{harness}");
-    let out2 = std::process::Command::new("node").arg("-e").arg(&code).output().expect("node");
-    assert!(out2.status.success(), "node failed: {}", String::from_utf8_lossy(&out2.stderr));
-    let v: i64 = String::from_utf8(out2.stdout).unwrap().trim().parse().unwrap();
+    let out2 = std::process::Command::new("node")
+        .arg("-e")
+        .arg(&code)
+        .output()
+        .expect("node");
+    assert!(
+        out2.status.success(),
+        "node failed: {}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+    let v: i64 = String::from_utf8(out2.stdout)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
     assert_eq!(v as u32, 0x04030201);
 }
 
@@ -7616,9 +9554,17 @@ fn test_multi_memory_c() {
         &[
             Instruction::I32Const(0),
             Instruction::LocalGet(0),
-            Instruction::I64Store(MemArg { offset: 0, align: 3, memory_index: 1 }),
+            Instruction::I64Store(MemArg {
+                offset: 0,
+                align: 3,
+                memory_index: 1,
+            }),
             Instruction::I32Const(0),
-            Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 1 }),
+            Instruction::I64Load(MemArg {
+                offset: 0,
+                align: 3,
+                memory_index: 1,
+            }),
             Instruction::Return,
         ],
         &[Instruction::LocalGet(0), Instruction::Return],
@@ -7639,7 +9585,17 @@ fn test_multi_memory_c() {
     let mut reencoder = RoundtripReencoder;
     for op in ops {
         let op = op.unwrap();
-        CWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+        CWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
     eprintln!("=== multi memory C ===\n{out}");
 
@@ -7657,13 +9613,28 @@ fn test_multi_memory_c() {
              printf(\"%llu\\n\",_r[0]);return 0;}}\n"
     );
     std::fs::write(&src_path, &full_src).unwrap();
-    let compile = std::process::Command::new("cc").arg(&src_path).arg("-Wno-unsequenced").arg("-o").arg(&bin_path).output().expect("cc");
-    assert!(compile.status.success(), "compile failed: {}\n{}", String::from_utf8_lossy(&compile.stderr), full_src);
+    let compile = std::process::Command::new("cc")
+        .arg(&src_path)
+        .arg("-Wno-unsequenced")
+        .arg("-o")
+        .arg(&bin_path)
+        .output()
+        .expect("cc");
+    assert!(
+        compile.status.success(),
+        "compile failed: {}\n{}",
+        String::from_utf8_lossy(&compile.stderr),
+        full_src
+    );
     let run = std::process::Command::new(&bin_path).output().expect("run");
     assert!(run.status.success());
     let _ = std::fs::remove_file(&src_path);
     let _ = std::fs::remove_file(&bin_path);
-    let v: u64 = String::from_utf8(run.stdout).unwrap().trim().parse().unwrap();
+    let v: u64 = String::from_utf8(run.stdout)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
     assert_eq!(v, 99);
 }
 
@@ -7712,11 +9683,21 @@ fn test_promise_calls_sync_and_async_import() {
     for op in ops {
         let op = op.unwrap();
         JsWrite::on_mach(
-            &mut out, &sigs_enc, &fsigs, &[], &[("env", "add_one")], &mut state, &op, &mut reencoder,
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &[("env", "add_one")],
+            &mut state,
+            &op,
+            &mut reencoder,
         )
         .unwrap();
     }
-    assert!(out.contains("instanceof Promise"), "expected Promise bail:\n{out}");
+    assert!(
+        out.contains("instanceof Promise"),
+        "expected Promise bail:\n{out}"
+    );
     assert!(out.contains("$cont_"), "expected continuation:\n{out}");
 
     // Sync import: export returns a plain array (not a Promise).
@@ -7728,8 +9709,16 @@ fn test_promise_calls_sync_and_async_import() {
          if(__r instanceof Promise) throw new Error('expected sync');\n\
          console.log(String(Array.isArray(__r)?__r[0]:__r));"
     );
-    let o = std::process::Command::new("node").arg("-e").arg(&sync_harness).output().expect("node");
-    assert!(o.status.success(), "sync: {}", String::from_utf8_lossy(&o.stderr));
+    let o = std::process::Command::new("node")
+        .arg("-e")
+        .arg(&sync_harness)
+        .output()
+        .expect("node");
+    assert!(
+        o.status.success(),
+        "sync: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     assert_eq!(String::from_utf8(o.stdout).unwrap().trim(), "42");
 
     // Promise import: export returns a Promise that resolves after a microtask.
@@ -7741,8 +9730,16 @@ fn test_promise_calls_sync_and_async_import() {
          if(!(__r instanceof Promise)) throw new Error('expected Promise');\n\
          const v=await __r;console.log(String(Array.isArray(v)?v[0]:v));}})().catch(e=>{{console.error(e);process.exit(1);}});"
     );
-    let o = std::process::Command::new("node").arg("-e").arg(&async_harness).output().expect("node");
-    assert!(o.status.success(), "async: {}", String::from_utf8_lossy(&o.stderr));
+    let o = std::process::Command::new("node")
+        .arg("-e")
+        .arg(&async_harness)
+        .output()
+        .expect("node");
+    assert!(
+        o.status.success(),
+        "async: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     assert_eq!(String::from_utf8(o.stdout).unwrap().trim(), "42");
 }
 
@@ -7754,9 +9751,17 @@ fn test_multi_memory_js() {
         &[
             Instruction::I32Const(0),
             Instruction::LocalGet(0),
-            Instruction::I64Store(MemArg { offset: 0, align: 3, memory_index: 1 }),
+            Instruction::I64Store(MemArg {
+                offset: 0,
+                align: 3,
+                memory_index: 1,
+            }),
             Instruction::I32Const(0),
-            Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 1 }),
+            Instruction::I64Load(MemArg {
+                offset: 0,
+                align: 3,
+                memory_index: 1,
+            }),
             Instruction::Return,
         ],
         &[Instruction::LocalGet(0), Instruction::Return],
@@ -7777,13 +9782,31 @@ fn test_multi_memory_js() {
     let mut reencoder = RoundtripReencoder;
     for op in ops {
         let op = op.unwrap();
-        JsWrite::on_mach(&mut out, &sigs_enc, &fsigs, &[], &[], &mut state, &op, &mut reencoder).unwrap();
+        JsWrite::on_mach(
+            &mut out,
+            &sigs_enc,
+            &fsigs,
+            &[],
+            &[],
+            &mut state,
+            &op,
+            &mut reencoder,
+        )
+        .unwrap();
     }
     eprintln!("=== multi memory JS ===\n{out}");
     let harness = "\n$mems[1]=new Uint8Array(65536);$mem_dvs[1]=new DataView($mems[1].buffer);\nconst __r=$0(99n);console.log(String(__r));";
     let code = format!("{out}{harness}");
-    let o = std::process::Command::new("node").arg("-e").arg(&code).output().expect("node");
-    assert!(o.status.success(), "node failed: {}", String::from_utf8_lossy(&o.stderr));
+    let o = std::process::Command::new("node")
+        .arg("-e")
+        .arg(&code)
+        .output()
+        .expect("node");
+    assert!(
+        o.status.success(),
+        "node failed: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     let v: i64 = String::from_utf8(o.stdout).unwrap().trim().parse().unwrap();
     assert_eq!(v, 99);
 }

@@ -19,22 +19,22 @@
 use alloc::vec::Vec;
 extern crate alloc;
 
-use portal_solutions_asm_aarch64::{
-    out::{
-        arg::{AddressingMode, ArgKind, MemArgKind},
-        Writer, WriterCore,
-    },
-    AArch64Arch, RegisterClass,
-};
 use portal_pc_asm_common::types::mem::MemorySize;
+use portal_solutions_asm_aarch64::{
+    AArch64Arch, RegisterClass,
+    out::{
+        Writer, WriterCore,
+        arg::{AddressingMode, ArgKind, MemArgKind},
+    },
+};
 use portal_solutions_blitz_common::{
     asm::Reg,
     ops::{MachOperator, ProbePlacement},
     wasm_encoder::{FuncType, reencode::Reencode},
 };
 
-use crate::naive::{State, WriterExt, SCR, WASM_SLOT};
 use crate::AArch64Label;
+use crate::naive::{SCR, State, WASM_SLOT, WriterExt};
 
 // Re-exported (renamed to match `blitz-x86-64::sysv::{SysVState, CallAbi}`'s
 // naming) so callers building a C-callable (AAPCS64) entry never need to
@@ -46,8 +46,8 @@ use crate::AArch64Label;
 // deeper split/removal (see `docs/naive-abi-deprecation.md`); until then,
 // `sysv::{SysVState, CallAbi, MemBase}` is the name a caller should reach
 // for instead of `naive::{State, CallAbi, MemBase}`.
-pub use crate::naive::{CallAbi, MemBase, State as SysVState};
 use crate::codegen::ProbeBase;
+pub use crate::naive::{CallAbi, MemBase, State as SysVState};
 use crate::{FP, LR, SP};
 
 /// Blitz register number of the AAPCS64 **probe-base virtual parameter** (`x12`).
@@ -59,11 +59,17 @@ use crate::{FP, LR, SP};
 pub const PROBE_BASE_REG: u8 = 12;
 
 fn reg(r: Reg) -> MemArgKind {
-    MemArgKind::NoMem(ArgKind::Reg { reg: r, size: MemorySize::_64 })
+    MemArgKind::NoMem(ArgKind::Reg {
+        reg: r,
+        size: MemorySize::_64,
+    })
 }
 fn mem_pre(base: Reg, disp: i32) -> MemArgKind {
     MemArgKind::Mem {
-        base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
+        base: ArgKind::Reg {
+            reg: base,
+            size: MemorySize::_64,
+        },
         offset: None,
         disp,
         size: MemorySize::_64,
@@ -73,7 +79,10 @@ fn mem_pre(base: Reg, disp: i32) -> MemArgKind {
 }
 fn mem_post(base: Reg, disp: i32) -> MemArgKind {
     MemArgKind::Mem {
-        base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
+        base: ArgKind::Reg {
+            reg: base,
+            size: MemorySize::_64,
+        },
         offset: None,
         disp,
         size: MemorySize::_64,
@@ -83,7 +92,10 @@ fn mem_post(base: Reg, disp: i32) -> MemArgKind {
 }
 fn mem_base_disp(base: Reg, disp: i32) -> MemArgKind {
     MemArgKind::Mem {
-        base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
+        base: ArgKind::Reg {
+            reg: base,
+            size: MemorySize::_64,
+        },
         offset: None,
         disp,
         size: MemorySize::_64,
@@ -94,7 +106,14 @@ fn mem_base_disp(base: Reg, disp: i32) -> MemArgKind {
 
 /// AAPCS64 argument registers in order (X0–X7).
 const ARG_REGS: [Reg; 8] = [
-    Reg(0), Reg(1), Reg(2), Reg(3), Reg(4), Reg(5), Reg(6), Reg(7),
+    Reg(0),
+    Reg(1),
+    Reg(2),
+    Reg(3),
+    Reg(4),
+    Reg(5),
+    Reg(6),
+    Reg(7),
 ];
 
 use portal_solutions_blitz_common::wasm_encoder::{Instruction, reencode};
@@ -118,9 +137,13 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         let results = state.call_results.get(widx).copied().unwrap_or(0);
         let label = if is_import {
             let (m, n) = func_imports[widx];
-            AArch64Label::External { name: alloc::format!("{m}__{n}") }
+            AArch64Label::External {
+                name: alloc::format!("{m}__{n}"),
+            }
         } else {
-            AArch64Label::Indexed { idx: (idx - state.n_imports) as usize + 0x80000000 }
+            AArch64Label::Indexed {
+                idx: (idx - state.n_imports) as usize + 0x80000000,
+            }
         };
         (label, arity, results, is_import)
     }
@@ -138,14 +161,26 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
     ///
     /// Pop the `call_indirect` table index and load the function pointer from
     /// `__wasm_table[index]` into x14 (a register the marshalling preserves).
-    fn sysv_load_indirect_target(&mut self, ctx: &mut Context, arch: AArch64Arch) -> Result<(), Self::Error>
+    fn sysv_load_indirect_target(
+        &mut self,
+        ctx: &mut Context,
+        arch: AArch64Arch,
+    ) -> Result<(), Self::Error>
     where
         Self: Sized,
     {
         let idx = Reg(14);
         let tbl = Reg(13);
         self.wasm_pop(ctx, arch, idx)?; // table index → x14
-        crate::load_label_addr(self, ctx, arch, &reg(tbl), AArch64Label::External { name: "__wasm_table".into() })?;
+        crate::load_label_addr(
+            self,
+            ctx,
+            arch,
+            &reg(tbl),
+            AArch64Label::External {
+                name: "__wasm_table".into(),
+            },
+        )?;
         // x14 := *(x13 + x14*8)
         let lit = |v: u64| MemArgKind::NoMem(ArgKind::Lit(v));
         self.lsl(ctx, arch, &reg(idx), &reg(idx), &lit(3))?;
@@ -182,7 +217,12 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
             // AAPCS64: first 8 integer args in registers; args 9+ on the stack.
             for i in 0..arity.min(8) {
                 let disp = (arity - 1 - i) as i32 * WASM_SLOT;
-                self.ldr(ctx, arch, &reg(ARG_REGS[i as usize]), &mem_base_disp(base, disp))?;
+                self.ldr(
+                    ctx,
+                    arch,
+                    &reg(ARG_REGS[i as usize]),
+                    &mem_base_disp(base, disp),
+                )?;
             }
             let stack_args = arity.saturating_sub(8);
             let needed = (stack_args as u64) * 8 + 8;
@@ -205,7 +245,13 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 self.bl(ctx, arch, &reg(s9))?;
             }
             self.ldr(ctx, arch, &reg(base), &mem_base_disp(SP, base_slot))?;
-            self.add(ctx, arch, &reg(SP), &reg(base), &lit(arity as u64 * WASM_SLOT as u64))?;
+            self.add(
+                ctx,
+                arch,
+                &reg(SP),
+                &reg(base),
+                &lit(arity as u64 * WASM_SLOT as u64),
+            )?;
         } else {
             // Internal AllStack: every param on the outgoing stack.
             let needed = (arity as u64 + 1) * 8;
@@ -227,10 +273,20 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 self.bl(ctx, arch, &reg(s9))?;
             }
             self.ldr(ctx, arch, &reg(base), &mem_base_disp(SP, base_slot))?;
-            self.add(ctx, arch, &reg(SP), &reg(base), &lit(arity as u64 * WASM_SLOT as u64))?;
+            self.add(
+                ctx,
+                arch,
+                &reg(SP),
+                &reg(base),
+                &lit(arity as u64 * WASM_SLOT as u64),
+            )?;
         }
-        if results > 1 { self.wasm_push(ctx, arch, Reg(1))?; }
-        if results > 0 { self.wasm_push(ctx, arch, Reg(0))?; }
+        if results > 1 {
+            self.wasm_push(ctx, arch, Reg(1))?;
+        }
+        if results > 0 {
+            self.wasm_push(ctx, arch, Reg(0))?;
+        }
         Ok(())
     }
 
@@ -298,12 +354,21 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
     /// variants *before* they ever reach `naive`'s `_handle_op` (where the
     /// regalloc-covered arms and their own flush pre-check live), so none of
     /// that protection applies here without this being called explicitly.
-    fn sysv_flush_regalloc(&mut self, ctx: &mut Context, arch: AArch64Arch, state: &mut State<'_>)
-        -> Result<(), Self::Error>
+    fn sysv_flush_regalloc(
+        &mut self,
+        ctx: &mut Context,
+        arch: AArch64Arch,
+        state: &mut State<'_>,
+    ) -> Result<(), Self::Error>
     where
         Self: Sized,
     {
-        let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+        let mut rw = crate::codegen::RegAllocW {
+            writer: self,
+            ctx,
+            arch,
+            regalloc: &mut state.regalloc,
+        };
         portal_solutions_blitz_codegen::control_flow::ControlFlowWriter::flush(&mut rw)
     }
 
@@ -371,7 +436,15 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 self.sysv_flush_regalloc(ctx, arch, state)?;
                 let (label, arity, results, is_import) =
                     Self::sysv_call_target(state, func_imports, *idx);
-                self.sysv_emit_marshalled_call(ctx, arch, Some(label), None, arity, results, is_import)
+                self.sysv_emit_marshalled_call(
+                    ctx,
+                    arch,
+                    Some(label),
+                    None,
+                    arity,
+                    results,
+                    is_import,
+                )
             }
             Instruction::ReturnCall(idx) if state.call_abi == CallAbi::AllStack => {
                 self.sysv_flush_regalloc(ctx, arch, state)?;
@@ -382,13 +455,26 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                     // C-ABI imports and a safe fallback when the callee wants more
                     // args than our incoming-arg frame holds.
                     self.sysv_emit_marshalled_call(
-                        ctx, arch, Some(label), None, arity, results, is_import,
+                        ctx,
+                        arch,
+                        Some(label),
+                        None,
+                        arity,
+                        results,
+                        is_import,
                     )?;
                     self.sysv_emit_epilogue(ctx, arch, state)
                 } else {
                     // True tail call to an internal function: O(1) machine stack for
                     // long `return_call` chains.
-                    self.sysv_emit_tail_call(ctx, arch, Some(label), None, arity, state.shard.is_some())
+                    self.sysv_emit_tail_call(
+                        ctx,
+                        arch,
+                        Some(label),
+                        None,
+                        arity,
+                        state.shard.is_some(),
+                    )
                 }
             }
 
@@ -400,9 +486,19 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 let results = state.sig_results.get(ty).copied().unwrap_or(0);
                 self.sysv_load_indirect_target(ctx, arch)?; // index → x14 (fn ptr)
                 // Indirect targets are always internal guest functions (AllStack).
-                self.sysv_emit_marshalled_call(ctx, arch, None, Some(Reg(14)), arity, results, false)
+                self.sysv_emit_marshalled_call(
+                    ctx,
+                    arch,
+                    None,
+                    Some(Reg(14)),
+                    arity,
+                    results,
+                    false,
+                )
             }
-            Instruction::ReturnCallIndirect { type_index, .. } if state.call_abi == CallAbi::AllStack => {
+            Instruction::ReturnCallIndirect { type_index, .. }
+                if state.call_abi == CallAbi::AllStack =>
+            {
                 self.sysv_flush_regalloc(ctx, arch, state)?;
                 let ty = *type_index as usize;
                 let arity = state.sig_params.get(ty).copied().unwrap_or(0);
@@ -410,11 +506,24 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 self.sysv_load_indirect_target(ctx, arch)?; // index → x14 (fn ptr)
                 if arity as usize > state.param_count {
                     self.sysv_emit_marshalled_call(
-                        ctx, arch, None, Some(Reg(14)), arity, results, false,
+                        ctx,
+                        arch,
+                        None,
+                        Some(Reg(14)),
+                        arity,
+                        results,
+                        false,
                     )?;
                     self.sysv_emit_epilogue(ctx, arch, state)
                 } else {
-                    self.sysv_emit_tail_call(ctx, arch, None, Some(Reg(14)), arity, state.shard.is_some())
+                    self.sysv_emit_tail_call(
+                        ctx,
+                        arch,
+                        None,
+                        Some(Reg(14)),
+                        arity,
+                        state.shard.is_some(),
+                    )
                 }
             }
 
@@ -438,7 +547,15 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 let arity = state.sig_params.get(ty).copied().unwrap_or(0);
                 let results = state.sig_results.get(ty).copied().unwrap_or(0);
                 self.wasm_pop(ctx, arch, Reg(14))?; // funcref value (raw target address) → x14
-                self.sysv_emit_marshalled_call(ctx, arch, None, Some(Reg(14)), arity, results, false)
+                self.sysv_emit_marshalled_call(
+                    ctx,
+                    arch,
+                    None,
+                    Some(Reg(14)),
+                    arity,
+                    results,
+                    false,
+                )
             }
             Instruction::ReturnCallRef(type_index) if state.call_abi == CallAbi::AllStack => {
                 self.sysv_flush_regalloc(ctx, arch, state)?;
@@ -448,11 +565,24 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 self.wasm_pop(ctx, arch, Reg(14))?;
                 if arity as usize > state.param_count {
                     self.sysv_emit_marshalled_call(
-                        ctx, arch, None, Some(Reg(14)), arity, results, false,
+                        ctx,
+                        arch,
+                        None,
+                        Some(Reg(14)),
+                        arity,
+                        results,
+                        false,
                     )?;
                     self.sysv_emit_epilogue(ctx, arch, state)
                 } else {
-                    self.sysv_emit_tail_call(ctx, arch, None, Some(Reg(14)), arity, state.shard.is_some())
+                    self.sysv_emit_tail_call(
+                        ctx,
+                        arch,
+                        None,
+                        Some(Reg(14)),
+                        arity,
+                        state.shard.is_some(),
+                    )
                 }
             }
 
@@ -494,29 +624,44 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 // doc comment) — sysv has its own StartFn separate from naive's.
                 state.regalloc = None;
 
-                self.set_label(ctx, arch, AArch64Label::Indexed { idx: *id as usize + 0x80000000 })
-                    .map_err(Err::from)?;
+                self.set_label(
+                    ctx,
+                    arch,
+                    AArch64Label::Indexed {
+                        idx: *id as usize + 0x80000000,
+                    },
+                )
+                .map_err(Err::from)?;
 
                 // Function-entry probe (probe 0): probe-table base arrives in the
                 // virtual-param register x12; read it directly before the frame
                 // is built so the tail-jump delivers X0–X7 intact.  Scratch x9/x10.
                 if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW {
-                        writer: self, ctx, arch, scratch2: 10,
+                        writer: self,
+                        ctx,
+                        arch,
+                        scratch2: 10,
                         probe_base: ProbeBase::Reg(PROBE_BASE_REG),
                     };
                     portal_solutions_blitz_codegen::emit_probe_site(
-                        &mut bw, cfg.table_base_off, 0, 9,
+                        &mut bw,
+                        cfg.table_base_off,
+                        0,
+                        9,
                         portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
                         &mut state.label_index,
-                    ).map_err(Err::from)?;
+                    )
+                    .map_err(Err::from)?;
                 }
 
                 // Save SCR (X27) in a 16-byte aligned pair before FP+LR.
                 if state.shard.is_some() {
-                    self.stp(ctx, arch, &reg(SCR), &reg(Reg(9)), &mem_pre(SP, -16)).map_err(Err::from)?;
+                    self.stp(ctx, arch, &reg(SCR), &reg(Reg(9)), &mem_pre(SP, -16))
+                        .map_err(Err::from)?;
                 }
-                self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16)).map_err(Err::from)?;
+                self.stp(ctx, arch, &reg(FP), &reg(LR), &mem_pre(SP, -16))
+                    .map_err(Err::from)?;
                 self.mov(ctx, arch, &reg(FP), &reg(SP)).map_err(Err::from)?;
 
                 // One extra slot (frame bottom) holds the spilled probe base for
@@ -525,15 +670,21 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 // Round the frame to 16 bytes so SP stays 16-byte aligned.
                 let frame_bytes = (locals_slots as u64 * 8 + 15) & !15;
                 let size = MemArgKind::NoMem(ArgKind::Lit(frame_bytes));
-                self.sub(ctx, arch, &reg(SP), &reg(SP), &size).map_err(Err::from)?;
+                self.sub(ctx, arch, &reg(SP), &reg(SP), &size)
+                    .map_err(Err::from)?;
 
                 // Spill the virtual-param base (x12) to the bottom frame slot and
                 // point mid-function sites at it.
                 if data.probes.as_ref().map(|c| c.enabled).unwrap_or(false) {
                     let disp = -(locals_slots as i32 * 8);
                     state.probe_base = ProbeBase::FrameSlot(disp);
-                    self.str(ctx, arch, &reg(Reg(PROBE_BASE_REG)), &mem_base_disp(FP, disp))
-                        .map_err(Err::from)?;
+                    self.str(
+                        ctx,
+                        arch,
+                        &reg(Reg(PROBE_BASE_REG)),
+                        &mem_base_disp(FP, disp),
+                    )
+                    .map_err(Err::from)?;
                 }
 
                 let scr_extra: i32 = if state.shard.is_some() { 16 } else { 0 };
@@ -567,7 +718,8 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
             }
 
             MachOperator::Local { count, .. } => {
-                self.mov_imm(ctx, arch, &reg(Reg(9)), 0).map_err(Err::from)?;
+                self.mov_imm(ctx, arch, &reg(Reg(9)), 0)
+                    .map_err(Err::from)?;
                 for _ in 0..*count {
                     state.local_count += 1;
                     self.store_local(ctx, arch, Reg(9), state.local_count - 1)
@@ -577,17 +729,25 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
             }
             MachOperator::StartBody | MachOperator::EndBody => Ok(()),
             MachOperator::Instruction { op: insn, .. } => {
-                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::Before).map_err(Err::from)?;
-                self.sysv_handle_insn(ctx, arch, state, func_imports, insn, target).map_err(Err::from)?;
-                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::After).map_err(Err::from)?;
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::Before)
+                    .map_err(Err::from)?;
+                self.sysv_handle_insn(ctx, arch, state, func_imports, insn, target)
+                    .map_err(Err::from)?;
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::After)
+                    .map_err(Err::from)?;
                 state.op_index += 1;
                 Ok(())
             }
-            MachOperator::Operator { op: Some(op_wasm), .. } => {
+            MachOperator::Operator {
+                op: Some(op_wasm), ..
+            } => {
                 let insn = rewriter.instruction(op_wasm.clone())?;
-                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::Before).map_err(Err::from)?;
-                self.sysv_handle_insn(ctx, arch, state, func_imports, &insn, target).map_err(Err::from)?;
-                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::After).map_err(Err::from)?;
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::Before)
+                    .map_err(Err::from)?;
+                self.sysv_handle_insn(ctx, arch, state, func_imports, &insn, target)
+                    .map_err(Err::from)?;
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::After)
+                    .map_err(Err::from)?;
                 state.op_index += 1;
                 Ok(())
             }
@@ -625,18 +785,29 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         let specs: Vec<_> = plan.at(state.op_index, placement).copied().collect();
         for spec in specs {
             let mut bw = crate::codegen::BlitzW {
-                writer: self, ctx, arch, scratch2: 10,
+                writer: self,
+                ctx,
+                arch,
+                scratch2: 10,
                 probe_base: state.probe_base,
             };
             portal_solutions_blitz_codegen::emit_probe_site(
-                &mut bw, cfg.table_base_off, spec.probe_id, 9, spec.binding, &mut state.label_index,
+                &mut bw,
+                cfg.table_base_off,
+                spec.probe_id,
+                9,
+                spec.binding,
+                &mut state.label_index,
             )?;
         }
         Ok(())
     }
 }
 
-impl<T: Writer<AArch64Label, Context> + WriterExt<Context> + ?Sized, Context> SysVWriterExt<Context> for T {}
+impl<T: Writer<AArch64Label, Context> + WriterExt<Context> + ?Sized, Context> SysVWriterExt<Context>
+    for T
+{
+}
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -655,7 +826,14 @@ mod sysv_manyarg_tests {
         let mut w = AArch64Writer::<AArch64Label>::new();
         let mut ctx = ();
         SysVWriterExt::sysv_emit_marshalled_call(
-            &mut w, &mut ctx, AArch64Arch::default(), Some(target), None, arity, results, is_import,
+            &mut w,
+            &mut ctx,
+            AArch64Arch::default(),
+            Some(target),
+            None,
+            arity,
+            results,
+            is_import,
         )
         .unwrap();
         let (bytes, _labels, relocs) = w.into_parts_with_relocs();
@@ -676,16 +854,37 @@ mod sysv_manyarg_tests {
     #[test]
     fn import_spill_grows_past_eight_args() {
         // Import AAPCS64: 8 args fit in X0..X7; 12 args spill 4 → strictly more code.
-        let (eight, _) = marshal(8, 0, AArch64Label::External { name: "libc__f".into() }, true);
-        let (twelve, _) = marshal(12, 0, AArch64Label::External { name: "libc__f".into() }, true);
+        let (eight, _) = marshal(
+            8,
+            0,
+            AArch64Label::External {
+                name: "libc__f".into(),
+            },
+            true,
+        );
+        let (twelve, _) = marshal(
+            12,
+            0,
+            AArch64Label::External {
+                name: "libc__f".into(),
+            },
+            true,
+        );
         assert!(twelve.len() > eight.len());
     }
 
     #[test]
     fn import_target_emits_external_reloc() {
-        let (_b, rel) = marshal(3, 1, AArch64Label::External { name: "env__write".into() }, true);
-        assert!(rel
-            .iter()
-            .any(|l| matches!(l, AArch64Label::External { name } if name.as_str() == "env__write")));
+        let (_b, rel) = marshal(
+            3,
+            1,
+            AArch64Label::External {
+                name: "env__write".into(),
+            },
+            true,
+        );
+        assert!(rel.iter().any(
+            |l| matches!(l, AArch64Label::External { name } if name.as_str() == "env__write")
+        ));
     }
 }

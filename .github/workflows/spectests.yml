@@ -1,0 +1,55 @@
+name: spectests
+
+# WebAssembly spec-test suite conformance (docs/spectests-plan.md).
+# Suite is checked out at a pinned commit; bumping the pin requires
+# re-baselining `crates/blitz-tests/tests/spec/baseline.toml`.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  SPEC_COMMIT: "37d6b05914b6833330001cea9f051b97f98af5b8"
+
+jobs:
+  spectests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out spec suite (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: WebAssembly/spec
+          ref: ${{ env.SPEC_COMMIT }}
+          path: spec
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # clang with all targets: C backend execution + native backend assembly
+      - name: Install LLVM/clang
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "17"
+
+      - name: Run spec tests
+        run: cargo test -p portal-solutions-blitz-tests --test spectests --release
+        env:
+          BLITZ_SPEC_DIR: ${{ github.workspace }}/spec
+          PORTAL_LOG_JSON: "1"
+          PORTAL_LOG_BAT: "1"
+
+      - name: Run existing e2e suite
+        run: cargo test -p portal-solutions-blitz-tests --test e2e
+        env:
+          PORTAL_LOG_JSON: "1"
+          PORTAL_LOG_BAT: "1"

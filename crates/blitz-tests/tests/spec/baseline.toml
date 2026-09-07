@@ -1,0 +1,1184 @@
+# Spec-test known failures.
+# See README.md in this directory for the ratchet rules.
+
+[[entries]]
+file = "br"
+idx = 29
+backend = "js"
+reason = "multi-value br: block carrying two results (i32,i64) loses the first value"
+
+[[entries]]
+file = "fac"
+idx = 5
+backend = "js"
+reason = "fac-opt: loop back-edge br_if 0 (gt_s) condition not emitted before continue"
+
+[[entries]]
+file = "fac"
+idx = 6
+backend = "js"
+reason = "fac-ssa: same loop back-edge condition loss as fac-opt"
+[[entries]]
+file = "block"
+idx = 19
+backend = "native-x86"
+reason = "x86-64 native: multi-value br carries and as-memory.grow-value unsupported (memory.grow sentinel)"
+
+[[entries]]
+file = "block"
+idx = 20
+backend = "native-x86"
+reason = "x86-64 native: multi-value br carries and as-memory.grow-value unsupported (memory.grow sentinel)"
+
+[[entries]]
+file = "block"
+idx = 21
+backend = "native-x86"
+reason = "x86-64 native: multi-value br carries and as-memory.grow-value unsupported (memory.grow sentinel)"
+
+[[entries]]
+file = "block"
+idx = 24
+backend = "native-x86"
+reason = "x86-64 native: multi-value br carries and as-memory.grow-value unsupported (memory.grow sentinel)"
+
+[[entries]]
+file = "block"
+idx = 32
+backend = "native-x86"
+reason = "x86-64 native: multi-value br carries and as-memory.grow-value unsupported (memory.grow sentinel)"
+
+[[entries]]
+file = "block"
+idx = 42
+backend = "native-x86"
+reason = "x86-64 native: multi-value br carries and as-memory.grow-value unsupported (memory.grow sentinel)"
+
+[[entries]]
+file = "br"
+idx = 13
+backend = "native-x86"
+reason = "x86-64 native: multi-result/multi-value br returns wrong values or loses carry"
+
+[[entries]]
+file = "br"
+idx = 29
+backend = "native-x86"
+reason = "x86-64 native: multi-result/multi-value br returns wrong values or loses carry"
+
+[[entries]]
+file = "br"
+idx = 71
+backend = "native-x86"
+reason = "x86-64 native: multi-result/multi-value br returns wrong values or loses carry"
+
+[[entries]]
+file = "br"
+idx = 74
+backend = "native-x86"
+reason = "x86-64 native: multi-result/multi-value br returns wrong values or loses carry"
+
+[[entries]]
+file = "br"
+idx = 76
+backend = "native-x86"
+reason = "x86-64 native: multi-result/multi-value br returns wrong values or loses carry"
+
+[[entries]]
+file = "br"
+idx = 78
+backend = "native-x86"
+reason = "x86-64 native: multi-result/multi-value br returns wrong values or loses carry"
+
+[[entries]]
+file = "br"
+idx = 84
+backend = "native-x86"
+reason = "x86-64 native: multi-result/multi-value br returns wrong values or loses carry"
+
+[[entries]]
+file = "br"
+idx = 88
+backend = "native-x86"
+reason = "x86-64 native: multi-result/multi-value br returns wrong values or loses carry"
+
+[[entries]]
+file = "if"
+idx = 9
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 11
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 12
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 43
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 44
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 45
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 46
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 47
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 53
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 54
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 93
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 94
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 110
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 111
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 112
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 113
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 114
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 115
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 116
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 118
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 120
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "if"
+idx = 122
+backend = "native-x86"
+reason = "x86-64 native: br-carry multi-result values read back wrong on the guest stack"
+
+[[entries]]
+file = "loop"
+idx = 16
+backend = "native-x86"
+reason = "x86-64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 17
+backend = "native-x86"
+reason = "x86-64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 18
+backend = "native-x86"
+reason = "x86-64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 21
+backend = "native-x86"
+reason = "x86-64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 29
+backend = "native-x86"
+reason = "x86-64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 39
+backend = "native-x86"
+reason = "x86-64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 46
+backend = "native-x86"
+reason = "x86-64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 78
+backend = "native-x86"
+reason = "x86-64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "labels"
+idx = 2
+backend = "native-x86"
+reason = "x86-64 native: nested loop br back-edge stops emulation"
+
+[[entries]]
+file = "fac"
+idx = 2
+backend = "native-x86"
+reason = "x86-64 native: fac-opt/fac-ssa loop back-edge br_if condition loss (same root as js)"
+
+[[entries]]
+file = "fac"
+idx = 4
+backend = "native-x86"
+reason = "x86-64 native: fac-opt/fac-ssa loop back-edge br_if condition loss (same root as js)"
+
+[[entries]]
+file = "fac"
+idx = 6
+backend = "native-x86"
+reason = "x86-64 native: fac-opt/fac-ssa loop back-edge br_if condition loss (same root as js)"
+
+[[entries]]
+file = "stack"
+idx = 1
+backend = "native-x86"
+reason = "x86-64 native: loop/br CTX frame handling stops emulation mid-body"
+
+[[entries]]
+file = "stack"
+idx = 2
+backend = "native-x86"
+reason = "x86-64 native: loop/br CTX frame handling stops emulation mid-body"
+
+[[entries]]
+file = "stack"
+idx = 3
+backend = "native-x86"
+reason = "x86-64 native: loop/br CTX frame handling stops emulation mid-body"
+
+[[entries]]
+file = "stack"
+idx = 5
+backend = "native-x86"
+reason = "x86-64 native: loop/br CTX frame handling stops emulation mid-body"
+
+[[entries]]
+file = "int_exprs"
+idx = 1
+backend = "native-x86"
+reason = "x86-64 native: i32 division edge cases and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 41
+backend = "native-x86"
+reason = "x86-64 native: i32 division edge cases and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 42
+backend = "native-x86"
+reason = "x86-64 native: i32 division edge cases and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 44
+backend = "native-x86"
+reason = "x86-64 native: i32 division edge cases and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 45
+backend = "native-x86"
+reason = "x86-64 native: i32 division edge cases and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 106
+backend = "native-x86"
+reason = "x86-64 native: i32 division edge cases and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 107
+backend = "native-x86"
+reason = "x86-64 native: i32 division edge cases and multi-result mismatches"
+
+[[entries]]
+file = "call"
+idx = 5
+backend = "native-x86"
+reason = "x86-64 native: multi-result call returns (i32,i64) only partial on the stack readback"
+
+[[entries]]
+file = "call"
+idx = 14
+backend = "native-x86"
+reason = "x86-64 native: multi-result call returns (i32,i64) only partial on the stack readback"
+
+[[entries]]
+file = "call"
+idx = 15
+backend = "native-x86"
+reason = "x86-64 native: multi-result call returns (i32,i64) only partial on the stack readback"
+
+[[entries]]
+file = "call"
+idx = 16
+backend = "native-x86"
+reason = "x86-64 native: multi-result call returns (i32,i64) only partial on the stack readback"
+
+[[entries]]
+file = "call"
+idx = 17
+backend = "native-x86"
+reason = "x86-64 native: multi-result call returns (i32,i64) only partial on the stack readback"
+
+[[entries]]
+file = "call"
+idx = 18
+backend = "native-x86"
+reason = "x86-64 native: multi-result call returns (i32,i64) only partial on the stack readback"
+
+[[entries]]
+file = "call"
+idx = 19
+backend = "native-x86"
+reason = "x86-64 native: multi-result call returns (i32,i64) only partial on the stack readback"
+
+[[entries]]
+file = "call"
+idx = 20
+backend = "native-x86"
+reason = "x86-64 native: multi-result call returns (i32,i64) only partial on the stack readback"
+
+[[entries]]
+file = "call"
+idx = 52
+backend = "native-x86"
+reason = "x86-64 native: multi-result call returns (i32,i64) only partial on the stack readback"
+
+[[entries]]
+file = "call"
+idx = 53
+backend = "native-x86"
+reason = "x86-64 native: multi-result call returns (i32,i64) only partial on the stack readback"
+
+[[entries]]
+file = "call"
+idx = 57
+backend = "native-x86"
+reason = "x86-64 native: multi-result call returns (i32,i64) only partial on the stack readback"
+
+[[entries]]
+file = "call"
+idx = 64
+backend = "native-x86"
+reason = "x86-64 native: multi-result call returns (i32,i64) only partial on the stack readback"
+
+[[entries]]
+file = "br_if"
+idx = 78
+backend = "native-x86"
+reason = "x86-64 native: deep/nested br_if depths miscompile (same class as br)"
+
+[[entries]]
+file = "br_if"
+idx = 84
+backend = "native-x86"
+reason = "x86-64 native: deep/nested br_if depths miscompile (same class as br)"
+
+[[entries]]
+file = "br_if"
+idx = 88
+backend = "native-x86"
+reason = "x86-64 native: deep/nested br_if depths miscompile (same class as br)"
+
+[[entries]]
+file = "left-to-right"
+idx = 56
+backend = "native-x86"
+reason = "x86-64 native: f32/f64 store address computation FETCH_UNMAPPED in float mixing"
+
+[[entries]]
+file = "left-to-right"
+idx = 57
+backend = "native-x86"
+reason = "x86-64 native: f32/f64 store address computation FETCH_UNMAPPED in float mixing"
+
+[[entries]]
+file = "left-to-right"
+idx = 90
+backend = "native-x86"
+reason = "x86-64 native: f32/f64 store address computation FETCH_UNMAPPED in float mixing"
+
+[[entries]]
+file = "left-to-right"
+idx = 91
+backend = "native-x86"
+reason = "x86-64 native: f32/f64 store address computation FETCH_UNMAPPED in float mixing"
+
+[[entries]]
+file = "block"
+idx = 19
+backend = "native-aarch64"
+reason = "aarch64 native: multi-value br carries and as-memory.grow-value (memory.grow sentinel), same class as x86-64"
+
+[[entries]]
+file = "block"
+idx = 20
+backend = "native-aarch64"
+reason = "aarch64 native: multi-value br carries and as-memory.grow-value (memory.grow sentinel), same class as x86-64"
+
+[[entries]]
+file = "block"
+idx = 21
+backend = "native-aarch64"
+reason = "aarch64 native: multi-value br carries and as-memory.grow-value (memory.grow sentinel), same class as x86-64"
+
+[[entries]]
+file = "block"
+idx = 24
+backend = "native-aarch64"
+reason = "aarch64 native: multi-value br carries and as-memory.grow-value (memory.grow sentinel), same class as x86-64"
+
+[[entries]]
+file = "block"
+idx = 32
+backend = "native-aarch64"
+reason = "aarch64 native: multi-value br carries and as-memory.grow-value (memory.grow sentinel), same class as x86-64"
+
+[[entries]]
+file = "block"
+idx = 33
+backend = "native-aarch64"
+reason = "aarch64 native: multi-value br carries and as-memory.grow-value (memory.grow sentinel), same class as x86-64"
+
+[[entries]]
+file = "block"
+idx = 42
+backend = "native-aarch64"
+reason = "aarch64 native: multi-value br carries and as-memory.grow-value (memory.grow sentinel), same class as x86-64"
+
+[[entries]]
+file = "br"
+idx = 13
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result/multi-value br returns wrong values (same class as x86-64)"
+
+[[entries]]
+file = "br"
+idx = 29
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result/multi-value br returns wrong values (same class as x86-64)"
+
+[[entries]]
+file = "br"
+idx = 71
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result/multi-value br returns wrong values (same class as x86-64)"
+
+[[entries]]
+file = "br"
+idx = 74
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result/multi-value br returns wrong values (same class as x86-64)"
+
+[[entries]]
+file = "br"
+idx = 76
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result/multi-value br returns wrong values (same class as x86-64)"
+
+[[entries]]
+file = "br_if"
+idx = 78
+backend = "native-aarch64"
+reason = "aarch64 native: deep/nested br_if depths miscompile (same class as x86-64)"
+
+[[entries]]
+file = "br_if"
+idx = 84
+backend = "native-aarch64"
+reason = "aarch64 native: deep/nested br_if depths miscompile (same class as x86-64)"
+
+[[entries]]
+file = "br_if"
+idx = 88
+backend = "native-aarch64"
+reason = "aarch64 native: deep/nested br_if depths miscompile (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 9
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 11
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 12
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 43
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 44
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 45
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 46
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 47
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 53
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 54
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 71
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 72
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 73
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 93
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 94
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 110
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 111
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 112
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 113
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 114
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 115
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 116
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 118
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 120
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "if"
+idx = 122
+backend = "native-aarch64"
+reason = "aarch64 native: br-carry multi-result values read back wrong (same class as x86-64)"
+
+[[entries]]
+file = "loop"
+idx = 16
+backend = "native-aarch64"
+reason = "aarch64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 17
+backend = "native-aarch64"
+reason = "aarch64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 18
+backend = "native-aarch64"
+reason = "aarch64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 21
+backend = "native-aarch64"
+reason = "aarch64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 29
+backend = "native-aarch64"
+reason = "aarch64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 30
+backend = "native-aarch64"
+reason = "aarch64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 39
+backend = "native-aarch64"
+reason = "aarch64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "loop"
+idx = 78
+backend = "native-aarch64"
+reason = "aarch64 native: nested-loop br depths miscompile (FETCH_UNMAPPED traps)"
+
+[[entries]]
+file = "fac"
+idx = 6
+backend = "native-aarch64"
+reason = "aarch64 native: assert_exhaustion stack-overflow case not classified as 'call stack exhausted'"
+
+[[entries]]
+file = "stack"
+idx = 5
+backend = "native-aarch64"
+reason = "aarch64 native: globals-not-persisting between invokes (same as C backend pattern)"
+
+[[entries]]
+file = "int_exprs"
+idx = 1
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 26
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 27
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 28
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 29
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 31
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 32
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 33
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 34
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 41
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 44
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 47
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 48
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 49
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 50
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 106
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "int_exprs"
+idx = 107
+backend = "native-aarch64"
+reason = "aarch64 native: div/rem edge cases (missing spec traps) and multi-result mismatches"
+
+[[entries]]
+file = "call"
+idx = 5
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 14
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 15
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 16
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 17
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 19
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 20
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 52
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 53
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 57
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "call"
+idx = 64
+backend = "native-aarch64"
+reason = "aarch64 native: multi-result call returns (i32,i64) partial on stack readback"
+
+[[entries]]
+file = "left-to-right"
+idx = 56
+backend = "native-aarch64"
+reason = "aarch64 native: f32/f64 mixing FETCH_UNMAPPED (same class as x86-64)"
+
+[[entries]]
+file = "left-to-right"
+idx = 57
+backend = "native-aarch64"
+reason = "aarch64 native: f32/f64 mixing FETCH_UNMAPPED (same class as x86-64)"
+
+[[entries]]
+file = "left-to-right"
+idx = 90
+backend = "native-aarch64"
+reason = "aarch64 native: f32/f64 mixing FETCH_UNMAPPED (same class as x86-64)"
+
+[[entries]]
+file = "left-to-right"
+idx = 91
+backend = "native-aarch64"
+reason = "aarch64 native: f32/f64 mixing FETCH_UNMAPPED (same class as x86-64)"
+
+[[entries]]
+file = "stack"
+idx = 1
+backend = "native-riscv64"
+reason = "riscv64 native: fac-expr/fac-stack nested loop+if+br miscompile (returns 1); Unhandled CPU exception on deeper cases"
+
+[[entries]]
+file = "stack"
+idx = 2
+backend = "native-riscv64"
+reason = "riscv64 native: fac-expr/fac-stack nested loop+if+br miscompile (returns 1); Unhandled CPU exception on deeper cases"
+
+[[entries]]
+file = "stack"
+idx = 3
+backend = "native-riscv64"
+reason = "riscv64 native: fac-expr/fac-stack nested loop+if+br miscompile (returns 1); Unhandled CPU exception on deeper cases"
+
+[[entries]]
+file = "stack"
+idx = 4
+backend = "native-riscv64"
+reason = "riscv64 native: fac-expr/fac-stack nested loop+if+br miscompile (returns 1); Unhandled CPU exception on deeper cases"
+
+[[entries]]
+file = "stack"
+idx = 5
+backend = "native-riscv64"
+reason = "riscv64 native: fac-expr/fac-stack nested loop+if+br miscompile (returns 1); Unhandled CPU exception on deeper cases"
+
+[[entries]]
+file = "fac"
+idx = 2
+backend = "native-riscv64"
+reason = "riscv64 native: fac-rec-named/fac-iter-named loop+if+br miscompile (same class as stack); exhaustion case unclassified"
+
+[[entries]]
+file = "fac"
+idx = 4
+backend = "native-riscv64"
+reason = "riscv64 native: fac-rec-named/fac-iter-named loop+if+br miscompile (same class as stack); exhaustion case unclassified"
+
+[[entries]]
+file = "fac"
+idx = 6
+backend = "native-riscv64"
+reason = "riscv64 native: fac-rec-named/fac-iter-named loop+if+br miscompile (same class as stack); exhaustion case unclassified"
+
+[[entries]]
+file = "labels"
+idx = 2
+backend = "native-riscv64"
+reason = "riscv64 native: nested label br miscompile (bad control flow)"
+
+[[entries]]
+file = "labels"
+idx = 3
+backend = "native-riscv64"
+reason = "riscv64 native: nested label br miscompile (bad control flow)"
+
+[[entries]]
+file = "labels"
+idx = 22
+backend = "native-riscv64"
+reason = "riscv64 native: nested label br miscompile (bad control flow)"
+
+[[entries]]
+file = "int_exprs"
+idx = 1
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 2
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 9
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 11
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 12
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 26
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 27
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 28
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 29
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 31
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 32
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 33
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 34
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 36
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 37
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 41
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 44
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 47
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 48
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 49
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 50
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 106
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+
+[[entries]]
+file = "int_exprs"
+idx = 107
+backend = "native-riscv64"
+reason = "riscv64 native: i32 signed-compare edge cases, missing div/rem-by-zero spec traps (RV returns -1/dividend), i64.const large-value emission"
+

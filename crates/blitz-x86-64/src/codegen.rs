@@ -1,12 +1,15 @@
 //! [`BlitzWriter`] implementation for x86-64.
 
+use crate::X64Label;
 use portal_solutions_asm_x86_64::{
     ConditionCode, RegisterClass, X64Arch,
-    out::{Writer, WriterCore, arg::{ArgKind, MemArgKind}},
+    out::{
+        Writer, WriterCore,
+        arg::{ArgKind, MemArgKind},
+    },
 };
-use portal_solutions_blitz_common::asm::common::mem::MemorySize;
 use portal_solutions_blitz_common::asm::Reg;
-use crate::X64Label;
+use portal_solutions_blitz_common::asm::common::mem::MemorySize;
 
 /// Where the runtime probe-table base pointer is found, for `load_probe_base`.
 ///
@@ -37,7 +40,12 @@ impl<'a, W, Context> BlitzW<'a, W, Context> {
     /// Construct a wrapper using the default CTX-relative probe-base convention
     /// (NaiveAbi / LFI).
     pub fn new(writer: &'a mut W, ctx: &'a mut Context, arch: X64Arch) -> Self {
-        BlitzW { writer, ctx, arch, probe_base: ProbeBase::CtxSlot }
+        BlitzW {
+            writer,
+            ctx,
+            arch,
+            probe_base: ProbeBase::CtxSlot,
+        }
     }
 }
 
@@ -48,12 +56,18 @@ where
     type Error = W::Error;
 
     fn branch_label(&mut self, label_idx: usize) -> Result<(), Self::Error> {
-        self.writer.jmp_label(self.ctx, self.arch, X64Label::Indexed { idx: label_idx })
+        self.writer
+            .jmp_label(self.ctx, self.arch, X64Label::Indexed { idx: label_idx })
     }
 
     fn branch_zero_label(&mut self, reg: u8, label_idx: usize) -> Result<(), Self::Error> {
         self.writer.cmp0(self.ctx, self.arch, &Reg(reg))?;
-        self.writer.jcc_label(self.ctx, self.arch, ConditionCode::E, X64Label::Indexed { idx: label_idx })
+        self.writer.jcc_label(
+            self.ctx,
+            self.arch,
+            ConditionCode::E,
+            X64Label::Indexed { idx: label_idx },
+        )
     }
 
     fn branch_reg(&mut self, reg: u8) -> Result<(), Self::Error> {
@@ -65,13 +79,15 @@ where
     }
 
     fn place_label(&mut self, label_idx: usize) -> Result<(), Self::Error> {
-        self.writer.set_label(self.ctx, self.arch, X64Label::Indexed { idx: label_idx })
+        self.writer
+            .set_label(self.ctx, self.arch, X64Label::Indexed { idx: label_idx })
     }
 
     // x86-64: add reg, 0xFFFF... (-1 as unsigned) = decrement
     fn reg_decrement(&mut self, reg: u8) -> Result<(), Self::Error> {
         self.writer.add(
-            self.ctx, self.arch,
+            self.ctx,
+            self.arch,
             &Reg(reg),
             &MemArgKind::NoMem(ArgKind::Lit(u64::MAX)),
         )
@@ -84,10 +100,15 @@ where
     // x86-64: ADD [ptr_reg], 1 — single instruction, no scratch needed
     fn inc_mem64(&mut self, ptr_reg: u8) -> Result<(), Self::Error> {
         self.writer.add(
-            self.ctx, self.arch,
+            self.ctx,
+            self.arch,
             &MemArgKind::Mem {
-                base: ArgKind::Reg { reg: Reg(ptr_reg), size: MemorySize::_64 },
-                offset: None, disp: 0,
+                base: ArgKind::Reg {
+                    reg: Reg(ptr_reg),
+                    size: MemorySize::_64,
+                },
+                offset: None,
+                disp: 0,
                 size: MemorySize::_64,
                 reg_class: RegisterClass::Gpr,
                 segment: Default::default(),
@@ -105,11 +126,16 @@ where
         match self.probe_base {
             // NaiveAbi/LFI: base pointer stored at [CTX + base_off].
             ProbeBase::CtxSlot => self.writer.mov(
-                self.ctx, self.arch,
+                self.ctx,
+                self.arch,
                 &Reg(dest),
                 &MemArgKind::Mem {
-                    base: ArgKind::Reg { reg: Reg::CTX, size: MemorySize::_64 },
-                    offset: None, disp: base_off as u32,
+                    base: ArgKind::Reg {
+                        reg: Reg::CTX,
+                        size: MemorySize::_64,
+                    },
+                    offset: None,
+                    disp: base_off as u32,
                     size: MemorySize::_64,
                     reg_class: RegisterClass::Gpr,
                     segment: Default::default(),
@@ -124,11 +150,16 @@ where
             }
             // SysV mid-function site: base spilled to [RBP + disp]  (RBP = Reg(5)).
             ProbeBase::FrameSlot(disp) => self.writer.mov(
-                self.ctx, self.arch,
+                self.ctx,
+                self.arch,
                 &Reg(dest),
                 &MemArgKind::Mem {
-                    base: ArgKind::Reg { reg: Reg(5), size: MemorySize::_64 },
-                    offset: None, disp: disp as u32,
+                    base: ArgKind::Reg {
+                        reg: Reg(5),
+                        size: MemorySize::_64,
+                    },
+                    offset: None,
+                    disp: disp as u32,
                     size: MemorySize::_64,
                     reg_class: RegisterClass::Gpr,
                     segment: Default::default(),
@@ -140,10 +171,15 @@ where
     // x86-64: ADD [ptr_reg + disp], 1 — single instruction, no scratch needed
     fn inc_mem64_disp(&mut self, ptr_reg: u8, disp: i32) -> Result<(), Self::Error> {
         self.writer.add(
-            self.ctx, self.arch,
+            self.ctx,
+            self.arch,
             &MemArgKind::Mem {
-                base: ArgKind::Reg { reg: Reg(ptr_reg), size: MemorySize::_64 },
-                offset: None, disp: disp as u32,
+                base: ArgKind::Reg {
+                    reg: Reg(ptr_reg),
+                    size: MemorySize::_64,
+                },
+                offset: None,
+                disp: disp as u32,
                 size: MemorySize::_64,
                 reg_class: RegisterClass::Gpr,
                 segment: Default::default(),
@@ -154,11 +190,16 @@ where
 
     fn load_mem64_disp(&mut self, dest: u8, src: u8, disp: i32) -> Result<(), Self::Error> {
         self.writer.mov(
-            self.ctx, self.arch,
+            self.ctx,
+            self.arch,
             &Reg(dest),
             &MemArgKind::Mem {
-                base: ArgKind::Reg { reg: Reg(src), size: MemorySize::_64 },
-                offset: None, disp: disp as u32,
+                base: ArgKind::Reg {
+                    reg: Reg(src),
+                    size: MemorySize::_64,
+                },
+                offset: None,
+                disp: disp as u32,
                 size: MemorySize::_64,
                 reg_class: RegisterClass::Gpr,
                 segment: Default::default(),
@@ -206,10 +247,11 @@ pub struct RegAllocW<'a, W, Context> {
 /// after `flush`, on the real RSP-based stack.
 const COND_SCRATCH: u8 = 0;
 
-impl<'a, W, Context> portal_solutions_blitz_codegen::regalloc_frontend::RegAllocWriter<
-    portal_solutions_asm_x86_64::regalloc::RegKind,
-    32,
-> for RegAllocW<'a, W, Context>
+impl<'a, W, Context>
+    portal_solutions_blitz_codegen::regalloc_frontend::RegAllocWriter<
+        portal_solutions_asm_x86_64::regalloc::RegKind,
+        32,
+    > for RegAllocW<'a, W, Context>
 where
     W: WriterCore<Context> + Writer<X64Label, Context>,
 {
@@ -264,29 +306,39 @@ where
 
     fn emit_regalloc_cmds(
         &mut self,
-        cmds: alloc::vec::Vec<portal_solutions_asm_regalloc::Cmd<portal_solutions_asm_x86_64::regalloc::RegKind>>,
+        cmds: alloc::vec::Vec<
+            portal_solutions_asm_regalloc::Cmd<portal_solutions_asm_x86_64::regalloc::RegKind>,
+        >,
     ) -> Result<(), Self::Error> {
         crate::regalloc_core::emit_cmds(self.writer, self.ctx, self.arch, cmds.into_iter())
     }
 }
 
-impl<'a, W, Context> portal_solutions_blitz_codegen::control_flow::ControlFlowWriter for RegAllocW<'a, W, Context>
+impl<'a, W, Context> portal_solutions_blitz_codegen::control_flow::ControlFlowWriter
+    for RegAllocW<'a, W, Context>
 where
     W: WriterCore<Context> + Writer<X64Label, Context>,
 {
     type Error = W::Error;
 
     fn branch_label(&mut self, label_idx: usize) -> Result<(), Self::Error> {
-        self.writer.jmp_label(self.ctx, self.arch, X64Label::Indexed { idx: label_idx })
+        self.writer
+            .jmp_label(self.ctx, self.arch, X64Label::Indexed { idx: label_idx })
     }
 
     fn branch_zero_label(&mut self, reg_n: u8, label_idx: usize) -> Result<(), Self::Error> {
         self.writer.cmp0(self.ctx, self.arch, &Reg(reg_n))?;
-        self.writer.jcc_label(self.ctx, self.arch, ConditionCode::E, X64Label::Indexed { idx: label_idx })
+        self.writer.jcc_label(
+            self.ctx,
+            self.arch,
+            ConditionCode::E,
+            X64Label::Indexed { idx: label_idx },
+        )
     }
 
     fn place_label(&mut self, label_idx: usize) -> Result<(), Self::Error> {
-        self.writer.set_label(self.ctx, self.arch, X64Label::Indexed { idx: label_idx })
+        self.writer
+            .set_label(self.ctx, self.arch, X64Label::Indexed { idx: label_idx })
     }
 
     // Flush any register-held operand-stack values to memory and reset TOS,

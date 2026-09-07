@@ -433,7 +433,12 @@ pub trait WriterExt<Context>: asm_x86::out::Writer<X64FastLabel, Context> {
                 let cond = Reg(t.reg);
                 self.cmp0(ctx, arch, &cond)?;
                 // if condition is zero (false), skip the branch
-                self.jcc_label(ctx, arch, portal_solutions_asm_x86_64::ConditionCode::E, X64FastLabel::Indexed { idx: i })?;
+                self.jcc_label(
+                    ctx,
+                    arch,
+                    portal_solutions_asm_x86_64::ConditionCode::E,
+                    X64FastLabel::Indexed { idx: i },
+                )?;
                 // flush and branch
                 {
                     let flush = state.regalloc.as_mut().unwrap().flush();
@@ -459,7 +464,12 @@ pub trait WriterExt<Context>: asm_x86::out::Writer<X64FastLabel, Context> {
                     let cond = Reg(t.reg);
                     self.cmp0(ctx, arch, &cond)?;
                     // if condition is zero (false), skip this arm
-                    self.jcc_label(ctx, arch, portal_solutions_asm_x86_64::ConditionCode::E, X64FastLabel::Indexed { idx: i })?;
+                    self.jcc_label(
+                        ctx,
+                        arch,
+                        portal_solutions_asm_x86_64::ConditionCode::E,
+                        X64FastLabel::Indexed { idx: i },
+                    )?;
                     {
                         let flush = state.regalloc.as_mut().unwrap().flush();
                         emit_cmds(self, ctx, arch, flush, &mut state.stack_manager)?;
@@ -560,7 +570,12 @@ pub trait WriterExt<Context>: asm_x86::out::Writer<X64FastLabel, Context> {
                 let cond = Reg(t.reg);
                 self.cmp0(ctx, arch, &cond)?;
                 // if condition is zero (false), jump to else branch (i+1)
-                self.jcc_label(ctx, arch, portal_solutions_asm_x86_64::ConditionCode::E, X64FastLabel::Indexed { idx: i + 1 })?;
+                self.jcc_label(
+                    ctx,
+                    arch,
+                    portal_solutions_asm_x86_64::ConditionCode::E,
+                    X64FastLabel::Indexed { idx: i + 1 },
+                )?;
                 // else fall through to then branch
                 self.set_label(ctx, arch, X64FastLabel::Indexed { idx: i })?;
             }

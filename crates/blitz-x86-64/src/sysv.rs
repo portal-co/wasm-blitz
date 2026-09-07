@@ -28,19 +28,25 @@ use alloc::vec::Vec;
 extern crate alloc;
 
 use portal_solutions_asm_x86_64::{
-    out::{Writer, arg::{ArgKind, MemArg, MemArgKind}},
     ConditionCode, RegisterClass, X64Arch,
+    out::{
+        Writer,
+        arg::{ArgKind, MemArg, MemArgKind},
+    },
 };
 use portal_solutions_blitz_common::{
     asm::Reg,
     asm::common::mem::MemorySize,
     ops::{FnData, MachOperator, ProbePlacement, ProbePlan, ProbeTableConfig},
-    wasm_encoder::{self, FuncType, Instruction, reencode::{self as reencode, Reencode}},
+    wasm_encoder::{
+        self, FuncType, Instruction,
+        reencode::{self as reencode, Reencode},
+    },
 };
 
-use crate::{X64Label, RSP};
 use crate::codegen::ProbeBase;
 use crate::naive::WriterExt as NaiveExt;
+use crate::{RSP, X64Label};
 
 /// Re-exported so callers don't need a separate `crate::naive::MemBase`
 /// import alongside this module's own [`SysVState`]/[`CallAbi`] just to
@@ -73,7 +79,10 @@ const ARG_REGS: [Reg; 6] = [
 
 fn mem64(base: Reg, disp: u32) -> MemArgKind {
     MemArgKind::Mem {
-        base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
+        base: ArgKind::Reg {
+            reg: base,
+            size: MemorySize::_64,
+        },
         offset: None,
         disp,
         size: MemorySize::_64,
@@ -196,28 +205,38 @@ pub enum CallAbi {
 /// backend's `_handle_op`.  Only the function boundary and local variable access
 /// are different.
 pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> {
-
     /// Load local variable `n` from the rbp-relative frame into register `dest`.
-    fn sysv_load_local(&mut self, ctx: &mut Context, arch: X64Arch, dest: Reg, n: usize)
-        -> Result<(), Self::Error>
-    {
+    fn sysv_load_local(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        dest: Reg,
+        n: usize,
+    ) -> Result<(), Self::Error> {
         // Local n is at [rbp - (n+1)*8]
         let disp = 0u32.wrapping_sub(((n as isize + 1) * 8) as u32);
         self.mov(ctx, arch, &dest, &mem64(RBP, disp))
     }
 
     /// Store `src` into local variable `n` in the rbp-relative frame.
-    fn sysv_store_local(&mut self, ctx: &mut Context, arch: X64Arch, src: Reg, n: usize)
-        -> Result<(), Self::Error>
-    {
+    fn sysv_store_local(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        src: Reg,
+        n: usize,
+    ) -> Result<(), Self::Error> {
         let disp = 0u32.wrapping_sub(((n as isize + 1) * 8) as u32);
         self.mov(ctx, arch, &mem64(RBP, disp), &src)
     }
 
     /// Returns the value at top of WASM operand stack (RSP) without popping.
-    fn sysv_peek(&mut self, ctx: &mut Context, arch: X64Arch, dest: Reg)
-        -> Result<(), Self::Error>
-    {
+    fn sysv_peek(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        dest: Reg,
+    ) -> Result<(), Self::Error> {
         self.mov(ctx, arch, &dest, &mem64(RSP, 0))
     }
 
@@ -225,12 +244,21 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
     /// currently register-held. Must be called before any control-flow,
     /// branch, call, or local-access code that touches RSP or a fixed
     /// register directly — see [`SysVState::regalloc`]'s doc comment.
-    fn sysv_flush_regalloc(&mut self, ctx: &mut Context, arch: X64Arch, state: &mut SysVState<'_>)
-        -> Result<(), Self::Error>
+    fn sysv_flush_regalloc(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        state: &mut SysVState<'_>,
+    ) -> Result<(), Self::Error>
     where
         Self: Sized,
     {
-        let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+        let mut rw = crate::codegen::RegAllocW {
+            writer: self,
+            ctx,
+            arch,
+            regalloc: &mut state.regalloc,
+        };
         portal_solutions_blitz_codegen::control_flow::ControlFlowWriter::flush(&mut rw)
     }
 
@@ -242,8 +270,12 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
     /// (`[RBP + probe_base_disp]`) since the virtual-param register `r11` has
     /// been clobbered by the body.  Uses `RAX` as scratch (free at a block
     /// boundary — operands live on the WASM stack).
-    fn sysv_emit_control_flow_probe(&mut self, ctx: &mut Context, arch: X64Arch, state: &mut SysVState<'_>)
-        -> Result<(), Self::Error>
+    fn sysv_emit_control_flow_probe(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        state: &mut SysVState<'_>,
+    ) -> Result<(), Self::Error>
     where
         Self: Sized,
     {
@@ -251,11 +283,16 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
             let probe_id = state.next_probe_id;
             state.next_probe_id += 1;
             let mut bw = crate::codegen::BlitzW {
-                writer: self, ctx, arch,
+                writer: self,
+                ctx,
+                arch,
                 probe_base: ProbeBase::FrameSlot(state.probe_base_disp),
             };
             portal_solutions_blitz_codegen::emit_probe_site(
-                &mut bw, cfg.table_base_off, probe_id, 0,
+                &mut bw,
+                cfg.table_base_off,
+                probe_id,
+                0,
                 portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
                 &mut state.label_index,
             )?;
@@ -292,11 +329,18 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
         let specs: Vec<_> = plan.at(state.op_index, placement).copied().collect();
         for spec in specs {
             let mut bw = crate::codegen::BlitzW {
-                writer: self, ctx, arch,
+                writer: self,
+                ctx,
+                arch,
                 probe_base: ProbeBase::FrameSlot(state.probe_base_disp),
             };
             portal_solutions_blitz_codegen::emit_probe_site(
-                &mut bw, cfg.table_base_off, spec.probe_id, 0, spec.binding, &mut state.label_index,
+                &mut bw,
+                cfg.table_base_off,
+                spec.probe_id,
+                0,
+                spec.binding,
+                &mut state.label_index,
             )?;
         }
         Ok(())
@@ -400,7 +444,9 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
         }
         // Restore caller frame; RSP ends at the return address.
         self.mov(ctx, arch, &RSP, &RBP)?;
-        if shard { self.pop(ctx, arch, &SCR)?; }
+        if shard {
+            self.pop(ctx, arch, &SCR)?;
+        }
         self.pop(ctx, arch, &RBP)?;
         self.jmp_label(ctx, arch, target)
     }
@@ -460,24 +506,46 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
             self.mov(ctx, arch, &mem64(RBP, 16 + scr_extra + i * 8), &RAX)?;
         }
         self.mov(ctx, arch, &RSP, &RBP)?;
-        if shard { self.pop(ctx, arch, &SCR)?; }
+        if shard {
+            self.pop(ctx, arch, &SCR)?;
+        }
         self.pop(ctx, arch, &RBP)?;
         self.jmp(ctx, arch, &target)
     }
 
     /// Pop the `call_indirect` table index and load the function pointer from
     /// `__wasm_table[index]` into R10 (a register the marshalling preserves).
-    fn sysv_load_indirect_target(&mut self, ctx: &mut Context, arch: X64Arch) -> Result<(), Self::Error>
+    fn sysv_load_indirect_target(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+    ) -> Result<(), Self::Error>
     where
         Self: Sized,
     {
         self.pop(ctx, arch, &Reg(10))?; // table index → R10
-        self.lea_label(ctx, arch, &Reg(11), X64Label::External { name: "__wasm_table".into() })?;
+        self.lea_label(
+            ctx,
+            arch,
+            &Reg(11),
+            X64Label::External {
+                name: "__wasm_table".into(),
+            },
+        )?;
         // R10 := [R11 + R10*8]
-        self.mov(ctx, arch, &Reg(10), &MemArgKind::Mem {
-            base: Reg(11), offset: Some((Reg(10), 8)), disp: 0,
-            size: MemorySize::_64, reg_class: RegisterClass::Gpr, segment: Default::default(),
-        })
+        self.mov(
+            ctx,
+            arch,
+            &Reg(10),
+            &MemArgKind::Mem {
+                base: Reg(11),
+                offset: Some((Reg(10), 8)),
+                disp: 0,
+                size: MemorySize::_64,
+                reg_class: RegisterClass::Gpr,
+                segment: Default::default(),
+            },
+        )
     }
 
     /// Emit the SysV epilogue (restore frame, `ret`) — shared by `Return`,
@@ -498,8 +566,12 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
     /// skipped (there is no native register for them); `mov rsp, rbp`
     /// below discards the whole operand stack unconditionally, so leaving
     /// them unread is not a leak.
-    fn sysv_emit_epilogue(&mut self, ctx: &mut Context, arch: X64Arch, state: &mut SysVState<'_>)
-        -> Result<(), Self::Error>
+    fn sysv_emit_epilogue(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        state: &mut SysVState<'_>,
+    ) -> Result<(), Self::Error>
     where
         Self: Sized,
     {
@@ -514,7 +586,9 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
             self.mov(ctx, arch, &Reg(2), &mem64(RSP, ((n - 2) * 8) as u32))?;
         }
         self.mov(ctx, arch, &RSP, &RBP)?;
-        if state.shard.is_some() { self.pop(ctx, arch, &SCR)?; }
+        if state.shard.is_some() {
+            self.pop(ctx, arch, &SCR)?;
+        }
         self.pop(ctx, arch, &RBP)?;
         self.ret(ctx, arch)
     }
@@ -531,9 +605,13 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
         let results = state.call_results.get(widx).copied().unwrap_or(0);
         let label = if is_import {
             let (m, n) = func_imports[widx];
-            X64Label::External { name: alloc::format!("{m}__{n}") }
+            X64Label::External {
+                name: alloc::format!("{m}__{n}"),
+            }
         } else {
-            X64Label::Func { r#fn: idx - state.n_imports }
+            X64Label::Func {
+                r#fn: idx - state.n_imports,
+            }
         };
         (label, arity, results, is_import)
     }
@@ -615,7 +693,9 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 self.sysv_load_indirect_target(ctx, arch)?; // index → R10 (fn ptr)
                 self.sysv_emit_marshalled_call_reg(ctx, arch, Reg(10), arity, results)
             }
-            Instruction::ReturnCallIndirect { type_index, .. } if state.call_abi == CallAbi::AllStack => {
+            Instruction::ReturnCallIndirect { type_index, .. }
+                if state.call_abi == CallAbi::AllStack =>
+            {
                 self.sysv_flush_regalloc(ctx, arch, state)?;
                 let ty = *type_index as usize;
                 let arity = state.sig_params.get(ty).copied().unwrap_or(0);
@@ -681,7 +761,6 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
             }
 
             // ---- Control flow — CTX-free (no naive delegation) ----
-
             Instruction::Loop(_) => {
                 let i = state.label_index;
                 state.label_index += 1;
@@ -705,11 +784,19 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 self.sysv_flush_regalloc(ctx, arch, state)?;
                 self.pop(ctx, arch, &RAX)?;
                 self.cmp0(ctx, arch, &RAX)?;
-                self.jcc_label(ctx, arch, ConditionCode::E, X64Label::Indexed { idx: i + 1 })?;
+                self.jcc_label(
+                    ctx,
+                    arch,
+                    ConditionCode::E,
+                    X64Label::Indexed { idx: i + 1 },
+                )?;
                 self.jmp_label(ctx, arch, X64Label::Indexed { idx: i })?;
                 self.set_label(ctx, arch, X64Label::Indexed { idx: i })?;
                 state.if_stack.push(crate::naive::Endable::If { idx: i });
-                state.ctrl_stack.push(SysVCtrl::If { base: i, else_seen: false });
+                state.ctrl_stack.push(SysVCtrl::If {
+                    base: i,
+                    else_seen: false,
+                });
                 Ok(())
             }
             Instruction::Else => {
@@ -749,7 +836,16 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                         mem_base: state.mem_base,
                         mem_base_by_index: state.mem_base_by_index.clone(),
                     };
-                    let result = self._handle_op(ctx, arch, &mut naive_state, func_imports, &[], &[], &other, target);
+                    let result = self._handle_op(
+                        ctx,
+                        arch,
+                        &mut naive_state,
+                        func_imports,
+                        &[],
+                        &[],
+                        &other,
+                        target,
+                    );
                     state.label_index = naive_state.label_index;
                     state.if_stack = naive_state.if_stack;
                     state.body = naive_state.body;
@@ -776,11 +872,20 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 // from other paths and must see canonical state.
                 self.sysv_flush_regalloc(ctx, arch, state)?;
                 let n = *n as usize;
-                if let Some(ctrl) = state.ctrl_stack.len().checked_sub(n + 1)
+                if let Some(ctrl) = state
+                    .ctrl_stack
+                    .len()
+                    .checked_sub(n + 1)
                     .and_then(|idx| state.ctrl_stack.get(idx))
                     .copied()
                 {
-                    self.jmp_label(ctx, arch, X64Label::Indexed { idx: ctrl.br_target() })
+                    self.jmp_label(
+                        ctx,
+                        arch,
+                        X64Label::Indexed {
+                            idx: ctrl.br_target(),
+                        },
+                    )
                 } else {
                     // Br targeting the function block = return
                     self.sysv_emit_epilogue(ctx, arch, state)
@@ -794,11 +899,21 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 state.label_index += 1;
                 self.pop(ctx, arch, &RAX)?;
                 self.cmp0(ctx, arch, &RAX)?;
-                if let Some(ctrl) = state.ctrl_stack.len().checked_sub(n + 1)
+                if let Some(ctrl) = state
+                    .ctrl_stack
+                    .len()
+                    .checked_sub(n + 1)
                     .and_then(|idx| state.ctrl_stack.get(idx))
                     .copied()
                 {
-                    self.jcc_label(ctx, arch, ConditionCode::NE, X64Label::Indexed { idx: ctrl.br_target() })?;
+                    self.jcc_label(
+                        ctx,
+                        arch,
+                        ConditionCode::NE,
+                        X64Label::Indexed {
+                            idx: ctrl.br_target(),
+                        },
+                    )?;
                 } else {
                     // BrIf targeting the function block = conditional return
                     self.jcc_label(ctx, arch, ConditionCode::E, X64Label::Indexed { idx: skip })?;
@@ -816,12 +931,18 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 macro_rules! do_br {
                     ($depth:expr) => {{
                         let n = $depth as usize;
-                        let tgt = ctrl.len().checked_sub(n + 1).and_then(|i| ctrl.get(i)).map(|c| c.br_target());
+                        let tgt = ctrl
+                            .len()
+                            .checked_sub(n + 1)
+                            .and_then(|i| ctrl.get(i))
+                            .map(|c| c.br_target());
                         if let Some(lbl) = tgt {
                             self.jmp_label(ctx, arch, X64Label::Indexed { idx: lbl })?;
                         } else {
                             self.mov(ctx, arch, &RSP, &RBP)?;
-                            if has_shard { self.pop(ctx, arch, &SCR)?; }
+                            if has_shard {
+                                self.pop(ctx, arch, &SCR)?;
+                            }
                             self.pop(ctx, arch, &RBP)?;
                             self.ret(ctx, arch)?;
                         }
@@ -831,15 +952,28 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                     let skip = state.label_index;
                     state.label_index += 1;
                     self.cmp0(ctx, arch, &RAX)?;
-                    self.jcc_label(ctx, arch, ConditionCode::NE, X64Label::Indexed { idx: skip })?;
+                    self.jcc_label(
+                        ctx,
+                        arch,
+                        ConditionCode::NE,
+                        X64Label::Indexed { idx: skip },
+                    )?;
                     do_br!(depth);
                     self.set_label(ctx, arch, X64Label::Indexed { idx: skip })?;
                     if arm_idx + 1 < targets.len() {
-                        self.lea(ctx, arch, &RAX, &MemArgKind::Mem {
-                            base: RAX, offset: None, disp: 0u32.wrapping_sub(1),
-                            size: MemorySize::_64, reg_class: RegisterClass::Gpr,
-                            segment: Default::default(),
-                        })?;
+                        self.lea(
+                            ctx,
+                            arch,
+                            &RAX,
+                            &MemArgKind::Mem {
+                                base: RAX,
+                                offset: None,
+                                disp: 0u32.wrapping_sub(1),
+                                size: MemorySize::_64,
+                                reg_class: RegisterClass::Gpr,
+                                segment: Default::default(),
+                            },
+                        )?;
                     }
                 }
                 do_br!(*default);
@@ -871,7 +1005,16 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                     mem_base: state.mem_base,
                     mem_base_by_index: state.mem_base_by_index.clone(),
                 };
-                let result = self._handle_op(ctx, arch, &mut naive_state, func_imports, &[], &[], other, target);
+                let result = self._handle_op(
+                    ctx,
+                    arch,
+                    &mut naive_state,
+                    func_imports,
+                    &[],
+                    &[],
+                    other,
+                    target,
+                );
                 state.label_index = naive_state.label_index;
                 state.if_stack = naive_state.if_stack;
                 state.body = naive_state.body;
@@ -913,13 +1056,19 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 // compilation exhausts the 32-register frame after enough functions.
                 state.regalloc = None;
 
-                self.set_label(ctx, arch, X64Label::Indexed {
-                    idx: *id as usize | (1 << 28),
-                }).map_err(Err::from)?;
+                self.set_label(
+                    ctx,
+                    arch,
+                    X64Label::Indexed {
+                        idx: *id as usize | (1 << 28),
+                    },
+                )
+                .map_err(Err::from)?;
                 // Also publish the `Func{id}` label at the entry so that
                 // inter-function calls (which the delegated naive Call/ReturnCall
                 // path emits as `Func{idx}`) resolve to this C-ABI entry.
-                self.set_label(ctx, arch, X64Label::Func { r#fn: *id }).map_err(Err::from)?;
+                self.set_label(ctx, arch, X64Label::Func { r#fn: *id })
+                    .map_err(Err::from)?;
 
                 // Function-entry probe (probe 0): the probe-table base arrives in
                 // the virtual-param register r11; read it directly so the
@@ -927,14 +1076,20 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 // arg registers RDI/RSI/… still intact).  Scratch = RAX.
                 if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW {
-                        writer: self, ctx, arch,
+                        writer: self,
+                        ctx,
+                        arch,
                         probe_base: ProbeBase::Reg(PROBE_BASE_REG),
                     };
                     portal_solutions_blitz_codegen::emit_probe_site(
-                        &mut bw, cfg.table_base_off, 0, 0,
+                        &mut bw,
+                        cfg.table_base_off,
+                        0,
+                        0,
                         portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
                         &mut state.label_index,
-                    ).map_err(Err::from)?;
+                    )
+                    .map_err(Err::from)?;
                 }
 
                 self.push(ctx, arch, &RBP).map_err(Err::from)?;
@@ -950,7 +1105,8 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 // local budget.
                 let slots = data.num_params + 16 + 1;
                 let frame_sz = (slots * 8 + 15) & !15;
-                self.mov64(ctx, arch, &RAX, frame_sz as u64).map_err(Err::from)?;
+                self.mov64(ctx, arch, &RAX, frame_sz as u64)
+                    .map_err(Err::from)?;
                 self.sub(ctx, arch, &RSP, &RAX).map_err(Err::from)?;
 
                 // Spill the virtual-param base (r11) to the bottom frame slot.
@@ -965,15 +1121,18 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                 match state.call_abi {
                     CallAbi::RegSysv => {
                         for i in 0..data.num_params.min(6) {
-                            self.sysv_store_local(ctx, arch, ARG_REGS[i], i).map_err(Err::from)?;
+                            self.sysv_store_local(ctx, arch, ARG_REGS[i], i)
+                                .map_err(Err::from)?;
                         }
                         // Params 7+ (index >= 6) are passed by the caller on the
                         // stack, above the saved RBP (and saved SCR) and the
                         // return address: incoming arg `i` at [RBP+16+scr_extra+(i-6)*8].
                         for i in 6..data.num_params {
                             let src_disp = 16 + scr_extra + ((i - 6) as u32) * 8;
-                            self.mov(ctx, arch, &RAX, &mem64(RBP, src_disp)).map_err(Err::from)?;
-                            self.sysv_store_local(ctx, arch, RAX, i).map_err(Err::from)?;
+                            self.mov(ctx, arch, &RAX, &mem64(RBP, src_disp))
+                                .map_err(Err::from)?;
+                            self.sysv_store_local(ctx, arch, RAX, i)
+                                .map_err(Err::from)?;
                         }
                     }
                     CallAbi::AllStack => {
@@ -981,8 +1140,10 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
                         // [RBP + 16 + scr_extra + i*8].
                         for i in 0..data.num_params {
                             let src_disp = 16 + scr_extra + (i as u32) * 8;
-                            self.mov(ctx, arch, &RAX, &mem64(RBP, src_disp)).map_err(Err::from)?;
-                            self.sysv_store_local(ctx, arch, RAX, i).map_err(Err::from)?;
+                            self.mov(ctx, arch, &RAX, &mem64(RBP, src_disp))
+                                .map_err(Err::from)?;
+                            self.sysv_store_local(ctx, arch, RAX, i)
+                                .map_err(Err::from)?;
                         }
                     }
                 }
@@ -992,7 +1153,8 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
             MachOperator::Local { count, .. } => {
                 self.mov64(ctx, arch, &RAX, 0).map_err(Err::from)?;
                 for _ in 0..*count {
-                    self.sysv_store_local(ctx, arch, RAX, state.local_count).map_err(Err::from)?;
+                    self.sysv_store_local(ctx, arch, RAX, state.local_count)
+                        .map_err(Err::from)?;
                     state.local_count += 1;
                 }
                 Ok(())
@@ -1001,17 +1163,25 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
             MachOperator::StartBody | MachOperator::EndBody => Ok(()),
 
             MachOperator::Instruction { op: insn, .. } => {
-                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::Before).map_err(Err::from)?;
-                self.sysv_handle_insn(ctx, arch, state, func_imports, insn, target).map_err(Err::from)?;
-                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::After).map_err(Err::from)?;
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::Before)
+                    .map_err(Err::from)?;
+                self.sysv_handle_insn(ctx, arch, state, func_imports, insn, target)
+                    .map_err(Err::from)?;
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::After)
+                    .map_err(Err::from)?;
                 state.op_index += 1;
                 Ok(())
             }
-            MachOperator::Operator { op: Some(op_wasm), .. } => {
+            MachOperator::Operator {
+                op: Some(op_wasm), ..
+            } => {
                 let insn = rewriter.instruction(op_wasm.clone())?;
-                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::Before).map_err(Err::from)?;
-                self.sysv_handle_insn(ctx, arch, state, func_imports, &insn, target).map_err(Err::from)?;
-                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::After).map_err(Err::from)?;
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::Before)
+                    .map_err(Err::from)?;
+                self.sysv_handle_insn(ctx, arch, state, func_imports, &insn, target)
+                    .map_err(Err::from)?;
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::After)
+                    .map_err(Err::from)?;
                 state.op_index += 1;
                 Ok(())
             }
@@ -1021,7 +1191,10 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
     }
 }
 
-impl<T: Writer<X64Label, Context> + NaiveExt<Context> + ?Sized, Context> SysVWriterExt<Context> for T {}
+impl<T: Writer<X64Label, Context> + NaiveExt<Context> + ?Sized, Context> SysVWriterExt<Context>
+    for T
+{
+}
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -1031,11 +1204,22 @@ mod sysv_manyarg_tests {
     use portal_solutions_asm_x86_64::out::iced::IcedWriter;
 
     /// Drive `sysv_emit_marshalled_call` and return (code bytes, target relocs).
-    fn marshal(arity: u32, results: u32, is_import: bool, target: X64Label) -> (Vec<u8>, Vec<X64Label>) {
+    fn marshal(
+        arity: u32,
+        results: u32,
+        is_import: bool,
+        target: X64Label,
+    ) -> (Vec<u8>, Vec<X64Label>) {
         let mut w: IcedWriter<X64Label> = IcedWriter::new(0);
         let mut ctx = ();
         SysVWriterExt::sysv_emit_marshalled_call(
-            &mut w, &mut ctx, X64Arch::default(), target, arity, results, is_import,
+            &mut w,
+            &mut ctx,
+            X64Arch::default(),
+            target,
+            arity,
+            results,
+            is_import,
         )
         .unwrap();
         let (bytes, _labels, relocs) = w.into_parts_with_relocs();
@@ -1056,11 +1240,29 @@ mod sysv_manyarg_tests {
     #[test]
     fn import_spills_args_beyond_six() {
         // 6-arg import: all in registers. 9-arg import: 3 spilled to the stack.
-        let (six, _) = marshal(6, 1, true, X64Label::External { name: "env__f".into() });
-        let (nine, rel) = marshal(9, 1, true, X64Label::External { name: "env__f".into() });
-        assert!(nine.len() > six.len(), "args 7+ must add stack-store instructions");
-        assert!(rel
-            .iter()
-            .any(|l| matches!(l, X64Label::External { name } if name.as_str() == "env__f")));
+        let (six, _) = marshal(
+            6,
+            1,
+            true,
+            X64Label::External {
+                name: "env__f".into(),
+            },
+        );
+        let (nine, rel) = marshal(
+            9,
+            1,
+            true,
+            X64Label::External {
+                name: "env__f".into(),
+            },
+        );
+        assert!(
+            nine.len() > six.len(),
+            "args 7+ must add stack-store instructions"
+        );
+        assert!(
+            rel.iter()
+                .any(|l| matches!(l, X64Label::External { name } if name.as_str() == "env__f"))
+        );
     }
 }

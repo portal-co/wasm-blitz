@@ -80,7 +80,10 @@ impl Batch {
             level: level.to_owned(),
             phase: phase.to_owned(),
             msg: msg.to_owned(),
-            fields: fields.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            fields: fields
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             t: LlmtrimLogger::now_ms(),
         });
     }
@@ -124,7 +127,11 @@ impl Drop for Batch {
 /// original eprintln format.
 pub fn portal_trace(logger: &LlmtrimLogger, arch: &str, addr: u64, size: usize, buf: &[u8]) {
     if logger.json_mode {
-        let buf_hex: String = buf.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join("");
+        let buf_hex: String = buf
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join("");
         logger.log_event(
             "TRACE",
             "native-exec",

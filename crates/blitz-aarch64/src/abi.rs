@@ -5,11 +5,11 @@
 
 extern crate alloc;
 
+use portal_pc_asm_common::types::mem::MemorySize;
 use portal_solutions_asm_aarch64::{
     AArch64Arch, RegisterClass,
     out::arg::{AddressingMode, ArgKind, MemArgKind},
 };
-use portal_pc_asm_common::types::mem::MemorySize;
 use portal_solutions_blitz_common::{
     abi::BackendAbi,
     asm::Reg,
@@ -18,9 +18,9 @@ use portal_solutions_blitz_common::{
 };
 
 use crate::AArch64Label;
-use crate::{FP, LR, SP};
 use crate::naive::{State as NaiveState, WriterExt as NaiveWriterExt};
 use crate::sysv::SysVWriterExt;
+use crate::{FP, LR, SP};
 
 // ---------------------------------------------------------------------------
 // Local ABI discriminant types
@@ -33,7 +33,14 @@ pub struct SysVAbi;
 
 // AAPCS64 argument registers: X0–X7
 const ARG_REGS: [Reg; 8] = [
-    Reg(0), Reg(1), Reg(2), Reg(3), Reg(4), Reg(5), Reg(6), Reg(7),
+    Reg(0),
+    Reg(1),
+    Reg(2),
+    Reg(3),
+    Reg(4),
+    Reg(5),
+    Reg(6),
+    Reg(7),
 ];
 // Scratch register (caller-saved)
 const T0: Reg = Reg(9);
@@ -43,12 +50,18 @@ const T0: Reg = Reg(9);
 // ---------------------------------------------------------------------------
 
 fn reg(r: Reg) -> MemArgKind {
-    MemArgKind::NoMem(ArgKind::Reg { reg: r, size: MemorySize::_64 })
+    MemArgKind::NoMem(ArgKind::Reg {
+        reg: r,
+        size: MemorySize::_64,
+    })
 }
 
 fn mem_pre(base: Reg, disp: i32) -> MemArgKind {
     MemArgKind::Mem {
-        base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
+        base: ArgKind::Reg {
+            reg: base,
+            size: MemorySize::_64,
+        },
         offset: None,
         disp,
         size: MemorySize::_64,
@@ -59,7 +72,10 @@ fn mem_pre(base: Reg, disp: i32) -> MemArgKind {
 
 fn mem_post(base: Reg, disp: i32) -> MemArgKind {
     MemArgKind::Mem {
-        base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
+        base: ArgKind::Reg {
+            reg: base,
+            size: MemorySize::_64,
+        },
         offset: None,
         disp,
         size: MemorySize::_64,
@@ -70,7 +86,10 @@ fn mem_post(base: Reg, disp: i32) -> MemArgKind {
 
 fn mem_base_disp(base: Reg, disp: i32) -> MemArgKind {
     MemArgKind::Mem {
-        base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
+        base: ArgKind::Reg {
+            reg: base,
+            size: MemorySize::_64,
+        },
         offset: None,
         disp,
         size: MemorySize::_64,
@@ -88,7 +107,10 @@ where
     W: NaiveWriterExt<Context>,
 {
     type Error = W::Error;
-    type State<'s> = NaiveState<'s> where Self: 's;
+    type State<'s>
+        = NaiveState<'s>
+    where
+        Self: 's;
     type Arch = AArch64Arch;
 
     fn emit_prologue(
@@ -111,7 +133,10 @@ where
         if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW::new(w, ctx, arch, 10);
             portal_solutions_blitz_codegen::emit_probe_site(
-                &mut bw, cfg.table_base_off, 0, T0.0,
+                &mut bw,
+                cfg.table_base_off,
+                0,
+                T0.0,
                 portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
                 &mut state.label_index,
             )?;
@@ -198,7 +223,13 @@ where
         match func_imports.get(fn_idx as usize) {
             Some((module, name)) => {
                 let sym = alloc::format!("{module}__{name}");
-                crate::load_label_addr(w, ctx, arch, &reg(T0), AArch64Label::External { name: sym })?;
+                crate::load_label_addr(
+                    w,
+                    ctx,
+                    arch,
+                    &reg(T0),
+                    AArch64Label::External { name: sym },
+                )?;
                 w.bl(ctx, arch, &reg(T0))
             }
             None => {
@@ -221,13 +252,36 @@ where
         w.ret(ctx, arch)
     }
 
-    fn emit_throw(_w: &mut W, _ctx: &mut Context, _arch: AArch64Arch, _state: &mut NaiveState, _tag_index: u32, _arity: u32) -> Result<(), W::Error> {
+    fn emit_throw(
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: AArch64Arch,
+        _state: &mut NaiveState,
+        _tag_index: u32,
+        _arity: u32,
+    ) -> Result<(), W::Error> {
         todo!("emit_throw via BackendAbi — use handle_insn directly")
     }
-    fn emit_try_table_start(_w: &mut W, _ctx: &mut Context, _arch: AArch64Arch, _state: &mut NaiveState, _catches: &[Catch], _sigs: &[FuncType], _tags: &[u32]) -> Result<(), W::Error> {
+    fn emit_try_table_start(
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: AArch64Arch,
+        _state: &mut NaiveState,
+        _catches: &[Catch],
+        _sigs: &[FuncType],
+        _tags: &[u32],
+    ) -> Result<(), W::Error> {
         todo!("emit_try_table_start via BackendAbi — use handle_insn directly")
     }
-    fn emit_try_table_end(_w: &mut W, _ctx: &mut Context, _arch: AArch64Arch, _state: &mut NaiveState, _catches: &[Catch], _sigs: &[FuncType], _tags: &[u32]) -> Result<(), W::Error> {
+    fn emit_try_table_end(
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: AArch64Arch,
+        _state: &mut NaiveState,
+        _catches: &[Catch],
+        _sigs: &[FuncType],
+        _tags: &[u32],
+    ) -> Result<(), W::Error> {
         todo!("emit_try_table_end via BackendAbi — use handle_insn directly")
     }
 }
@@ -241,7 +295,10 @@ where
     W: SysVWriterExt<Context>,
 {
     type Error = W::Error;
-    type State<'s> = NaiveState<'s> where Self: 's;
+    type State<'s>
+        = NaiveState<'s>
+    where
+        Self: 's;
     type Arch = AArch64Arch;
 
     fn emit_prologue(
@@ -257,16 +314,23 @@ where
         state.control_depth = data.control_depth;
 
         // SysV function label (offset avoids collision with naive Func labels)
-        w.set_label(ctx, arch, AArch64Label::Indexed {
-            idx: id as usize + 0x80000000,
-        })?;
+        w.set_label(
+            ctx,
+            arch,
+            AArch64Label::Indexed {
+                idx: id as usize + 0x80000000,
+            },
+        )?;
 
         // Function-entry probe: after label, before frame setup so AAPCS64
         // arg regs (X0–X7) are delivered intact to the outer-JIT specialisation.
         if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW::new(w, ctx, arch, 10);
             portal_solutions_blitz_codegen::emit_probe_site(
-                &mut bw, cfg.table_base_off, 0, T0.0,
+                &mut bw,
+                cfg.table_base_off,
+                0,
+                T0.0,
                 portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
                 &mut state.label_index,
             )?;
@@ -377,9 +441,14 @@ where
             w.bl(ctx, arch, &reg(T0))?;
         } else {
             let local_id = fn_idx - func_imports.len() as u32;
-            w.adr_label(ctx, arch, &reg(T0), AArch64Label::Indexed {
-                idx: local_id as usize + 0x80000000,
-            })?;
+            w.adr_label(
+                ctx,
+                arch,
+                &reg(T0),
+                AArch64Label::Indexed {
+                    idx: local_id as usize + 0x80000000,
+                },
+            )?;
             w.bl(ctx, arch, &reg(T0))?;
         }
 
@@ -412,13 +481,36 @@ where
         w.ret(ctx, arch)
     }
 
-    fn emit_throw(_w: &mut W, _ctx: &mut Context, _arch: AArch64Arch, _state: &mut NaiveState, _tag_index: u32, _arity: u32) -> Result<(), W::Error> {
+    fn emit_throw(
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: AArch64Arch,
+        _state: &mut NaiveState,
+        _tag_index: u32,
+        _arity: u32,
+    ) -> Result<(), W::Error> {
         todo!("SysVAbi exception handling requires platform unwinder — deferred; see docs/abi.md")
     }
-    fn emit_try_table_start(_w: &mut W, _ctx: &mut Context, _arch: AArch64Arch, _state: &mut NaiveState, _catches: &[Catch], _sigs: &[FuncType], _tags: &[u32]) -> Result<(), W::Error> {
+    fn emit_try_table_start(
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: AArch64Arch,
+        _state: &mut NaiveState,
+        _catches: &[Catch],
+        _sigs: &[FuncType],
+        _tags: &[u32],
+    ) -> Result<(), W::Error> {
         todo!("SysVAbi exception handling requires platform unwinder — deferred; see docs/abi.md")
     }
-    fn emit_try_table_end(_w: &mut W, _ctx: &mut Context, _arch: AArch64Arch, _state: &mut NaiveState, _catches: &[Catch], _sigs: &[FuncType], _tags: &[u32]) -> Result<(), W::Error> {
+    fn emit_try_table_end(
+        _w: &mut W,
+        _ctx: &mut Context,
+        _arch: AArch64Arch,
+        _state: &mut NaiveState,
+        _catches: &[Catch],
+        _sigs: &[FuncType],
+        _tags: &[u32],
+    ) -> Result<(), W::Error> {
         todo!("SysVAbi exception handling requires platform unwinder — deferred; see docs/abi.md")
     }
 }
