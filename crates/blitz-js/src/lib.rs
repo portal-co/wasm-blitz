@@ -39,6 +39,16 @@ pub mod shard;
 #[doc(hidden)]
 pub mod __ {
     pub use portal_solutions_blitz_common::DisplayFn;
+    use spin::Mutex;
+    extern crate alloc;
+    use alloc::string::String;
+    /// Debug trace buffer (opt-mode depth diagnostics); read from tests.
+    pub static OPT_TRACE: Mutex<String> = Mutex::new(String::new());
+    #[doc(hidden)]
+    pub fn opt_trace(args: core::fmt::Arguments) {
+        use core::fmt::Write;
+        let _ = OPT_TRACE.lock().write_fmt(args);
+    }
 }
 use alloc::vec::Vec;
 use portal_solutions_blitz_common::{
@@ -343,19 +353,34 @@ pub trait JsWrite: Write {
     /// * `sigs` - Array of function type signatures
     /// * `state` - The current compilation state
     /// * `idx` - The relative depth of the target label
+    /// * `commit` - Whether to commit the depth mutation to the opt tracker.
+    ///   Unconditional `br` commits (the code after is unreachable until the
+    ///   label). Conditional `br_if`/`br_table` must NOT commit: the fallthrough
+    ///   path keeps the full operand stack, so the tracked depth must stay at
+    ///   its pre-branch height.
     // TODO: Remove the Sized bound once push/pop can work with ?Sized types
-    fn br(&mut self, sigs: &[FuncType], state: &State, idx: u32) -> core::fmt::Result
+    fn br(&mut self, sigs: &[FuncType], state: &State, idx: u32, commit: bool) -> core::fmt::Result
     where
         Self: Sized,
     {
-        let (idx, frame) = state
+        let (pos, frame) = state
             .stack
             .iter()
             .enumerate()
             .rev()
             .nth(idx as usize)
             .unwrap();
-        let idx = idx + 1;
+        let idx = pos + 1;
+        // `pos` is the target frame's index in state.stack. The Function frame
+        // sits at index 0 with no recorded base, so the base of the frame at
+        // stack-index `pos` is `bases[pos - 1]` (or 0 for the Function frame).
+        let frame_base = |o: &portal_solutions_blitz_opt::OptState| -> usize {
+            if pos == 0 {
+                0
+            } else {
+                o.bases.get(pos - 1).copied().unwrap_or(0)
+            }
+        };
         match frame {
             Frame::Block(blockty) | Frame::If(blockty) | Frame::TryTable(blockty, _) => {
                 let result_count = match blockty {
@@ -369,19 +394,29 @@ pub trait JsWrite: Write {
                     let mut o = o.lock();
                     let d = result_count;
                     let s = o.depth - d;
-                    write!(
-                        self,
-                        "{{stack=[{}];break l{idx};}}",
-                        DisplayFn(&|f| {
-                            for n in s..o.depth {
-                                write!(f, "stack[{n}]")?;
-                                if n + 1 != o.depth {
-                                    write!(f, ",")?;
-                                }
-                            }
-                            Ok(())
-                        })
-                    )?;
+                    let base = frame_base(&o);
+                    // but the values BELOW them (down to the frame base) stay live
+                    // for the fallthrough path, which shares the physical array.
+                    // So: save results to temps, truncate to the base, then push
+                    // the results back — preserving outer slots for both paths.
+                    if d == 0 {
+                        write!(self, "{{stack.length={};break l{idx};}}", base + 1)?;
+                    } else {
+                        // Save results, truncate to the base, then re-push so the
+                        // array stays dense (no holes) with results at base+1....
+                        write!(self, "{{")?;
+                        for i in 0..d {
+                            write!(self, "var _br{i}=stack[{}];", s + 1 + i)?;
+                        }
+                        write!(self, "stack.length={};", base + 1)?;
+                        for i in 0..d {
+                            write!(self, "stack.push(_br{i});")?;
+                        }
+                        write!(self, "break l{idx};}}")?;
+                    }
+                    if commit {
+                        o.depth = base + d;
+                    }
                 } else if result_count == 0 {
                     write!(self, "{{stack=[];break l{idx};}}")?;
                 } else {
@@ -401,20 +436,25 @@ pub trait JsWrite: Write {
                     let mut o = o.lock();
                     let d = param_count;
                     let s = o.depth - d;
-                    // BUG FIX: Loop branch is a back-edge; emit continue, not break.
-                    write!(
-                        self,
-                        "{{stack=[{}];continue l{idx};}}",
-                        DisplayFn(&|f| {
-                            for n in s..o.depth {
-                                write!(f, "stack[{n}]")?;
-                                if n + 1 != o.depth {
-                                    write!(f, ",")?;
-                                }
-                            }
-                            Ok(())
-                        })
-                    )?;
+                    let base = frame_base(&o);
+                    // Loop back-edge: params go to the loop-header base, values
+                    // below them stay live. Save params, truncate, re-push.
+                    if d == 0 {
+                        write!(self, "{{stack.length={};continue l{idx};}}", base + 1)?;
+                    } else {
+                        write!(self, "{{")?;
+                        for i in 0..d {
+                            write!(self, "var _br{i}=stack[{}];", s + 1 + i)?;
+                        }
+                        write!(self, "stack.length={};", base + 1)?;
+                        for i in 0..d {
+                            write!(self, "stack.push(_br{i});")?;
+                        }
+                        write!(self, "continue l{idx};}}")?;
+                    }
+                    if commit {
+                        o.depth = base + d;
+                    }
                 } else if param_count == 0 {
                     write!(self, "{{stack=[];continue l{idx};}}")?;
                 } else {
@@ -597,16 +637,39 @@ pub trait JsWrite: Write {
             ),
             // Stack discipline: drop a value; nop is nothing.
             Instruction::Drop => {
-                pop!(state);
+                // MUST write the pop: the DisplayFn is lazy, so discarding it
+                // (as before) skipped the `stack.length--` and left the physical
+                // array out of sync with the tracked depth.
+                write!(self, "{}", pop!(state))?;
                 Ok(())
             }
             Instruction::Nop => Ok(()),
             Instruction::Unreachable => write!(self, "throw __wasm_trap('unreachable')"),
-            Instruction::Select => push(
-                state,
-                self,
-                &format_args!("(({}, {}, {}) => {} !== 0n ? {} : {})()", pop!(state), pop!(state), pop!(state), format_args!("{{let c={}}}", ""), pop!(state), pop!(state)),
-            ),
+            // select(v1, v2, c): wasm returns v1 when c!=0 else v2. Operand
+            // stack (top last): v1, v2, c. Pop order is c, v2, v1. 1-based
+            // slots: c=stack[depth], v2=stack[depth-1], v1=stack[depth-2].
+            Instruction::Select => {
+                if let Some(o) = state.opt() {
+                    let mut o = o.lock();
+                    let d = o.depth;
+                    write!(
+                        self,
+                        "(tmp=(stack[{c}]!==0n?stack[{v1}]:stack[{v2}]),stack.length-=2,stack[{slot}]=tmp,tmp)",
+                        c = d,
+                        v2 = d - 1,
+                        v1 = d - 2,
+                        slot = d - 2,
+                    )?;
+                    o.depth = d - 2;
+                    Ok(())
+                } else {
+                    push(
+                        state,
+                        self,
+                        &format_args!("((c={},v2={},v1={})=>c!==0n?v1:v2)()", pop!(state), pop!(state), pop!(state)),
+                    )
+                }
+            },
             Instruction::I32Add => push(
                 state,
                 self,
@@ -1208,15 +1271,19 @@ pub trait JsWrite: Write {
                 state.stack.push(Frame::Block(blockty.clone()));
                 if let Some(o) = state.opt() {
                     let mut o = o.lock();
-                    o.depth = match blockty {
+                    // The frame base is the current depth; the block consumes its
+                    // params (already on the stack), so the body's relative height
+                    // starts at base + params.
+                    let params = match blockty {
                         portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
-                        portal_solutions_blitz_common::wasm_encoder::BlockType::Result(
-                            val_type,
-                        ) => 0,
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::Result(_) => 0,
                         portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => {
                             sigs[*f as usize].params().len()
                         }
                     };
+                    let base = o.depth;
+                    o.bases.push(base);
+                    o.depth = base + params;
                 }
                 write!(self, "l{}: for(;;){{", state.stack.len())
             }
@@ -1224,15 +1291,19 @@ pub trait JsWrite: Write {
                 state.stack.push(Frame::Loop(blockty.clone()));
                 if let Some(o) = state.opt() {
                     let mut o = o.lock();
-                    o.depth = match blockty {
+                    // Loop branch targets the loop header, whose stack holds the
+                    // loop's PARAMS (not results) — so the base is the entry depth
+                    // minus params, and the body starts at base + params.
+                    let params = match blockty {
                         portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
-                        portal_solutions_blitz_common::wasm_encoder::BlockType::Result(
-                            val_type,
-                        ) => 0,
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::Result(_) => 0,
                         portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => {
                             sigs[*f as usize].params().len()
                         }
                     };
+                    let base = o.depth - params;
+                    o.bases.push(base);
+                    o.depth = base + params;
                 }
                 write!(self, "l{}: for(;;){{", state.stack.len())
             }
@@ -1241,9 +1312,43 @@ pub trait JsWrite: Write {
                 // use `break l{n}` to exit it (JavaScript allows labeled breaks
                 // on any statement, not just loops).
                 state.stack.push(Frame::If(blockty.clone()));
+                if let Some(o) = state.opt() {
+                    let mut o = o.lock();
+                    // The `if` consumes its condition (popped below), so the frame
+                    // base is depth-after-pop; the then-body starts at base+params.
+                    let params = match blockty {
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::Result(_) => 0,
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => {
+                            sigs[*f as usize].params().len()
+                        }
+                    };
+                    let base = o.depth - 1;
+                    o.bases.push(base);
+                    o.depth = base + params;
+                }
                 write!(self, "l{}: {{if({}){{", state.stack.len(), pop!(state))
             }
             Instruction::Else => {
+                if let Some(o) = state.opt() {
+                    let mut o = o.lock();
+                    // Reset to the else arm's entry height: base + params. The
+                    // then arm fell through having produced its results; the else
+                    // arm starts fresh from the same base.
+                    let blockty = match state.stack.last() {
+                        Some(Frame::If(b)) => b.clone(),
+                        _ => portal_solutions_blitz_common::wasm_encoder::BlockType::Empty,
+                    };
+                    let params = match blockty {
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::Result(_) => 0,
+                        portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => {
+                            sigs[f as usize].params().len()
+                        }
+                    };
+                    let base = o.base();
+                    o.depth = base + params;
+                }
                 write!(self, "}}else{{")
             }
             Instruction::End => {
@@ -1265,10 +1370,10 @@ pub trait JsWrite: Write {
                                 for i in 0..arity {
                                     write!(self, "{};", DisplayFn(&|f| push(state, f, &format_args!("__wasm_e.__wasm_vals[{i}]"))))?;
                                 }
-                                write!(self, "{}}}", DisplayFn(&|f| f.br(sigs, state, *label)))?;
+                                write!(self, "{}}}", DisplayFn(&|f| f.br(sigs, state, *label, false)))?;
                             }
                             portal_solutions_blitz_common::wasm_encoder::Catch::All { label } => {
-                                write!(self, "{{{}}}", DisplayFn(&|f| f.br(sigs, state, *label)))?;
+                                write!(self, "{{{}}}", DisplayFn(&|f| f.br(sigs, state, *label, false)))?;
                             }
                             portal_solutions_blitz_common::wasm_encoder::Catch::OneRef { .. }
                             | portal_solutions_blitz_common::wasm_encoder::Catch::AllRef { .. } => {
@@ -1279,11 +1384,14 @@ pub trait JsWrite: Write {
                     write!(self, "throw __wasm_e;}}")?;
                     if let Some(o) = state.opt() {
                         let mut o = o.lock();
-                        o.depth = match blockty {
+                        let results = match blockty {
                             portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
                             portal_solutions_blitz_common::wasm_encoder::BlockType::Result(_) => 1,
                             portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => sigs[f as usize].results().len(),
                         };
+                        let base = o.base();
+                        o.bases.pop();
+                        o.depth = base + results;
                     }
                     state.stack.pop();
                     return Ok(());
@@ -1303,11 +1411,14 @@ pub trait JsWrite: Write {
                         write!(self, "break;")?;
                         if let Some(o) = state.opt() {
                             let mut o = o.lock();
-                            o.depth = match blockty{
+                            let results = match blockty{
                                 portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
-                                portal_solutions_blitz_common::wasm_encoder::BlockType::Result(val_type) => 1,
+                                portal_solutions_blitz_common::wasm_encoder::BlockType::Result(_val_type) => 1,
                                 portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => sigs[f as usize].results().len(),
                             };
+                            let base = o.base();
+                            o.bases.pop();
+                            o.depth = base + results;
                         }
                         write!(self, "}}")?;
                     }
@@ -1315,11 +1426,14 @@ pub trait JsWrite: Write {
                         write!(self, "break;")?;
                         if let Some(o) = state.opt() {
                             let mut o = o.lock();
-                            o.depth = match blockty{
+                            let results = match blockty{
                                 portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
-                                portal_solutions_blitz_common::wasm_encoder::BlockType::Result(val_type) => 1,
+                                portal_solutions_blitz_common::wasm_encoder::BlockType::Result(_val_type) => 1,
                                 portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => sigs[f as usize].results().len(),
                             };
+                            let base = o.base();
+                            o.bases.pop();
+                            o.depth = base + results;
                         }
                         write!(self, "}}")?;
                     }
@@ -1328,11 +1442,14 @@ pub trait JsWrite: Write {
                         write!(self, "}}}}")?;
                         if let Some(o) = state.opt() {
                             let mut o = o.lock();
-                            o.depth = match blockty {
+                            let results = match blockty {
                                 portal_solutions_blitz_common::wasm_encoder::BlockType::Empty => 0,
                                 portal_solutions_blitz_common::wasm_encoder::BlockType::Result(_) => 1,
                                 portal_solutions_blitz_common::wasm_encoder::BlockType::FunctionType(f) => sigs[f as usize].results().len(),
                             };
+                            let base = o.base();
+                            o.bases.pop();
+                            o.depth = base + results;
                         }
                     }
                     Frame::TryTable(..) => unreachable!("TryTable handled before pop"),
@@ -1347,12 +1464,14 @@ pub trait JsWrite: Write {
                 }
                 Ok(())
             }
-            Instruction::Br(relative_depth) => self.br(sigs, state, *relative_depth),
+            Instruction::Br(relative_depth) => self.br(sigs, state, *relative_depth, true),
             Instruction::BrIf(relative_depth) => write!(
                 self,
                 "if({}!==0n){}",
                 pop!(state),
-                DisplayFn(&|f| f.br(sigs, state, *relative_depth))
+                // Conditional: do NOT commit the branch's depth mutation — the
+                // fallthrough path keeps the full operand stack.
+                DisplayFn(&|f| f.br(sigs, state, *relative_depth, false))
             ),
             Instruction::BrTable(targets, default) => {
                 // BUG FIX: was `write!(self, "{}", pop!(state))` which discarded the
@@ -1362,10 +1481,10 @@ pub trait JsWrite: Write {
                     write!(
                         self,
                         "if(tmp===0n){{{}}};tmp--;",
-                        DisplayFn(&|f| f.br(sigs, state, t))
+                        DisplayFn(&|f| f.br(sigs, state, t, false))
                     )?;
                 }
-                self.br(sigs, state, *default)?;
+                self.br(sigs, state, *default, true)?;
                 Ok(())
             }
             // ---- memory loads -----------------------------------------------

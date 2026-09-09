@@ -27,6 +27,8 @@
 //! ```
 
 #![no_std]
+extern crate alloc;
+use alloc::vec::Vec;
 use core::fmt::{Display, Write};
 use spin::Mutex;
 
@@ -99,8 +101,22 @@ pub trait OptCodegen {
 #[derive(Default)]
 #[non_exhaustive]
 pub struct OptState {
-    /// Current depth of the stack.
+    /// Current depth of the stack (1-based absolute slot index: `push` writes
+    /// `stack[depth + 1]` then increments `depth`).
     pub depth: usize,
+    /// Base slot of each open structured frame, innermost last. `bases[i]` is
+    /// the absolute slot the innermost frame's results start at — i.e. the
+    /// depth the frame had at entry, before its body pushed anything. Branch
+    /// and block-entry/end arithmetic uses this so values that stay live on
+    /// the physical `stack` across a structured boundary keep their slots.
+    pub bases: Vec<usize>,
+}
+
+impl OptState {
+    /// The current innermost frame base, or 0 at function top level.
+    pub fn base(&self) -> usize {
+        self.bases.last().copied().unwrap_or(0)
+    }
 }
 
 /// Pushes a value onto the execution stack.
@@ -160,10 +176,14 @@ pub fn pop(
     if let Some(o) = opt_state {
         let index = {
             let mut o = o.lock();
-            debug_assert!(
-                o.depth > 0,
-                "Stack underflow: attempting to pop from empty stack"
-            );
+            if o.depth == 0 {
+                // Fail loudly with the frame bases so the offending construct
+                // can be found (debug_assert alone gives no context in tests).
+                panic!(
+                    "Stack underflow: pop from empty stack (bases={:?})",
+                    o.bases
+                );
+            }
             o.depth -= 1;
             o.depth + 1
         };

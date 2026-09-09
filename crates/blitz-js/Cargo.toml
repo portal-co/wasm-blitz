@@ -9,3 +9,6 @@ description.workspace = true
 portal-solutions-blitz-common.workspace = true
 portal-solutions-blitz-opt = { version = "0.1.0", path = "../blitz-opt" }
 spin = "0.10.0"
+
+[dev-dependencies]
+portal-solutions-blitz-common = { workspace = true, features = ["asm"] }
