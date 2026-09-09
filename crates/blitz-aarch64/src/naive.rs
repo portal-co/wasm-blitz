@@ -735,7 +735,11 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
                 portal_solutions_blitz_codegen::regalloc_frontend::pop_to_local(
                     &mut rw, portal_solutions_asm_aarch64::regalloc::RegKind::Int, *idx,
-                )
+                )?;
+                // A local assignment changes the allocator's local cache. Make
+                // the architectural frame authoritative before later local.get
+                // instructions build a full AllStack return_call argument list.
+                portal_solutions_blitz_codegen::control_flow::ControlFlowWriter::flush(&mut rw)
             }
             Instruction::LocalTee(idx) => {
                 // peek (don't pop), store
