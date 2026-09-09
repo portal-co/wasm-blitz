@@ -274,6 +274,57 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         }
     }
 
+    /// Emit the public AAPCS64-to-internal-AllStack entry veneer.
+    ///
+    /// The compiled unit uses [`CallAbi::AllStack`] internally so every
+    /// `return_call` can forward the complete register file without growing the
+    /// native stack.  Its function prologue therefore expects parameter `i` at
+    /// `[SP + i * 8]` before it establishes its frame.  A C caller instead puts
+    /// parameters 0..7 in X0..X7 and starts parameter 8 at its current SP.
+    ///
+    /// This veneer is deliberately a tail branch: it materializes the AllStack
+    /// incoming area, preserves the C caller's LR, and transfers to the normal
+    /// internal function label.  The internal function remains the target of
+    /// WASM table entries and `return_call`; only the exported symbol uses this
+    /// C-ABI boundary.
+    fn sysv_emit_allstack_entry_veneer(
+        &mut self,
+        ctx: &mut Context,
+        arch: AArch64Arch,
+        target: AArch64Label,
+        arity: u32,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        if arity == 0 {
+            return self.b_label(ctx, arch, target);
+        }
+
+        let scratch = Reg(9);
+        let lit = |v: u64| MemArgKind::NoMem(ArgKind::Lit(v));
+        // Keep the AAPCS64 stack alignment required at the branch boundary.
+        let frame_bytes = ((arity as u64 * 8) + 15) & !15;
+        self.sub(ctx, arch, &reg(SP), &reg(SP), &lit(frame_bytes))?;
+
+        // The first eight C arguments still reside in their AAPCS64 registers.
+        for i in 0..arity.min(8) {
+            self.str(
+                ctx,
+                arch,
+                &reg(ARG_REGS[i as usize]),
+                &mem_base_disp(SP, (i * 8) as i32),
+            )?;
+        }
+        // C stack arguments are above the newly allocated outgoing area.
+        for i in 8..arity {
+            let src = frame_bytes as i32 + ((i - 8) * 8) as i32;
+            self.ldr(ctx, arch, &reg(scratch), &mem_base_disp(SP, src))?;
+            self.str(ctx, arch, &reg(scratch), &mem_base_disp(SP, (i * 8) as i32))?;
+        }
+        self.b_label(ctx, arch, target)
+    }
+
     /// Emit the AAPCS64 epilogue (restore frame) and return. Shared by `Return`,
     /// function-level `End`, and the tail of `ReturnCall`.
     ///
