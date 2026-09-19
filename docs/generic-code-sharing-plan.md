@@ -152,9 +152,11 @@ all callers that do not want rewriting keep compiling unchanged. Desugaring
 wrappers can forward it once their wrapped writer supports it, but only after
 the base implementation is tested.
 
-`CodeHash` should be a fixed byte digest (for example BLAKE3 or SHA-3 behind
-an `alloc`/hash feature chosen during the spike), plus version/ISA/encoding
-metadata supplied by the implementation. The stable digest is for in-process
+`CodeHash` is a fixed SHA3-256 digest, domain-separated by writer/ISA/encoding
+version (for example `portal-solutions-asm-writer/x86-64/v1`). `asm-arch`
+already has an appropriate workspace `sha3` dependency; use it rather than a
+home-grown non-cryptographic mixer. The implementation supplies the domain
+metadata. The stable digest is for in-process
 keying and diagnostics, not a security boundary. The coordinator must still
 verify byte/blob equivalence on a hash collision in debug/test builds before
 sharing.
