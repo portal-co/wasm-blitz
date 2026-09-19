@@ -344,6 +344,13 @@ no automatic transformation exists yet.
 
 ### Phase 1 — transactional binary writers in `asm-arch`
 
+**Progress (2026-09-20):** the shared crate and the x86-64, AArch64, and RV64
+binary implementations are complete behind their opt-in `rewindable-writer`
+features. Each tracks both pending and resolved fixup recipes so moving a blob
+can rebase backward references. All use a domain-separated SHA3-256 digest and
+exact opaque-blob equality. RV32, forwarding desugaring adapters, and
+unresolved-RISC-V-relocation surfacing remain pending.
+
 1. Add `asm-writer` to `../asm-arch/Cargo.toml` workspace members and give it
    `no_std` defaults with an explicit allocation/hash feature.
 2. Implement test-only/mock transactional writer coverage first: nested
@@ -374,6 +381,12 @@ metadata-for-metadata through `drain_after(anchor) + append_blob`, and its
 existing crate tests pass unchanged.
 
 ### Phase 2 — WASM sharing plumbing, disabled by default
+
+**Progress (2026-09-20):** `blitz-codegen::code_sharing` now provides a
+disabled-by-default configuration, explicit `ShareContract`/`ShareKey`,
+deterministic class accounting, profitability calculation, and unit tests.
+It remains deliberately disconnected from backend emission pending the x86-64
+SysV safepoint/helper vertical slice.
 
 1. Add the `asm-writer` dependency to `crates/blitz-codegen` and a
    `code_sharing` module containing `ShareContract`, a per-function
