@@ -28,4 +28,5 @@ portal-solutions-asm-x86 = { version = "0.1.0", path = "../asm-arch/crates/asm-x
 portal-solutions-asm-aarch64 = {version = "0.1.0",git = "https://github.com/portal-co/asm-arch.git"}
 portal-solutions-asm-jvm = {version = "0.1.0",git = "https://github.com/portal-co/asm-arch.git"}
 portal-solutions-asm-regalloc = { git = "https://github.com/portal-co/asm-arch", package = "portal-solutions-asm-regalloc" }
+portal-solutions-asm-writer = { git = "https://github.com/portal-co/asm-arch.git" }
 typeid = "1.0.3"

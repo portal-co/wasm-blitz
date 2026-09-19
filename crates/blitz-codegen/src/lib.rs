@@ -24,6 +24,7 @@
 #![no_std]
 extern crate alloc;
 
+pub mod code_sharing;
 pub mod control_flow;
 pub mod regalloc_adapter;
 pub mod regalloc_frontend;

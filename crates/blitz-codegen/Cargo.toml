@@ -7,3 +7,4 @@ description.workspace = true
 
 [dependencies]
 portal-solutions-asm-regalloc.workspace = true
+portal-solutions-asm-writer.workspace = true
