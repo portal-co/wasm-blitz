@@ -389,7 +389,9 @@ existing crate tests pass unchanged.
 disabled-by-default configuration, explicit `ShareContract`/`ShareKey`,
 deterministic class accounting, profitability calculation, and unit tests.
 It remains deliberately disconnected from backend emission pending the x86-64
-SysV safepoint/helper vertical slice.
+SysV safepoint/helper vertical slice. The x86-64 backend now exposes a
+value-only SysV contract and a regalloc-backed safepoint adapter, but no
+automatic outlining is enabled.
 
 1. Add the `asm-writer` dependency to `crates/blitz-codegen` and a
    `code_sharing` module containing `ShareContract`, a per-function
@@ -417,11 +419,15 @@ normal native output is byte-identical when it is disabled.
 
 1. Start with `blitz-x86-64` SysV plus `IcedWriter`, because it has explicit
    marshalled-call lowering in `src/sysv.rs`, a regalloc-backed core, and
-   direct binary/Unicorn coverage. Do not start with the CTX-stack-based naive
-   or LFI paths.
+   direct binary/Unicorn coverage. The backend now provides the first
+   `SharingSafepoint` adapter: it flushes the allocator, invalidates cached
+   state after a call, emits helper calls/returns, and reports the canonical
+   SysV contract. Do not start with the CTX-stack-based naive or LFI paths.
 2. Define the x86-64 v1 contract: same function/frame layout, empty WASM stack,
    flushed locals, no live allocated values, no control-flow/probe/exception
-   labels in the candidate, and ABI-correct RSP alignment. Reserve any scratch
+   labels in the candidate, and ABI-correct RSP alignment. This is represented
+   by the backend's explicit contract key; eligibility remains a separate
+   proof performed by the future candidate collector. Reserve any scratch
    registers needed by helper-call lowering just as probe paths currently do.
 3. Place candidate anchors only around a short, deliberately selected
    straight-line integer subset (for example already-regalloc-covered
