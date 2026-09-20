@@ -33,6 +33,16 @@ pub struct BlitzW<'a, W, Context> {
     pub probe_base: ProbeBase,
 }
 
+/// Conservative x86-64 SysV sharing contract for a canonical call boundary.
+///
+/// This is intentionally a value-only key. It does not claim that a candidate
+/// is eligible; the SysV emitter must prove the empty-stack/flush/frame rules
+/// before recording one with this contract.
+pub const X86_64_SYSV_SHARE_CONTRACT: portal_solutions_blitz_codegen::code_sharing::ShareContract =
+    portal_solutions_blitz_codegen::code_sharing::ShareContract::new(
+        0x8664, 0x5359_5356, 0x4652_5631, 0x454d_5054, 0x4459_4e30,
+    );
+
 impl<'a, W, Context> BlitzW<'a, W, Context> {
     /// Construct a wrapper using the default CTX-relative probe-base convention
     /// (NaiveAbi / LFI).

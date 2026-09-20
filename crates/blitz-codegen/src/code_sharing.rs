@@ -44,6 +44,21 @@ pub struct ShareContract {
     pub dynamic_context: u64,
 }
 
+impl ShareContract {
+    /// Construct a contract from backend-defined, already-canonicalized keys.
+    /// The coordinator never interprets these values; it only requires exact
+    /// equality before opaque blobs may be considered for sharing.
+    pub const fn new(
+        target: u64,
+        abi: u64,
+        frame: u64,
+        machine_state: u64,
+        dynamic_context: u64,
+    ) -> Self {
+        Self { target, abi, frame, machine_state, dynamic_context }
+    }
+}
+
 /// Key used only to form a candidate equivalence class.  A matching key is
 /// not a proof of byte equality: callers must ask their rewindable writer's
 /// `blob_eq` before committing to share a class.
