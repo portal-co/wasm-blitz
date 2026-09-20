@@ -44,6 +44,20 @@ pub struct ShareContract {
     pub dynamic_context: u64,
 }
 
+/// Backend-local seam for a future x86-64 SysV outlining pass.
+///
+/// Implementations must flush/register-canonicalize before a helper call and
+/// invalidate cached state afterward. The coordinator does not infer any of
+/// these guarantees from a contract key.
+pub trait SharingSafepoint {
+    type Error;
+    fn flush_for_sharing(&mut self) -> Result<(), Self::Error>;
+    fn invalidate_after_sharing(&mut self);
+    fn emit_helper_call(&mut self, helper_label: usize) -> Result<(), Self::Error>;
+    fn emit_helper_return(&mut self) -> Result<(), Self::Error>;
+    fn sharing_contract(&self) -> ShareContract;
+}
+
 impl ShareContract {
     /// Construct a contract from backend-defined, already-canonicalized keys.
     /// The coordinator never interprets these values; it only requires exact

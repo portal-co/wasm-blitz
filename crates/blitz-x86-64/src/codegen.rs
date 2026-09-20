@@ -302,6 +302,40 @@ where
     }
 }
 
+impl<'a, W, Context> portal_solutions_blitz_codegen::code_sharing::SharingSafepoint
+    for RegAllocW<'a, W, Context>
+where
+    W: WriterCore<Context> + Writer<X64Label, Context>,
+{
+    type Error = W::Error;
+
+    fn flush_for_sharing(&mut self) -> Result<(), Self::Error> {
+        portal_solutions_blitz_codegen::control_flow::ControlFlowWriter::flush(self)
+    }
+
+    fn invalidate_after_sharing(&mut self) {
+        if let Some(regalloc) = self.regalloc.as_mut() {
+            // `flush_for_sharing` has materialized every live value and reset
+            // the allocator's frame entries. Clearing TOS makes the post-call
+            // boundary explicit to future allocator users without inventing
+            // a second register-state representation.
+            regalloc.tos = None;
+        }
+    }
+
+    fn emit_helper_call(&mut self, helper_label: usize) -> Result<(), Self::Error> {
+        self.writer.call_label(self.ctx, self.arch, X64Label::Indexed { idx: helper_label })
+    }
+
+    fn emit_helper_return(&mut self) -> Result<(), Self::Error> {
+        self.writer.ret(self.ctx, self.arch)
+    }
+
+    fn sharing_contract(&self) -> portal_solutions_blitz_codegen::code_sharing::ShareContract {
+        X86_64_SYSV_SHARE_CONTRACT
+    }
+}
+
 impl<'a, W, Context> portal_solutions_blitz_codegen::control_flow::ControlFlowWriter for RegAllocW<'a, W, Context>
 where
     W: WriterCore<Context> + Writer<X64Label, Context>,
