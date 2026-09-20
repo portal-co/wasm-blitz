@@ -43,6 +43,28 @@ pub const X86_64_SYSV_SHARE_CONTRACT: portal_solutions_blitz_codegen::code_shari
         0x8664, 0x5359_5356, 0x4652_5631, 0x454d_5054, 0x4459_4e30,
     );
 
+/// Backend-local seam for a future x86-64 SysV outlining pass.
+///
+/// The seam deliberately exposes only the operations needed around a generated
+/// helper call. It does not make a candidate eligible: callers still need to
+/// prove the empty-WASM-stack, fixed-frame, and no-dynamic-context contract
+/// before draining a writer blob.
+pub trait SharingSafepoint {
+    type Error;
+
+    /// Commit any register-held operand values to the canonical native stack.
+    fn flush_for_sharing(&mut self) -> Result<(), Self::Error>;
+    /// Forget cached register assignments after an inserted helper call.
+    fn invalidate_after_sharing(&mut self);
+    /// Emit a direct call to a generated helper label.
+    fn emit_helper_call(&mut self, helper_label: usize) -> Result<(), Self::Error>;
+    /// Emit the helper's ordinary return instruction.
+    fn emit_helper_return(&mut self) -> Result<(), Self::Error>;
+    /// Return the contract used for the canonical boundary represented by this
+    /// adapter.
+    fn sharing_contract(&self) -> portal_solutions_blitz_codegen::code_sharing::ShareContract;
+}
+
 impl<'a, W, Context> BlitzW<'a, W, Context> {
     /// Construct a wrapper using the default CTX-relative probe-base convention
     /// (NaiveAbi / LFI).
