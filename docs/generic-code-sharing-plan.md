@@ -344,12 +344,12 @@ no automatic transformation exists yet.
 
 ### Phase 1 — transactional binary writers in `asm-arch`
 
-**Progress (2026-09-20):** the shared crate and the x86-64, AArch64, and RV64
-binary implementations are complete behind their opt-in `rewindable-writer`
-features. Each tracks both pending and resolved fixup recipes so moving a blob
-can rebase backward references. All use a domain-separated SHA3-256 digest and
-exact opaque-blob equality. RV32, forwarding desugaring adapters, and
-unresolved-RISC-V-relocation surfacing remain pending.
+**Progress (2026-09-20):** the shared crate and the x86-64, AArch64, RV64,
+and RV32 binary implementations are complete behind their opt-in
+`rewindable-writer` features. Each tracks pending and resolved fixup recipes so
+moving a blob can rebase backward references. All use a domain-separated
+SHA3-256 digest and exact opaque-blob equality. Forwarding desugaring adapters
+and unresolved-RISC-V-relocation surfacing remain pending.
 
 1. Add `asm-writer` to `../asm-arch/Cargo.toml` workspace members and give it
    `no_std` defaults with an explicit allocation/hash feature.
@@ -400,7 +400,7 @@ SysV safepoint/helper vertical slice.
    for staging and helper-area emission. Verify all error paths drain/restore
    or discard held blobs exactly once.
 4. Instrument candidate rejection with structured test logging using the
-   existing `PORTAL_LOG_JSON` / `PORTAL_LOG_BAT` facilities. Log reason,
+   existing `PORTAL_LOG_JSON` / `PORTAL_LOG_BATCH` facilities. Log reason,
    contract class, input/output byte counts, and share outcome; never log raw
    code bytes by default.
 5. Add unit tests using a fake `RewindableCodeWriter` proving that a blob is
