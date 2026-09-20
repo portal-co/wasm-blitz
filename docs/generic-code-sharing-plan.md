@@ -348,8 +348,10 @@ no automatic transformation exists yet.
 and RV32 binary implementations are complete behind their opt-in
 `rewindable-writer` features. Each tracks pending and resolved fixup recipes so
 moving a blob can rebase backward references. All use a domain-separated
-SHA3-256 digest and exact opaque-blob equality. Forwarding desugaring adapters
-and unresolved-RISC-V-relocation surfacing remain pending.
+SHA3-256 digest and exact opaque-blob equality. Rewind capability now
+forwards through the x86-64, AArch64, RV64, and RV32 desugaring adapters, and
+RV32/RV64 surface unresolved label references through
+`into_parts_with_relocs`.
 
 1. Add `asm-writer` to `../asm-arch/Cargo.toml` workspace members and give it
    `no_std` defaults with an explicit allocation/hash feature.
@@ -366,12 +368,13 @@ and unresolved-RISC-V-relocation surfacing remain pending.
 5. Bring RV64's and RV32's `RvAsmWriter<L>` to the same transactional model.
    As part of this work, expose unresolved relocations from the RISC-V binary
    writer consistently with x86-64/AArch64 instead of allowing pending
-   fixups to disappear through `into_parts`; this is prerequisite correctness,
-   not optional sharing scope.
+   fixups to disappear through `into_parts`; this prerequisite correctness
+   work is complete for RV64 and RV32 via `into_parts_with_relocs`.
 6. Add the trait only to binary buffer writers initially. Add forwarding
    implementations to `DesugaringWriter` only once each relevant base writer
-   passes the same tests. Do not add a dishonest blanket implementation for
-   `fmt::Write`.
+   passes the same tests. This forwarding is complete for the supported
+   x86-64/AArch64/RV64/RV32 adapters. Do not add a dishonest blanket
+   implementation for `fmt::Write`.
 7. Leave ARM/i686 unsupported until their binary forward-label/fixup models
    exist. Their trait absence is an intentional capability boundary; document
    it and return to it after native 64-bit validation.
