@@ -15,7 +15,7 @@ use portal_solutions_asm_aarch64::{
         arg::{AddressingMode, ArgKind, MemArgKind},
         Writer, WriterCore,
     },
-    AArch64Arch, ConditionCode, RegisterClass,
+    AArch64Arch, RegisterClass,
 };
 use portal_pc_asm_common::types::mem::MemorySize;
 use portal_solutions_blitz_common::{
@@ -197,7 +197,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: AArch64Arch,
-        state: &State<'_>,
+        _state: &State<'_>,
         n: u32,
     ) -> Result<(), W::Error> {
         let disp = -((n as i32 + 1) * 8);
@@ -209,7 +209,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: AArch64Arch,
-        state: &State<'_>,
+        _state: &State<'_>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.wasm_pop(ctx, arch, T0)?;
@@ -221,7 +221,7 @@ where
         w: &mut W,
         ctx: &mut Context,
         arch: AArch64Arch,
-        state: &State<'_>,
+        _state: &State<'_>,
         n: u32,
     ) -> Result<(), W::Error> {
         w.wasm_pop(ctx, arch, T0)?;

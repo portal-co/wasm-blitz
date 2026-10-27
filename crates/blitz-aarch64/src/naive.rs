@@ -20,10 +20,9 @@ use portal_pc_asm_common::types::mem::MemorySize;
 use portal_solutions_asm_aarch64::out::arg::MemArg;
 use portal_solutions_blitz_common::{
     asm::Reg,
-    ops::{FnData, MachOperator, ProbePlan, ProbeTableConfig},
+    ops::{MachOperator, ProbePlan, ProbeTableConfig},
     shard::{CallTarget, SecondCtxConfig},
-    wasm_encoder::{self, Catch, FuncType, Instruction, reencode::{self as reencode, Reencode}},
-    wasmparser::Operator,
+    wasm_encoder::{Catch, FuncType, Instruction, reencode::{self as reencode, Reencode}},
 };
 
 use crate::AArch64Label;

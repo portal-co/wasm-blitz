@@ -30,7 +30,7 @@ use portal_pc_asm_common::types::mem::MemorySize;
 use portal_solutions_blitz_common::{
     asm::Reg,
     ops::{MachOperator, ProbePlacement},
-    wasm_encoder::{FuncType, reencode::Reencode},
+    wasm_encoder::reencode::Reencode,
 };
 
 use crate::naive::{State, WriterExt, SCR, WASM_SLOT};
