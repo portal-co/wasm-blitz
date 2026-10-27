@@ -378,3 +378,17 @@ where
         self.writer.ret(self.ctx, self.arch)
     }
 }
+
+/// Conservative RV64 naive sharing contract (distinct ABI key from SysV).
+pub const RV64_NAIVE_SHARE_CONTRACT: portal_solutions_blitz_codegen::code_sharing::ShareContract =
+    portal_solutions_blitz_codegen::code_sharing::ShareContract::new(
+        0x5A64,
+        0x4e41_4956, // "NAIV"
+        0x4652_5631,
+        0x454d_5054,
+        0x4459_4e30,
+    );
+
+/// Naive helper layout costs equal the SysV ones on RV64 (`jal ra` + `ret`).
+pub const RV64_NAIVE_OUTLINE_COST: portal_solutions_blitz_codegen::code_sharing::OutlineCost =
+    RV64_SYSV_OUTLINE_COST;
