@@ -388,10 +388,23 @@ existing crate tests pass unchanged.
 **Progress (2026-09-20):** `blitz-codegen::code_sharing` now provides a
 disabled-by-default configuration, explicit `ShareContract`/`ShareKey`,
 deterministic class accounting, profitability calculation, and unit tests.
-It remains deliberately disconnected from backend emission pending the x86-64
-SysV safepoint/helper vertical slice. The x86-64 backend now exposes a
-value-only SysV contract and a regalloc-backed safepoint adapter, but no
-automatic outlining is enabled.
+It also provides `SharingLayout` (backend emission hooks) and
+`FunctionStaging`, the per-function staging collector: candidates are drained
+at proven anchors, replayed inline when singleton/unprofitable, and replaced
+by helper calls plus one out-of-line helper per profitable repeated class,
+with exact `blob_eq` collision fallback. `OutlineCost::net_bytes` counts the
+helper body itself.
+
+The x86-64 SysV vertical slice exists: `sysv::SysVSharing<B>` plus
+`sysv_handle_op_sharing` stage maximal runs of regalloc-core-covered
+straight-line integer/local ops that start and end at a provably empty WASM
+stack (flush + allocator reset at anchors canonicalizes register state), and
+finalize at the function-level `End` into `call rel32` + helper-after-epilogue
+layout via `codegen::SharingW`. Disabled is a byte-identical pass-through.
+Unit tests prove duplicate outlining shrinks output and disabled mode is
+unchanged. AArch64 has full parity (`AArch64Sharing`, `SharingW`, `bl`/`ret`
+layout, same eligible-op set plus shifts) with the same test pair. RV64,
+naive, and LFI paths remain unwired.
 
 1. Add the `asm-writer` dependency to `crates/blitz-codegen` and a
    `code_sharing` module containing `ShareContract`, a per-function
