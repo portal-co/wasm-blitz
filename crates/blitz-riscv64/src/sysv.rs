@@ -523,3 +523,357 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
 }
 
 impl<T: Writer<RiscvLabel, Context> + NaiveExt<Context> + ?Sized, Context> SysVWriterExt<Context> for T {}
+
+// ---------------------------------------------------------------------------
+// Code sharing (v1: SysV + rewindable binary writer, disabled by default)
+// Parity with blitz-x86-64's and blitz-aarch64's `sysv.rs`;
+// see docs/generic-code-sharing-plan.md.
+// ---------------------------------------------------------------------------
+
+use portal_solutions_asm_writer::RewindableCodeWriter;
+use portal_solutions_blitz_codegen::code_sharing::{CodeSharingConfig, FunctionStaging};
+
+/// WASM operand-stack delta for region membership: only regalloc-covered,
+/// straight-line, label-free integer/local ops are eligible inside a v1
+/// candidate region (see `docs/generic-code-sharing-plan.md` eligibility).
+fn sysv_share_region_delta(insn: &Instruction<'_>) -> Option<i32> {
+    use Instruction as I;
+    match insn {
+        I::I32Const(_) | I::I64Const(_) | I::LocalGet(_) => Some(1),
+        I::LocalSet(_) => Some(-1),
+        I::I32Add | I::I64Add | I::I32Sub | I::I64Sub
+        | I::I32And | I::I64And | I::I32Or | I::I64Or
+        | I::I32Xor | I::I64Xor | I::I32Mul | I::I64Mul
+        | I::I32Shl | I::I64Shl | I::I32ShrU | I::I64ShrU
+        | I::I32ShrS | I::I64ShrS => Some(-1),
+        _ => None,
+    }
+}
+
+/// Statically known operand-stack deltas used only for tracking (a superset of
+/// region eligibility). `None` means unknown: depth tracking stops until the
+/// next function boundary, conservatively disabling further candidates in this
+/// function.
+fn sysv_share_track_delta(insn: &Instruction<'_>) -> Option<i32> {
+    use Instruction as I;
+    if let Some(d) = sysv_share_region_delta(insn) {
+        return Some(d);
+    }
+    match insn {
+        I::LocalTee(_) | I::Nop => Some(0),
+        I::F32Const(_) | I::F64Const(_) | I::GlobalGet(_) | I::MemorySize(_) => Some(1),
+        I::GlobalSet(_) | I::Drop => Some(-1),
+        I::Select => Some(-2),
+        I::MemoryGrow(_) => Some(0),
+        I::MemoryFill(_) => Some(-3),
+        I::MemoryCopy { .. } => Some(-3),
+        _ => None,
+    }
+}
+
+/// Per-compilation state for the RV64 SysV code-sharing collector.
+///
+/// Disabled by default ([`CodeSharingConfig::default`]); with the default
+/// config, [`SysVSharingWriterExt::sysv_handle_op_sharing`] is a pass-through
+/// to [`SysVWriterExt::sysv_handle_op`] and output is byte-identical.
+pub struct Rv64Sharing<B> {
+    /// Per-function staging collector (recreated at each function end).
+    pub staging: FunctionStaging<RiscvLabel, B>,
+    /// WASM operand-stack depth when statically known; candidates may open
+    /// only at `Some(0)`.
+    depth: Option<i32>,
+    /// Anchor label index of the currently open candidate region.
+    open_anchor: Option<usize>,
+    /// Next helper-label ordinal (see `codegen::RV64_HELPER_LABEL_BASE`).
+    next_helper: usize,
+    config: CodeSharingConfig,
+}
+
+impl<B> Rv64Sharing<B> {
+    pub fn new(config: CodeSharingConfig) -> Self {
+        Self {
+            staging: FunctionStaging::new(config, crate::codegen::RV64_SYSV_OUTLINE_COST),
+            depth: Some(0),
+            open_anchor: None,
+            next_helper: 0,
+            config,
+        }
+    }
+    /// Enabled v1 configuration with the default size thresholds.
+    pub fn enabled() -> Self {
+        Self::new(CodeSharingConfig { enabled: true, ..CodeSharingConfig::default() })
+    }
+}
+
+impl<B> Default for Rv64Sharing<B> {
+    fn default() -> Self {
+        Self::new(CodeSharingConfig::default())
+    }
+}
+
+/// Code-sharing entry point parallel to [`SysVWriterExt::sysv_handle_op`].
+///
+/// Mirrors the x86-64/AArch64 v1 vertical slice: around maximal runs of
+/// eligible straight-line ops that start and end with an empty WASM operand
+/// stack, the region is anchored, emitted normally, and staged as an opaque
+/// blob. At the function-level `End` (or the next `StartFn`), profitable
+/// repeated classes are replaced by `jal ra` to one out-of-line helper emitted
+/// after the epilogue; singletons and unprofitable classes are restored inline.
+pub trait SysVSharingWriterExt<Context>: SysVWriterExt<Context> {
+    fn sysv_handle_op_sharing<E, Err, B>(
+        &mut self,
+        ctx: &mut Context,
+        arch: RiscV64Arch,
+        state: &mut State<'_>,
+        sharing: &mut Rv64Sharing<B>,
+        func_imports: &[(&str, &str)],
+        op: &MachOperator<'_>,
+        rewriter: &mut (dyn Reencode<Error = E> + '_),
+        target: u32,
+    ) -> Result<(), Err>
+    where
+        Err: From<<Self as portal_solutions_asm_riscv64::out::WriterCore<Context>>::Error>
+            + From<reencode::Error<E>>
+            + From<<Self as RewindableCodeWriter<RiscvLabel>>::Error>,
+        Self: Sized + RewindableCodeWriter<RiscvLabel, Blob = B>,
+    {
+        use portal_solutions_blitz_codegen::code_sharing::SharingLayout as _;
+
+        // Function boundary: reset per-function staging. A non-empty staging
+        // here means the previous body lacked a function-level End; finalize
+        // anyway so staged blobs are never dropped with their code missing.
+        if matches!(op, MachOperator::StartFn { .. }) {
+            sharing.depth = Some(0);
+            sharing.open_anchor = None;
+            if sharing.staging.staged_count() > 0 {
+                let staging = core::mem::replace(
+                    &mut sharing.staging,
+                    FunctionStaging::new(sharing.config, crate::codegen::RV64_SYSV_OUTLINE_COST),
+                );
+                let mut sw = crate::codegen::SharingW {
+                    writer: &mut *self,
+                    ctx: &mut *ctx,
+                    arch,
+                    next_helper: sharing.next_helper,
+                };
+                staging.finalize::<_, _, _, Err>(&mut sw)?;
+                sharing.next_helper = sw.next_helper;
+            }
+            return self.sysv_handle_op::<E, Err>(ctx, arch, state, func_imports, op, rewriter, target);
+        }
+        if !sharing.config.enabled {
+            return self.sysv_handle_op::<E, Err>(ctx, arch, state, func_imports, op, rewriter, target);
+        }
+
+        let insn_opt = match op {
+            MachOperator::Instruction { op: insn, .. } => Some(insn),
+            _ => None,
+        };
+        // Instrumentation is dynamic context outside the v1 contract.
+        let probes_active = state.probes.as_ref().is_some_and(|c| c.enabled)
+            || state.probe_plan.is_some();
+        let region_delta = if probes_active {
+            None
+        } else {
+            insn_opt.and_then(sysv_share_region_delta)
+        };
+        let is_function_end =
+            matches!(insn_opt, Some(Instruction::End)) && state.if_stack.is_empty();
+
+        // Close an open candidate at any op that cannot join the region.
+        if region_delta.is_none() {
+            if let Some(anchor) = sharing.open_anchor.take() {
+                if sharing.depth == Some(0) {
+                    flush_regalloc(self, ctx, arch, state).map_err(Err::from)?;
+                    sharing
+                        .staging
+                        .stage_candidate(
+                            &mut *self,
+                            RiscvLabel::Indexed { idx: anchor },
+                            crate::codegen::RV64_SYSV_SHARE_CONTRACT,
+                        )
+                        .map_err(Err::from)?;
+                    // Canonical register state: after the flush everything is
+                    // spilled, so resetting the allocator discards no values
+                    // and makes the next region's register choices identical
+                    // to the first occurrence's.
+                    state.regalloc = None;
+                }
+            }
+        }
+
+        // Open a candidate at an eligible op with a provably empty WASM stack.
+        // The body-switch guard in naive's handler emits a jump when
+        // `target != state.body`; never open across that boundary.
+        if sharing.open_anchor.is_none()
+            && region_delta.is_some()
+            && sharing.depth == Some(0)
+            && target == state.body
+        {
+            flush_regalloc(self, ctx, arch, state).map_err(Err::from)?;
+            // Canonical register state at the anchor: flush + reset so every
+            // candidate region is compiled from the same allocator state and
+            // identical WASM yields byte-identical code.
+            state.regalloc = None;
+            let anchor = state.label_index;
+            state.label_index += 1;
+            self.set_label(ctx, arch, RiscvLabel::Indexed { idx: anchor }).map_err(Err::from)?;
+            sharing.open_anchor = Some(anchor);
+        }
+
+        self.sysv_handle_op::<E, Err>(ctx, arch, state, func_imports, op, rewriter, target)?;
+
+        // Track the WASM stack depth across instructions with statically
+        // known deltas. Non-instruction operators (locals, body markers) are
+        // depth-neutral and must not reset tracking.
+        if let Some(insn) = insn_opt {
+            sharing.depth = match (sharing.depth, sysv_share_track_delta(insn)) {
+                (Some(d), Some(delta)) => Some(d + delta),
+                _ => None,
+            };
+        }
+
+        if is_function_end {
+            // Helpers are emitted after the epilogue the End arm just emitted,
+            // reachable only through the forward call fixups placed above.
+            let staging = core::mem::replace(
+                &mut sharing.staging,
+                FunctionStaging::new(sharing.config, crate::codegen::RV64_SYSV_OUTLINE_COST),
+            );
+            let mut sw = crate::codegen::SharingW {
+                writer: &mut *self,
+                ctx: &mut *ctx,
+                arch,
+                next_helper: sharing.next_helper,
+            };
+            staging.finalize::<_, _, _, Err>(&mut sw)?;
+            sharing.next_helper = sw.next_helper;
+        }
+        Ok(())
+    }
+}
+
+impl<T: SysVWriterExt<Context> + ?Sized, Context> SysVSharingWriterExt<Context> for T {}
+
+#[cfg(test)]
+mod sysv_sharing_tests {
+    use super::*;
+    use portal_solutions_asm_riscv64::out::rv_asm_backend::RvAsmWriter;
+    use portal_solutions_blitz_common::ops::FnData;
+    use portal_solutions_blitz_common::wasmparser::ValType;
+    use portal_solutions_blitz_common::wasm_encoder::reencode::RoundtripReencoder;
+
+    /// Test error joining the writer's `Infallible` core errors, reencode
+    /// errors, and rewind-transaction errors.
+    #[derive(Debug)]
+    enum TestErr {
+        Fmt,
+        Reencode,
+        Rewind,
+    }
+    impl From<core::convert::Infallible> for TestErr {
+        fn from(x: core::convert::Infallible) -> Self { match x {} }
+    }
+    impl From<reencode::Error<core::convert::Infallible>> for TestErr {
+        fn from(_: reencode::Error<core::convert::Infallible>) -> Self { TestErr::Reencode }
+    }
+    impl From<portal_solutions_asm_riscv64::out::rv_asm_backend::RvRewindError> for TestErr {
+        fn from(_: portal_solutions_asm_riscv64::out::rv_asm_backend::RvRewindError) -> Self { TestErr::Rewind }
+    }
+
+    fn test_ops() -> [MachOperator<'static>; 13] {
+        let mut data = FnData::default();
+        data.num_params = 0;
+        data.num_returns = 0;
+        [
+            MachOperator::StartFn { id: 0, data },
+            MachOperator::Local { count: 1, ty: ValType::I64 },
+            MachOperator::StartBody,
+            MachOperator::Instruction { op: Instruction::I64Const(40), annot: () },
+            MachOperator::Instruction { op: Instruction::I64Const(2), annot: () },
+            MachOperator::Instruction { op: Instruction::I64Add, annot: () },
+            MachOperator::Instruction { op: Instruction::LocalSet(0), annot: () },
+            // MemorySize + Drop: depth-neutral, but not region-eligible, so it
+            // separates the two identical candidate runs.
+            MachOperator::Instruction { op: Instruction::MemorySize(0), annot: () },
+            MachOperator::Instruction { op: Instruction::Drop, annot: () },
+            MachOperator::Instruction { op: Instruction::I64Const(40), annot: () },
+            MachOperator::Instruction { op: Instruction::I64Const(2), annot: () },
+            MachOperator::Instruction { op: Instruction::I64Add, annot: () },
+            MachOperator::Instruction { op: Instruction::LocalSet(0), annot: () },
+        ]
+    }
+
+    fn compile_plain() -> Vec<u8> {
+        let mut w = RvAsmWriter::<RiscvLabel>::new();
+        let mut ctx = ();
+        let mut state = State::default();
+        for op in test_ops().iter().chain([MachOperator::Instruction { op: Instruction::End, annot: () }].iter()) {
+            w.sysv_handle_op::<core::convert::Infallible, TestErr>(
+                &mut ctx, RiscV64Arch::default(), &mut state, &[], op, &mut RoundtripReencoder, 0,
+            ).unwrap();
+        }
+        w.into_bytes()
+    }
+
+    type SharingBlob = <RvAsmWriter<RiscvLabel> as RewindableCodeWriter<RiscvLabel>>::Blob;
+
+    fn compile_sharing() -> (Vec<u8>, alloc::collections::BTreeMap<RiscvLabel, usize>) {
+        let mut w = RvAsmWriter::<RiscvLabel>::new();
+        let mut ctx = ();
+        let mut state = State::default();
+        let mut sharing: Rv64Sharing<SharingBlob> = Rv64Sharing::enabled();
+        for op in test_ops().iter().chain([MachOperator::Instruction { op: Instruction::End, annot: () }].iter()) {
+            w.sysv_handle_op_sharing::<core::convert::Infallible, TestErr, SharingBlob>(
+                &mut ctx, RiscV64Arch::default(), &mut state, &mut sharing, &[], op, &mut RoundtripReencoder, 0,
+            ).unwrap();
+        }
+        w.into_parts()
+    }
+
+    #[test]
+    fn repeated_region_is_outlined_and_smaller() {
+        let plain = compile_plain();
+        let (shared, labels) = compile_sharing();
+        assert!(shared.len() < plain.len(), "shared {} must be smaller than plain {}", shared.len(), plain.len());
+        // One helper entry label from the helper namespace was placed.
+        let helper_idx = crate::codegen::RV64_HELPER_LABEL_BASE;
+        assert!(labels.contains_key(&RiscvLabel::Indexed { idx: helper_idx }));
+        let helper_off = labels[&RiscvLabel::Indexed { idx: helper_idx }];
+        assert!(helper_off > 0 && helper_off + 8 <= shared.len());
+        // The helper body ends in `ret` = `jalr x0, ra, 0` (0x00008067 LE).
+        assert_eq!(&shared[shared.len() - 4..], &[0x67, 0x80, 0x00, 0x00]);
+        // Exactly two `jal ra` instructions (opcode 0x6F, rd=1) target it.
+        let jal_offsets: Vec<usize> = (0..shared.len() / 4)
+            .map(|i| i * 4)
+            .filter(|&off| {
+                let w = u32::from_le_bytes([shared[off], shared[off + 1], shared[off + 2], shared[off + 3]]);
+                (w & 0x7F) == 0x6F && ((w >> 7) & 0x1F) == 1
+            })
+            .collect();
+        assert_eq!(jal_offsets.len(), 2);
+        for off in jal_offsets {
+            let w = u32::from_le_bytes([shared[off], shared[off + 1], shared[off + 2], shared[off + 3]]);
+            let imm = (((w >> 31) & 1) << 20)
+                | (((w >> 12) & 0xFF) << 12)
+                | (((w >> 20) & 1) << 11)
+                | (((w >> 21) & 0x3FF) << 1);
+            let disp = ((imm << 11) as i32 >> 11) as i64;
+            assert_eq!(off as i64 + disp, helper_off as i64);
+        }
+    }
+
+    #[test]
+    fn disabled_sharing_is_byte_identical() {
+        let mut w = RvAsmWriter::<RiscvLabel>::new();
+        let mut ctx = ();
+        let mut state = State::default();
+        let mut sharing: Rv64Sharing<SharingBlob> = Rv64Sharing::default();
+        for op in test_ops().iter().chain([MachOperator::Instruction { op: Instruction::End, annot: () }].iter()) {
+            w.sysv_handle_op_sharing::<core::convert::Infallible, TestErr, SharingBlob>(
+                &mut ctx, RiscV64Arch::default(), &mut state, &mut sharing, &[], op, &mut RoundtripReencoder, 0,
+            ).unwrap();
+        }
+        assert_eq!(w.into_bytes(), compile_plain());
+    }
+}

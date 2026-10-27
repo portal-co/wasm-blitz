@@ -279,3 +279,102 @@ where
         Ok(COND_SCRATCH.0)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Code sharing (v1: SysV + rewindable binary writer) — parity with
+// blitz-x86-64's and blitz-aarch64's codegen.rs;
+// see docs/generic-code-sharing-plan.md.
+// ---------------------------------------------------------------------------
+
+/// Conservative RV64 SysV sharing contract for a canonical call boundary.
+///
+/// Value-only key: eligibility (empty WASM stack, fixed frame, no dynamic
+/// context) must still be proven by the emitter before staging a candidate.
+pub const RV64_SYSV_SHARE_CONTRACT: portal_solutions_blitz_codegen::code_sharing::ShareContract =
+    portal_solutions_blitz_codegen::code_sharing::ShareContract::new(
+        0x5A64, 0x5359_5356, 0x4652_5631, 0x454d_5054, 0x4459_4e30,
+    );
+
+/// Base of the RV64 helper-label namespace. SysV function entries use
+/// `idx | (1 << 28)` and control-flow labels come from `label_index`
+/// counting upward from 0; helper labels live at `1 << 29` and count upward,
+/// so they cannot collide with either.
+pub const RV64_HELPER_LABEL_BASE: usize = 1 << 29;
+
+/// Measured RV64 layout costs: `jal ra` and `ret` (`jalr x0, ra, 0`) are each
+/// one 4-byte instruction; label placement is free.
+pub const RV64_SYSV_OUTLINE_COST: portal_solutions_blitz_codegen::code_sharing::OutlineCost =
+    portal_solutions_blitz_codegen::code_sharing::OutlineCost {
+        helper_entry_bytes: 0,
+        helper_return_bytes: 4,
+        call_bytes: 4,
+        layout_bytes: 0,
+    };
+
+/// Adapter used at function-finalization time: forwards the rewindable-writer
+/// transaction methods to the underlying writer and provides the
+/// [`portal_solutions_blitz_codegen::code_sharing::SharingLayout`] emission
+/// hooks with RV64 encodings (`jal ra` / `ret` / `set_label`).
+pub struct SharingW<'a, W, Context> {
+    pub writer: &'a mut W,
+    pub ctx: &'a mut Context,
+    pub arch: RiscV64Arch,
+    /// Next helper-label ordinal; combined with [`RV64_HELPER_LABEL_BASE`].
+    pub next_helper: usize,
+}
+
+impl<'a, W, Context> portal_solutions_asm_writer::RewindableCodeWriter<crate::RiscvLabel>
+    for SharingW<'a, W, Context>
+where
+    W: portal_solutions_asm_writer::RewindableCodeWriter<crate::RiscvLabel>,
+{
+    type Blob = W::Blob;
+    type Error = W::Error;
+
+    fn drain_after(&mut self, anchor: &crate::RiscvLabel) -> Result<Self::Blob, Self::Error> {
+        self.writer.drain_after(anchor)
+    }
+    fn rewind_after(&mut self, anchor: &crate::RiscvLabel) -> Result<(), Self::Error> {
+        self.writer.rewind_after(anchor)
+    }
+    fn append_blob(&mut self, blob: Self::Blob) -> Result<(), Self::Error> {
+        self.writer.append_blob(blob)
+    }
+    fn blob_hash(&self, blob: &Self::Blob) -> portal_solutions_asm_writer::CodeHash {
+        self.writer.blob_hash(blob)
+    }
+    fn blob_len(&self, blob: &Self::Blob) -> usize {
+        self.writer.blob_len(blob)
+    }
+    fn blob_eq(&self, left: &Self::Blob, right: &Self::Blob) -> bool {
+        self.writer.blob_eq(left, right)
+    }
+}
+
+impl<'a, W, Context> portal_solutions_blitz_codegen::code_sharing::SharingLayout<crate::RiscvLabel>
+    for SharingW<'a, W, Context>
+where
+    W: portal_solutions_asm_riscv64::out::WriterCore<Context>
+        + portal_solutions_asm_riscv64::out::Writer<crate::RiscvLabel, Context>,
+{
+    type Error = W::Error;
+
+    fn alloc_helper_label(&mut self) -> crate::RiscvLabel {
+        let idx = RV64_HELPER_LABEL_BASE + self.next_helper;
+        self.next_helper += 1;
+        crate::RiscvLabel::Indexed { idx }
+    }
+    fn place_helper_label(&mut self, label: &crate::RiscvLabel) -> Result<(), Self::Error> {
+        use portal_solutions_asm_riscv64::out::Writer as _;
+        self.writer.set_label(self.ctx, self.arch, label.clone())
+    }
+    fn call_helper(&mut self, label: &crate::RiscvLabel) -> Result<(), Self::Error> {
+        use portal_solutions_asm_riscv64::out::Writer as _;
+        // `jal ra, helper`: link register RA (x1), as in SysV's call lowering.
+        self.writer.jal_label(self.ctx, self.arch, &Reg(1), label.clone())
+    }
+    fn helper_return(&mut self) -> Result<(), Self::Error> {
+        use portal_solutions_asm_riscv64::out::WriterCore as _;
+        self.writer.ret(self.ctx, self.arch)
+    }
+}
