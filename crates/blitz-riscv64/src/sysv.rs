@@ -665,8 +665,15 @@ pub trait SysVSharingWriterExt<Context>: SysVWriterExt<Context> {
             return self.sysv_handle_op::<E, Err>(ctx, arch, state, func_imports, op, rewriter, target);
         }
 
-        let insn_opt = match op {
+        // Normalize raw wasmparser operators (the WasmSink path) through the
+        // rewriter so classification sees the same instruction either way.
+        let owned_insn;
+        let insn_opt: Option<&Instruction<'_>> = match op {
             MachOperator::Instruction { op: insn, .. } => Some(insn),
+            MachOperator::Operator { op: Some(o), .. } => {
+                owned_insn = rewriter.instruction(o.clone())?;
+                Some(&owned_insn)
+            }
             _ => None,
         };
         // Instrumentation is dynamic context outside the v1 contract.
