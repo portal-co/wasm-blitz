@@ -234,10 +234,11 @@ impl<L: Clone, B> FunctionStaging<L, B> {
     /// re-appended inline), and the suffix is re-appended. Helpers are emitted
     /// at the current end of the writer, which the backend must have made
     /// unreachable by fallthrough (e.g. after the function epilogue).
-    pub fn finalize<W, E>(mut self, w: &mut W) -> Result<FinalizeStats, E>
+    pub fn finalize<W, RErr, LErr, E>(mut self, w: &mut W) -> Result<FinalizeStats, E>
     where
-        W: portal_solutions_asm_writer::RewindableCodeWriter<L, Blob = B, Error = E>
-            + SharingLayout<L, Error = E>,
+        W: portal_solutions_asm_writer::RewindableCodeWriter<L, Blob = B, Error = RErr>
+            + SharingLayout<L, Error = LErr>,
+        E: From<RErr> + From<LErr>,
     {
         let mut stats = FinalizeStats::default();
         if self.candidates.is_empty() || !self.config.enabled {
@@ -302,32 +303,31 @@ impl<L: Clone, B> FunctionStaging<L, B> {
         }
 
         for i in (0..self.candidates.len()).rev() {
-            let tail = w.drain_after(&self.candidates[i].anchor)?;
+            let tail = w.drain_after(&self.candidates[i].anchor).map_err(E::from)?;
             if outlined[i] {
                 let label = helper_labels[&self.candidates[i].key].clone();
-                w.call_helper(&label)?;
+                w.call_helper(&label).map_err(E::from)?;
                 stats.outlined_occurrences += 1;
             } else {
                 let blob = self.candidates[i].blob.take();
                 if let Some(blob) = blob {
-                    w.append_blob(blob)?;
+                    w.append_blob(blob).map_err(E::from)?;
                 }
                 stats.restored_inline += 1;
             }
-            w.append_blob(tail)?;
+            w.append_blob(tail).map_err(E::from)?;
         }
 
         for (key, label) in helper_labels.iter() {
-            if let Some(&rep) = representative.get(key) {
-                if outlined[rep] {
-                    w.place_helper_label(label)?;
+            if let Some(&rep) = representative.get(key)
+                && outlined[rep] {
+                    w.place_helper_label(label).map_err(E::from)?;
                     if let Some(blob) = self.candidates[rep].blob.take() {
-                        w.append_blob(blob)?;
+                        w.append_blob(blob).map_err(E::from)?;
                     }
-                    w.helper_return()?;
+                    w.helper_return().map_err(E::from)?;
                     stats.outlined_classes += 1;
                 }
-            }
         }
         Ok(stats)
     }
@@ -524,7 +524,7 @@ mod tests {
         assert!(staging.stage_candidate(&mut w, 3, CONTRACT).unwrap());
         w.emit(&[0xC3]); // function epilogue: helpers go after this point.
 
-        let stats = staging.finalize(&mut w).unwrap();
+        let stats = staging.finalize::<_, (), (), ()>(&mut w).unwrap();
         assert_eq!(stats.outlined_classes, 1);
         assert_eq!(stats.outlined_occurrences, 2);
         assert_eq!(stats.restored_inline, 1);
@@ -554,7 +554,7 @@ mod tests {
         w.emit(&other);
         assert!(staging.stage_candidate(&mut w, 2, CONTRACT).unwrap());
 
-        let stats = staging.finalize(&mut w).unwrap();
+        let stats = staging.finalize::<_, (), (), ()>(&mut w).unwrap();
         assert_eq!(stats.outlined_classes, 0);
         assert_eq!(stats.restored_inline, 2);
         assert_eq!(w.buf.len(), 32);
@@ -572,7 +572,7 @@ mod tests {
         assert!(staging.stage_candidate(&mut w, 1, CONTRACT).unwrap());
         w.emit(&[0xBB; 2]);
 
-        let stats = staging.finalize(&mut w).unwrap();
+        let stats = staging.finalize::<_, (), (), ()>(&mut w).unwrap();
         assert_eq!(stats.outlined_classes, 0);
         assert_eq!(stats.restored_inline, 1);
         let mut expect = Vec::new();

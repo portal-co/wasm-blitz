@@ -7,9 +7,10 @@ description.workspace = true
 
 [dev-dependencies]
 # Enable the `iced` binary emitter for unit tests that assemble real bytes.
-portal-solutions-asm-x86-64 = { workspace = true, features = ["regalloc-integration", "iced"] }
+portal-solutions-asm-x86-64 = { workspace = true, features = ["regalloc-integration", "iced", "rewindable-writer"] }
 
 [dependencies]
+portal-solutions-asm-writer.workspace = true
 portal-solutions-blitz-codegen.workspace = true
 portal-solutions-asm-x86-64 = { workspace = true, features = ["regalloc-integration"] }
 portal-solutions-asm-regalloc.workspace = true

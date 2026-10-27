@@ -65,6 +65,85 @@ pub trait SharingSafepoint {
     fn sharing_contract(&self) -> portal_solutions_blitz_codegen::code_sharing::ShareContract;
 }
 
+/// Base of the x86-64 helper-label namespace. SysV function entries use
+/// `idx | (1 << 28)` and control-flow labels come from `label_index` counting
+/// upward from 0; helper labels live at `1 << 29` and count upward, so they
+/// cannot collide with either. See the plan's separate-namespace rule.
+pub const X86_HELPER_LABEL_BASE: usize = 1 << 29;
+
+/// Measured x86-64 SysV layout costs for the sharing collector: a `call rel32`
+/// is 5 bytes, the helper `ret` is 1 byte, and label placement is free.
+pub const X86_64_SYSV_OUTLINE_COST: portal_solutions_blitz_codegen::code_sharing::OutlineCost =
+    portal_solutions_blitz_codegen::code_sharing::OutlineCost {
+        helper_entry_bytes: 0,
+        helper_return_bytes: 1,
+        call_bytes: 5,
+        layout_bytes: 0,
+    };
+
+/// Adapter used at function-finalization time: forwards the rewindable-writer
+/// transaction methods to the underlying writer and provides the
+/// [`portal_solutions_blitz_codegen::code_sharing::SharingLayout`] emission
+/// hooks with x86-64 encodings (`call rel32` / `ret` / `set_label`).
+pub struct SharingW<'a, W, Context> {
+    pub writer: &'a mut W,
+    pub ctx: &'a mut Context,
+    pub arch: X64Arch,
+    /// Next helper-label ordinal; combined with [`X86_HELPER_LABEL_BASE`].
+    pub next_helper: usize,
+}
+
+impl<'a, W, Context> portal_solutions_asm_writer::RewindableCodeWriter<X64Label>
+    for SharingW<'a, W, Context>
+where
+    W: portal_solutions_asm_writer::RewindableCodeWriter<X64Label>,
+{
+    type Blob = W::Blob;
+    type Error = W::Error;
+
+    fn drain_after(&mut self, anchor: &X64Label) -> Result<Self::Blob, Self::Error> {
+        self.writer.drain_after(anchor)
+    }
+    fn rewind_after(&mut self, anchor: &X64Label) -> Result<(), Self::Error> {
+        self.writer.rewind_after(anchor)
+    }
+    fn append_blob(&mut self, blob: Self::Blob) -> Result<(), Self::Error> {
+        self.writer.append_blob(blob)
+    }
+    fn blob_hash(&self, blob: &Self::Blob) -> portal_solutions_asm_writer::CodeHash {
+        self.writer.blob_hash(blob)
+    }
+    fn blob_len(&self, blob: &Self::Blob) -> usize {
+        self.writer.blob_len(blob)
+    }
+    fn blob_eq(&self, left: &Self::Blob, right: &Self::Blob) -> bool {
+        self.writer.blob_eq(left, right)
+    }
+}
+
+impl<'a, W, Context> portal_solutions_blitz_codegen::code_sharing::SharingLayout<X64Label>
+    for SharingW<'a, W, Context>
+where
+    W: WriterCore<Context> + Writer<X64Label, Context>,
+{
+    type Error = W::Error;
+
+    fn alloc_helper_label(&mut self) -> X64Label {
+        let idx = X86_HELPER_LABEL_BASE + self.next_helper;
+        self.next_helper += 1;
+        X64Label::Indexed { idx }
+    }
+    fn place_helper_label(&mut self, label: &X64Label) -> Result<(), Self::Error> {
+        self.writer.set_label(self.ctx, self.arch, label.clone())
+    }
+    fn call_helper(&mut self, label: &X64Label) -> Result<(), Self::Error> {
+        self.writer.call_label(self.ctx, self.arch, label.clone())
+    }
+    fn helper_return(&mut self) -> Result<(), Self::Error> {
+        self.writer.ret(self.ctx, self.arch)
+    }
+}
+
 impl<'a, W, Context> BlitzW<'a, W, Context> {
     /// Construct a wrapper using the default CTX-relative probe-base convention
     /// (NaiveAbi / LFI).
