@@ -24,7 +24,11 @@ pub struct CodeSharingConfig {
 
 impl Default for CodeSharingConfig {
     fn default() -> Self {
-        Self { enabled: false, min_blob_len: 16, max_added_bytes: 0 }
+        Self {
+            enabled: false,
+            min_blob_len: 16,
+            max_added_bytes: 0,
+        }
     }
 }
 
@@ -70,7 +74,13 @@ impl ShareContract {
         machine_state: u64,
         dynamic_context: u64,
     ) -> Self {
-        Self { target, abi, frame, machine_state, dynamic_context }
+        Self {
+            target,
+            abi,
+            frame,
+            machine_state,
+            dynamic_context,
+        }
     }
 }
 
@@ -195,11 +205,18 @@ pub struct FinalizeStats {
 
 impl<L: Clone, B> FunctionStaging<L, B> {
     pub fn new(config: CodeSharingConfig, cost: OutlineCost) -> Self {
-        Self { coordinator: SharingCoordinator::new(), config, cost, candidates: Vec::new() }
+        Self {
+            coordinator: SharingCoordinator::new(),
+            config,
+            cost,
+            candidates: Vec::new(),
+        }
     }
 
     /// Number of candidates staged so far (diagnostics).
-    pub fn staged_count(&self) -> usize { self.candidates.len() }
+    pub fn staged_count(&self) -> usize {
+        self.candidates.len()
+    }
 
     /// Drain the region after `anchor` and stage it as a candidate.
     ///
@@ -221,9 +238,23 @@ impl<L: Clone, B> FunctionStaging<L, B> {
             w.append_blob(blob)?;
             return Ok(false);
         }
-        let key = ShareKey { contract, hash: w.blob_hash(&blob), len };
-        self.coordinator.record(self.config, Candidate { key, inline_bytes: len });
-        self.candidates.push(StagedCandidate { anchor, key, blob: Some(blob) });
+        let key = ShareKey {
+            contract,
+            hash: w.blob_hash(&blob),
+            len,
+        };
+        self.coordinator.record(
+            self.config,
+            Candidate {
+                key,
+                inline_bytes: len,
+            },
+        );
+        self.candidates.push(StagedCandidate {
+            anchor,
+            key,
+            blob: Some(blob),
+        });
         Ok(true)
     }
 
@@ -254,7 +285,8 @@ impl<L: Clone, B> FunctionStaging<L, B> {
         // Collision-safe representative assignment: the first member of each
         // planned class is the helper body; later members must compare equal
         // through the writer's exact `blob_eq`, or fall back to inline.
-        let mut outlined: Vec<bool> = self.candidates
+        let mut outlined: Vec<bool> = self
+            .candidates
             .iter()
             .map(|c| helper_labels.contains_key(&c.key))
             .collect();
@@ -269,7 +301,10 @@ impl<L: Clone, B> FunctionStaging<L, B> {
                     representative.insert(key, i);
                 }
                 Some(&r) => {
-                    let (rep, cand) = (self.candidates[r].blob.as_ref(), self.candidates[i].blob.as_ref());
+                    let (rep, cand) = (
+                        self.candidates[r].blob.as_ref(),
+                        self.candidates[i].blob.as_ref(),
+                    );
                     let eq = match (rep, cand) {
                         (Some(rep), Some(cand)) => w.blob_eq(rep, cand),
                         _ => false,
@@ -285,7 +320,9 @@ impl<L: Clone, B> FunctionStaging<L, B> {
         let demoted: Vec<ShareKey> = representative
             .keys()
             .filter(|key| {
-                self.candidates.iter().enumerate()
+                self.candidates
+                    .iter()
+                    .enumerate()
                     .filter(|(i, c)| outlined[*i] && c.key == **key)
                     .count()
                     < 2
@@ -320,14 +357,15 @@ impl<L: Clone, B> FunctionStaging<L, B> {
 
         for (key, label) in helper_labels.iter() {
             if let Some(&rep) = representative.get(key)
-                && outlined[rep] {
-                    w.place_helper_label(label).map_err(E::from)?;
-                    if let Some(blob) = self.candidates[rep].blob.take() {
-                        w.append_blob(blob).map_err(E::from)?;
-                    }
-                    w.helper_return().map_err(E::from)?;
-                    stats.outlined_classes += 1;
+                && outlined[rep]
+            {
+                w.place_helper_label(label).map_err(E::from)?;
+                if let Some(blob) = self.candidates[rep].blob.take() {
+                    w.append_blob(blob).map_err(E::from)?;
                 }
+                w.helper_return().map_err(E::from)?;
+                stats.outlined_classes += 1;
+            }
         }
         Ok(stats)
     }
@@ -351,7 +389,11 @@ impl SharingCoordinator {
 
     /// Select classes whose measured output size decreases.  The returned
     /// plans are deterministic because `BTreeMap` orders `ShareKey`.
-    pub fn profitable(&self, config: CodeSharingConfig, cost: OutlineCost) -> alloc::vec::Vec<OutlinePlan> {
+    pub fn profitable(
+        &self,
+        config: CodeSharingConfig,
+        cost: OutlineCost,
+    ) -> alloc::vec::Vec<OutlinePlan> {
         if !config.enabled {
             return alloc::vec::Vec::new();
         }
@@ -365,8 +407,11 @@ impl SharingCoordinator {
                 // A class whose final layout grows is never selected. The
                 // per-function cap is enforced by the backend when it totals
                 // selected helper-area overhead across classes.
-                (net_bytes < 0)
-                    .then_some(OutlinePlan { key, occurrences: stats.occurrences, net_bytes })
+                (net_bytes < 0).then_some(OutlinePlan {
+                    key,
+                    occurrences: stats.occurrences,
+                    net_bytes,
+                })
             })
             .collect()
     }
@@ -386,7 +431,11 @@ mod tests {
 
     fn candidate(hash: u8, len: usize) -> Candidate {
         Candidate {
-            key: ShareKey { contract: CONTRACT, hash: CodeHash([hash; 32]), len },
+            key: ShareKey {
+                contract: CONTRACT,
+                hash: CodeHash([hash; 32]),
+                len,
+            },
             inline_bytes: len,
         }
     }
@@ -395,21 +444,41 @@ mod tests {
     fn disabled_policy_is_inert() {
         let mut sharing = SharingCoordinator::new();
         sharing.record(CodeSharingConfig::default(), candidate(1, 64));
-        assert!(sharing.profitable(CodeSharingConfig::default(), OutlineCost {
-            helper_entry_bytes: 0, helper_return_bytes: 1, call_bytes: 5, layout_bytes: 0,
-        }).is_empty());
+        assert!(
+            sharing
+                .profitable(
+                    CodeSharingConfig::default(),
+                    OutlineCost {
+                        helper_entry_bytes: 0,
+                        helper_return_bytes: 1,
+                        call_bytes: 5,
+                        layout_bytes: 0,
+                    }
+                )
+                .is_empty()
+        );
     }
 
     #[test]
     fn repeated_class_is_selected_only_when_smaller() {
-        let config = CodeSharingConfig { enabled: true, min_blob_len: 8, max_added_bytes: 0 };
+        let config = CodeSharingConfig {
+            enabled: true,
+            min_blob_len: 8,
+            max_added_bytes: 0,
+        };
         let mut sharing = SharingCoordinator::new();
         sharing.record(config, candidate(1, 32));
         sharing.record(config, candidate(1, 32));
         sharing.record(config, candidate(2, 32));
-        let plans = sharing.profitable(config, OutlineCost {
-            helper_entry_bytes: 0, helper_return_bytes: 1, call_bytes: 5, layout_bytes: 0,
-        });
+        let plans = sharing.profitable(
+            config,
+            OutlineCost {
+                helper_entry_bytes: 0,
+                helper_return_bytes: 1,
+                call_bytes: 5,
+                layout_bytes: 0,
+            },
+        );
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].occurrences, 2);
         assert!(plans[0].net_bytes < 0);
@@ -417,15 +486,29 @@ mod tests {
 
     #[test]
     fn contract_partitions_equal_hashes() {
-        let config = CodeSharingConfig { enabled: true, min_blob_len: 8, max_added_bytes: 0 };
+        let config = CodeSharingConfig {
+            enabled: true,
+            min_blob_len: 8,
+            max_added_bytes: 0,
+        };
         let mut sharing = SharingCoordinator::new();
         sharing.record(config, candidate(1, 32));
         let mut other = candidate(1, 32);
         other.key.contract.frame = 99;
         sharing.record(config, other);
-        assert!(sharing.profitable(config, OutlineCost {
-            helper_entry_bytes: 0, helper_return_bytes: 1, call_bytes: 5, layout_bytes: 0,
-        }).is_empty());
+        assert!(
+            sharing
+                .profitable(
+                    config,
+                    OutlineCost {
+                        helper_entry_bytes: 0,
+                        helper_return_bytes: 1,
+                        call_bytes: 5,
+                        layout_bytes: 0,
+                    }
+                )
+                .is_empty()
+        );
     }
 
     // ---- FunctionStaging: fake writer ----
@@ -440,7 +523,11 @@ mod tests {
 
     impl FakeWriter {
         fn new() -> Self {
-            Self { buf: Vec::new(), labels: BTreeMap::new(), next_helper: 1_000_000 }
+            Self {
+                buf: Vec::new(),
+                labels: BTreeMap::new(),
+                next_helper: 1_000_000,
+            }
         }
         fn anchor(&mut self, label: usize) {
             self.labels.insert(label, self.buf.len());
@@ -469,8 +556,12 @@ mod tests {
             let sum: u8 = blob.iter().fold(0u8, |a, b| a.wrapping_add(*b));
             CodeHash([sum; 32])
         }
-        fn blob_len(&self, blob: &Vec<u8>) -> usize { blob.len() }
-        fn blob_eq(&self, left: &Vec<u8>, right: &Vec<u8>) -> bool { left == right }
+        fn blob_len(&self, blob: &Vec<u8>) -> usize {
+            blob.len()
+        }
+        fn blob_eq(&self, left: &Vec<u8>, right: &Vec<u8>) -> bool {
+            left == right
+        }
     }
 
     impl SharingLayout<usize> for FakeWriter {
@@ -502,7 +593,11 @@ mod tests {
     };
 
     fn staging_config() -> CodeSharingConfig {
-        CodeSharingConfig { enabled: true, min_blob_len: 8, max_added_bytes: 0 }
+        CodeSharingConfig {
+            enabled: true,
+            min_blob_len: 8,
+            max_added_bytes: 0,
+        }
     }
 
     #[test]
