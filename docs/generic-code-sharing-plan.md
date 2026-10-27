@@ -403,8 +403,15 @@ finalize at the function-level `End` into `call rel32` + helper-after-epilogue
 layout via `codegen::SharingW`. Disabled is a byte-identical pass-through.
 Unit tests prove duplicate outlining shrinks output and disabled mode is
 unchanged. AArch64 has full parity (`AArch64Sharing`, `SharingW`, `bl`/`ret`
-layout, same eligible-op set plus shifts) with the same test pair. RV64,
-naive, and LFI paths remain unwired.
+layout, same eligible-op set plus shifts) with the same test pair. RV64 has
+the same parity (`Rv64Sharing`, `jal ra`/`ret` layout). All three backends
+also have naive-ABI drivers (`NaiveSharing` + `naive_handle_op_sharing`;
+x86-64 naive has no regalloc so anchors need no flush, AArch64/RV64 flush and
+reset like SysV) and sink-path integration (`X64SharingSysVWasmSink`,
+`AArch64SharingSysVWasmSink`, `RiscV64SharingSysVWasmSink`) that route raw
+wasmparser operators through the drivers (normalized via the rewriter) and
+handle function lifecycle (`start_fn` resets, `end_body` finalizes). The
+sink tests drive the `Operator` path end-to-end. LFI paths remain unwired.
 
 1. Add the `asm-writer` dependency to `crates/blitz-codegen` and a
    `code_sharing` module containing `ShareContract`, a per-function
