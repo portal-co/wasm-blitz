@@ -1651,6 +1651,252 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
 }
 impl<T: Writer<X64Label, Context> + ?Sized, Context> WriterExt<Context> for T {}
 
+// ---------------------------------------------------------------------------
+// Code sharing (v1: naive ABI + rewindable binary writer, disabled by default)
+// Parity with `sysv.rs`; see docs/generic-code-sharing-plan.md.
+// ---------------------------------------------------------------------------
+
+use portal_solutions_asm_writer::RewindableCodeWriter;
+use portal_solutions_asm_x86_64::out::WriterCore;
+use portal_solutions_blitz_codegen::code_sharing::{CodeSharingConfig, FunctionStaging};
+
+/// WASM operand-stack delta for region membership: only straight-line,
+/// label-free integer/local ops with deterministic naive emission are eligible
+/// inside a v1 candidate region.
+fn naive_share_region_delta(insn: &Instruction<'_>) -> Option<i32> {
+    use Instruction as I;
+    match insn {
+        I::I32Const(_) | I::I64Const(_) | I::LocalGet(_) => Some(1),
+        I::LocalSet(_) => Some(-1),
+        I::I32Add | I::I64Add | I::I32Sub | I::I64Sub
+        | I::I32And | I::I64And | I::I32Or | I::I64Or
+        | I::I32Xor | I::I64Xor | I::I32Mul | I::I64Mul => Some(-1),
+        _ => None,
+    }
+}
+
+/// Statically known operand-stack deltas used only for tracking (a superset of
+/// region eligibility). `None` means unknown: depth tracking stops until the
+/// next function boundary, conservatively disabling further candidates.
+fn naive_share_track_delta(insn: &Instruction<'_>) -> Option<i32> {
+    use Instruction as I;
+    if let Some(d) = naive_share_region_delta(insn) {
+        return Some(d);
+    }
+    match insn {
+        I::LocalTee(_) | I::Nop => Some(0),
+        I::F32Const(_) | I::F64Const(_) | I::GlobalGet(_) | I::MemorySize(_) => Some(1),
+        I::GlobalSet(_) | I::Drop => Some(-1),
+        I::Select => Some(-2),
+        I::MemoryGrow(_) => Some(0),
+        I::MemoryFill(_) => Some(-3),
+        I::MemoryCopy { .. } => Some(-3),
+        _ => None,
+    }
+}
+
+/// Per-compilation state for the x86-64 naive code-sharing collector.
+/// Disabled by default; with the default config the driver is a pass-through
+/// to [`WriterExt::handle_op`] and output is byte-identical.
+pub struct NaiveSharing<B> {
+    /// Per-function staging collector (recreated at each `EndBody`).
+    pub staging: FunctionStaging<X64Label, B>,
+    /// WASM operand-stack depth when statically known; candidates may open
+    /// only at `Some(0)`.
+    depth: Option<i32>,
+    /// Anchor label index of the currently open candidate region.
+    open_anchor: Option<usize>,
+    /// Next helper-label ordinal (see `codegen::X86_HELPER_LABEL_BASE`).
+    next_helper: usize,
+    config: CodeSharingConfig,
+}
+
+impl<B> NaiveSharing<B> {
+    pub fn new(config: CodeSharingConfig) -> Self {
+        Self {
+            staging: FunctionStaging::new(config, crate::codegen::X86_64_NAIVE_OUTLINE_COST),
+            depth: Some(0),
+            open_anchor: None,
+            next_helper: 0,
+            config,
+        }
+    }
+    /// Enabled v1 configuration with the default size thresholds.
+    pub fn enabled() -> Self {
+        Self::new(CodeSharingConfig { enabled: true, ..CodeSharingConfig::default() })
+    }
+}
+
+impl<B> Default for NaiveSharing<B> {
+    fn default() -> Self {
+        Self::new(CodeSharingConfig::default())
+    }
+}
+
+/// Code-sharing entry point parallel to [`WriterExt::handle_op`] for the
+/// naive (CTX-stack) ABI.
+///
+/// Naive emission has no register allocator, so no flush/reset is needed at
+/// anchors — identical WASM already yields identical bytes. Function
+/// finalization happens at `EndBody` (not the function-level `End`, which is
+/// a no-op in naive); the ops pipeline appends an explicit `Return` before
+/// `EndBody`, so helpers land after the epilogue and are unreachable by
+/// fallthrough.
+pub trait NaiveSharingWriterExt<Context>: WriterExt<Context> {
+    fn naive_handle_op_sharing<E, Err, B>(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        state: &mut State<'_>,
+        sharing: &mut NaiveSharing<B>,
+        func_imports: &[(&str, &str)],
+        sigs: &[FuncType],
+        tags: &[u32],
+        op: &MachOperator<'_>,
+        rewriter: &mut (dyn Reencode<Error = E> + '_),
+        target: u32,
+    ) -> Result<(), Err>
+    where
+        Err: From<<Self as WriterCore<Context>>::Error>
+            + From<reencode::Error<E>>
+            + From<<Self as RewindableCodeWriter<X64Label>>::Error>,
+        Self: Sized + RewindableCodeWriter<X64Label, Blob = B>,
+    {
+        use portal_solutions_blitz_codegen::code_sharing::SharingLayout as _;
+
+        // Function boundary: reset per-function staging. A non-empty staging
+        // here means the previous body lacked an EndBody; finalize anyway so
+        // staged blobs are never dropped with their code missing.
+        if matches!(op, MachOperator::StartFn { .. }) {
+            sharing.depth = Some(0);
+            sharing.open_anchor = None;
+            if sharing.staging.staged_count() > 0 {
+                let staging = core::mem::replace(
+                    &mut sharing.staging,
+                    FunctionStaging::new(sharing.config, crate::codegen::X86_64_NAIVE_OUTLINE_COST),
+                );
+                let mut sw = crate::codegen::SharingW {
+                    writer: &mut *self,
+                    ctx: &mut *ctx,
+                    arch,
+                    next_helper: sharing.next_helper,
+                };
+                staging.finalize::<_, _, _, Err>(&mut sw)?;
+                sharing.next_helper = sw.next_helper;
+            }
+            return self.handle_op::<E, Err>(
+                ctx, arch, state, func_imports, sigs, tags, op, rewriter, target,
+            );
+        }
+        if !sharing.config.enabled {
+            return self.handle_op::<E, Err>(
+                ctx, arch, state, func_imports, sigs, tags, op, rewriter, target,
+            );
+        }
+
+        // Normalize raw wasmparser operators (the WasmSink path) through the
+        // rewriter so classification sees the same instruction either way.
+        let owned_insn;
+        let insn_opt: Option<&Instruction<'_>> = match op {
+            MachOperator::Instruction { op: insn, .. } => Some(insn),
+            MachOperator::Operator { op: Some(o), .. } => {
+                owned_insn = rewriter.instruction(o.clone())?;
+                Some(&owned_insn)
+            }
+            _ => None,
+        };
+        // Instrumentation is dynamic context outside the v1 contract.
+        let probes_active = state.probes.as_ref().is_some_and(|c| c.enabled);
+        let region_delta = if probes_active {
+            None
+        } else {
+            insn_opt.and_then(naive_share_region_delta)
+        };
+        let is_body_end = matches!(op, MachOperator::EndBody);
+
+        // Close an open candidate at any op that cannot join the region.
+        if region_delta.is_none() && !is_body_end {
+            if let Some(anchor) = sharing.open_anchor.take() {
+                if sharing.depth == Some(0) {
+                    sharing
+                        .staging
+                        .stage_candidate(
+                            &mut *self,
+                            X64Label::Indexed { idx: anchor },
+                            crate::codegen::X86_64_NAIVE_SHARE_CONTRACT,
+                        )
+                        .map_err(Err::from)?;
+                }
+                // depth != Some(0): the region failed the empty-stack contract;
+                // its anchor label is an inert offset record and the code stays
+                // inline.
+            }
+        }
+
+        // Open a candidate at an eligible op with a provably empty WASM stack.
+        // The body-switch guard in `handle_op` emits a jump when
+        // `target != state.body`; never open across that boundary.
+        if sharing.open_anchor.is_none()
+            && region_delta.is_some()
+            && sharing.depth == Some(0)
+            && target == state.body
+        {
+            let anchor = state.label_index;
+            state.label_index += 1;
+            self.set_label(ctx, arch, X64Label::Indexed { idx: anchor }).map_err(Err::from)?;
+            sharing.open_anchor = Some(anchor);
+        }
+
+        self.handle_op::<E, Err>(
+            ctx, arch, state, func_imports, sigs, tags, op, rewriter, target,
+        )?;
+
+        // Track the WASM stack depth across instructions with statically
+        // known deltas. Non-instruction operators (locals, body markers) are
+        // depth-neutral and must not reset tracking.
+        if let Some(insn) = insn_opt {
+            sharing.depth = match (sharing.depth, naive_share_track_delta(insn)) {
+                (Some(d), Some(delta)) => Some(d + delta),
+                _ => None,
+            };
+        }
+
+        if is_body_end {
+            // Close any still-open candidate (the appended Return closes it if
+            // it is stack-balanced; otherwise it is dropped).
+            if let Some(anchor) = sharing.open_anchor.take() {
+                if sharing.depth == Some(0) {
+                    sharing
+                        .staging
+                        .stage_candidate(
+                            &mut *self,
+                            X64Label::Indexed { idx: anchor },
+                            crate::codegen::X86_64_NAIVE_SHARE_CONTRACT,
+                        )
+                        .map_err(Err::from)?;
+                }
+            }
+            // Helpers are emitted after the epilogue the appended Return just
+            // emitted, reachable only through the forward call fixups.
+            let staging = core::mem::replace(
+                &mut sharing.staging,
+                FunctionStaging::new(sharing.config, crate::codegen::X86_64_NAIVE_OUTLINE_COST),
+            );
+            let mut sw = crate::codegen::SharingW {
+                writer: &mut *self,
+                ctx: &mut *ctx,
+                arch,
+                next_helper: sharing.next_helper,
+            };
+            staging.finalize::<_, _, _, Err>(&mut sw)?;
+            sharing.next_helper = sw.next_helper;
+        }
+        Ok(())
+    }
+}
+
+impl<T: WriterExt<Context> + ?Sized, Context> NaiveSharingWriterExt<Context> for T {}
+
 /// Emit one-instruction jump stubs for each exported function.
 ///
 /// Each stub emits an `External` label followed by a `jmp_label` to the
@@ -1773,5 +2019,96 @@ mod membase_tests {
         WriterExt::_handle_op(&mut raw, &mut ctx, X64Arch::default(), &mut s_raw, &[], &[], &[], &op, 0).unwrap();
         WriterExt::_handle_op(&mut sym, &mut ctx, X64Arch::default(), &mut s_sym, &[], &[], &[], &op, 0).unwrap();
         assert!(sym.into_bytes().len() > raw.into_bytes().len());
+    }
+}
+
+#[cfg(test)]
+mod naive_sharing_tests {
+    use super::*;
+    use portal_solutions_asm_x86_64::out::iced::IcedWriter;
+    use portal_solutions_blitz_common::HandleOpError;
+    use portal_solutions_blitz_common::ops::FnData;
+    use portal_solutions_blitz_common::wasmparser::ValType;
+    use portal_solutions_blitz_common::wasm_encoder::reencode::RoundtripReencoder;
+
+    type TestErr = HandleOpError<core::convert::Infallible>;
+
+    // Mirrors the sysv_sharing_tests corpus: two identical runs separated by
+    // a depth-neutral but region-ineligible pair (F32Const + Drop).
+    fn test_ops() -> [MachOperator<'static>; 15] {
+        let mut data = FnData::default();
+        data.num_params = 0;
+        data.num_returns = 0;
+        [
+            MachOperator::StartFn { id: 0, data },
+            MachOperator::Local { count: 1, ty: ValType::I64 },
+            MachOperator::StartBody,
+            MachOperator::Instruction { op: Instruction::I64Const(40), annot: () },
+            MachOperator::Instruction { op: Instruction::I64Const(2), annot: () },
+            MachOperator::Instruction { op: Instruction::I64Add, annot: () },
+            MachOperator::Instruction { op: Instruction::LocalSet(0), annot: () },
+            MachOperator::Instruction { op: Instruction::F32Const(0.0f32.into()), annot: () },
+            MachOperator::Instruction { op: Instruction::Drop, annot: () },
+            MachOperator::Instruction { op: Instruction::I64Const(40), annot: () },
+            MachOperator::Instruction { op: Instruction::I64Const(2), annot: () },
+            MachOperator::Instruction { op: Instruction::I64Add, annot: () },
+            MachOperator::Instruction { op: Instruction::LocalSet(0), annot: () },
+            // The ops pipeline always appends an explicit Return before EndBody;
+            // naive's function-level End is a no-op, so the Return carries the epilogue.
+            MachOperator::Instruction { op: Instruction::Return, annot: () },
+            MachOperator::EndBody,
+        ]
+    }
+
+    fn compile_plain() -> Vec<u8> {
+        let mut w: IcedWriter<X64Label> = IcedWriter::new(0);
+        let mut ctx = ();
+        let mut state = State::default();
+        for op in test_ops().iter() {
+            w.handle_op::<core::convert::Infallible, TestErr>(
+                &mut ctx, X64Arch::default(), &mut state, &[], &[], &[], op, &mut RoundtripReencoder, 0,
+            ).unwrap();
+        }
+        w.into_bytes()
+    }
+
+    type SharingBlob = <IcedWriter<X64Label> as RewindableCodeWriter<X64Label>>::Blob;
+
+    fn compile_sharing() -> (Vec<u8>, alloc::collections::BTreeMap<X64Label, usize>) {
+        let mut w: IcedWriter<X64Label> = IcedWriter::new(0);
+        let mut ctx = ();
+        let mut state = State::default();
+        let mut sharing: NaiveSharing<SharingBlob> = NaiveSharing::enabled();
+        for op in test_ops().iter() {
+            w.naive_handle_op_sharing::<core::convert::Infallible, TestErr, SharingBlob>(
+                &mut ctx, X64Arch::default(), &mut state, &mut sharing, &[], &[], &[], op, &mut RoundtripReencoder, 0,
+            ).unwrap();
+        }
+        w.into_parts()
+    }
+
+    #[test]
+    fn repeated_region_is_outlined_and_smaller() {
+        let plain = compile_plain();
+        let (shared, labels) = compile_sharing();
+        assert!(shared.len() < plain.len(), "shared {} must be smaller than plain {}", shared.len(), plain.len());
+        let helper_idx = crate::codegen::X86_HELPER_LABEL_BASE;
+        assert!(labels.contains_key(&X64Label::Indexed { idx: helper_idx }));
+        // The helper body ends in a return.
+        assert_eq!(shared[shared.len() - 1], 0xC3);
+    }
+
+    #[test]
+    fn disabled_sharing_is_byte_identical() {
+        let mut w: IcedWriter<X64Label> = IcedWriter::new(0);
+        let mut ctx = ();
+        let mut state = State::default();
+        let mut sharing: NaiveSharing<SharingBlob> = NaiveSharing::default();
+        for op in test_ops().iter() {
+            w.naive_handle_op_sharing::<core::convert::Infallible, TestErr, SharingBlob>(
+                &mut ctx, X64Arch::default(), &mut state, &mut sharing, &[], &[], &[], op, &mut RoundtripReencoder, 0,
+            ).unwrap();
+        }
+        assert_eq!(w.into_bytes(), compile_plain());
     }
 }

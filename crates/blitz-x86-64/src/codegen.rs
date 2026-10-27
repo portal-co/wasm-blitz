@@ -78,6 +78,23 @@ pub trait SharingSafepoint {
 /// cannot collide with either. See the plan's separate-namespace rule.
 pub const X86_HELPER_LABEL_BASE: usize = 1 << 29;
 
+/// Conservative x86-64 naive (CTX-stack) sharing contract. Same value-key
+/// discipline as the SysV contract; the ABI key differs so SysV and naive
+/// blobs never share a helper.
+pub const X86_64_NAIVE_SHARE_CONTRACT: portal_solutions_blitz_codegen::code_sharing::ShareContract =
+    portal_solutions_blitz_codegen::code_sharing::ShareContract::new(
+        0x8664,
+        0x4e41_4956, // "NAIV"
+        0x4652_5631,
+        0x454d_5054,
+        0x4459_4e30,
+    );
+
+/// Naive helper layout costs are the same encodings as SysV (`call rel32`,
+/// `ret`); the helper area convention is identical.
+pub const X86_64_NAIVE_OUTLINE_COST: portal_solutions_blitz_codegen::code_sharing::OutlineCost =
+    X86_64_SYSV_OUTLINE_COST;
+
 /// Measured x86-64 SysV layout costs for the sharing collector: a `call rel32`
 /// is 5 bytes, the helper `ret` is 1 byte, and label placement is free.
 pub const X86_64_SYSV_OUTLINE_COST: portal_solutions_blitz_codegen::code_sharing::OutlineCost =
