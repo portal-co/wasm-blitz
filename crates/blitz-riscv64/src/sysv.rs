@@ -637,7 +637,7 @@ pub trait SysVSharingWriterExt<Context>: SysVWriterExt<Context> {
             + From<<Self as RewindableCodeWriter<RiscvLabel>>::Error>,
         Self: Sized + RewindableCodeWriter<RiscvLabel, Blob = B>,
     {
-        use portal_solutions_blitz_codegen::code_sharing::SharingLayout as _;
+
 
         // Function boundary: reset per-function staging. A non-empty staging
         // here means the previous body lacked a function-level End; finalize
@@ -688,9 +688,9 @@ pub trait SysVSharingWriterExt<Context>: SysVWriterExt<Context> {
             matches!(insn_opt, Some(Instruction::End)) && state.if_stack.is_empty();
 
         // Close an open candidate at any op that cannot join the region.
-        if region_delta.is_none() {
-            if let Some(anchor) = sharing.open_anchor.take() {
-                if sharing.depth == Some(0) {
+        if region_delta.is_none()
+            && let Some(anchor) = sharing.open_anchor.take()
+                && sharing.depth == Some(0) {
                     flush_regalloc(self, ctx, arch, state).map_err(Err::from)?;
                     sharing
                         .staging
@@ -706,8 +706,6 @@ pub trait SysVSharingWriterExt<Context>: SysVWriterExt<Context> {
                     // to the first occurrence's.
                     state.regalloc = None;
                 }
-            }
-        }
 
         // Open a candidate at an eligible op with a provably empty WASM stack.
         // The body-switch guard in naive's handler emits a jump when

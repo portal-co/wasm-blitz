@@ -503,3 +503,17 @@ where
         self.writer.ret(self.ctx, self.arch)
     }
 }
+
+/// Conservative AArch64 naive sharing contract (distinct ABI key from SysV).
+pub const AARCH64_NAIVE_SHARE_CONTRACT: portal_solutions_blitz_codegen::code_sharing::ShareContract =
+    portal_solutions_blitz_codegen::code_sharing::ShareContract::new(
+        0xA64,
+        0x4e41_4956, // "NAIV"
+        0x4652_5631,
+        0x454d_5054,
+        0x4459_4e30,
+    );
+
+/// Naive helper layout costs equal the SysV ones on AArch64 (`bl` + `ret`).
+pub const AARCH64_NAIVE_OUTLINE_COST: portal_solutions_blitz_codegen::code_sharing::OutlineCost =
+    AARCH64_SYSV_OUTLINE_COST;

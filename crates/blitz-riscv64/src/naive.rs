@@ -21,7 +21,6 @@ use portal_solutions_asm_riscv64::out::Writer;
 use portal_solutions_blitz_common::asm::Reg;
 use portal_solutions_blitz_common::ops::{MachOperator, ProbeTableConfig};
 use portal_solutions_blitz_common::shard::{CallTarget, SecondCtxConfig};
-use portal_solutions_blitz_common::wasm_encoder;
 use portal_solutions_blitz_common::wasm_encoder::reencode::{self as reencode, Reencode};
 
 use portal_pc_asm_common::types::mem::MemorySize;
@@ -345,7 +344,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     RiscvLabel::Indexed {
                         idx: *state.body_labels.entry(state.body).or_insert_with(|| {
                             state.label_index += 1;
-                            return state.label_index - 1;
+                            state.label_index - 1
                         }),
                     },
                 )?;
@@ -1283,7 +1282,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     RiscvLabel::Indexed {
                         idx: *state.body_labels.entry(state.body).or_insert_with(|| {
                             state.label_index += 1;
-                            return state.label_index - 1;
+                            state.label_index - 1
                         }),
                     },
                 ).map_err(Err::from)?;
@@ -1355,13 +1354,13 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         .push(riscv_regalloc::RegKind::Int)
                         .unwrap_or_else(|e| panic!("regalloc push error: {e:?}"));
                     emit_cmds(self, ctx, arch, cmds).map_err(Err::from)?;
-                    let phys = Reg(ridx as u8);
+                    let phys = Reg(ridx);
                     self.li(ctx, arch, &phys, 0u64).map_err(Err::from)?;
                 }
 
                 Ok(())
             }
-            MachOperator::Local { count, ty } => {
+            MachOperator::Local { count, ty: _ } => {
                 for _ in 0..*count {
                     let sp = Reg(2);
                     self.addi(ctx, arch, &sp, &sp, -8).map_err(Err::from)?;
@@ -1430,7 +1429,7 @@ pub(crate) fn emit_cmds<
     arch: asm_riscv::RiscV64Arch,
     mut it: impl Iterator<Item = regalloc::Cmd<riscv_regalloc::RegKind>>,
 ) -> Result<(), E> {
-    while let Some(cmd) = it.next() {
+    for cmd in it {
         riscv_regalloc::process_cmd(writer, ctx, arch, &cmd)?;
     }
     Ok(())
@@ -1608,7 +1607,7 @@ pub fn lea_label<W: Writer<RiscvLabel, Context>, Context>(
     l: RiscvLabel,
 ) -> Result<(), W::Error> {
     // emit address of label into r using jal + ld pattern isn't available here; instead use jal_label provided by Writer
-    w.jal_label(ctx, arch, &*r, l)
+    w.jal_label(ctx, arch, r, l)
 }
 
 pub fn call<W: Writer<RiscvLabel, Context>, Context>(
