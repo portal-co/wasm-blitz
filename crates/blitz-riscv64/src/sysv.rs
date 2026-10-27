@@ -580,13 +580,14 @@ pub struct Rv64Sharing<B> {
     /// Per-function staging collector (recreated at each function end).
     pub staging: FunctionStaging<RiscvLabel, B>,
     /// WASM operand-stack depth when statically known; candidates may open
-    /// only at `Some(0)`.
-    depth: Option<i32>,
+    /// only at `Some(0)`. `pub` for WasmSink wrapper lifecycle resets.
+    pub depth: Option<i32>,
     /// Anchor label index of the currently open candidate region.
-    open_anchor: Option<usize>,
+    pub open_anchor: Option<usize>,
     /// Next helper-label ordinal (see `codegen::RV64_HELPER_LABEL_BASE`).
-    next_helper: usize,
-    config: CodeSharingConfig,
+    pub next_helper: usize,
+    /// The active sharing policy (`pub` for wrapper constructors).
+    pub config: CodeSharingConfig,
 }
 
 impl<B> Rv64Sharing<B> {
