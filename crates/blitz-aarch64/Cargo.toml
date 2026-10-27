@@ -7,9 +7,10 @@ description.workspace = true
 
 [dev-dependencies]
 # Enable the binary emitter for unit tests that assemble real bytes.
-portal-solutions-asm-aarch64 = { workspace = true, features = ["bin-backend"] }
+portal-solutions-asm-aarch64 = { workspace = true, features = ["bin-backend", "rewindable-writer"] }
 
 [dependencies]
+portal-solutions-asm-writer.workspace = true
 portal-solutions-blitz-codegen.workspace = true
 portal-solutions-blitz-common = { workspace = true, features = ["asm"] }
 portal-solutions-asm-aarch64 = { workspace = true, features = ["regalloc-integration"] }
