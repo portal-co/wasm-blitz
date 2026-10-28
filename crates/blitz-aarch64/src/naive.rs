@@ -1550,7 +1550,33 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 self.wasm_push(ctx, arch, T0)
             }
             Instruction::MemoryGrow(_) => {
-                // delta is on WASM stack; call via blitz WASM convention.
+                // delta is on the WASM stack; the runtime helper takes a
+                // plain C (AAPCS64) triple
+                // `__wasm_memory_grow(uint32_t delta, uint8_t **mem,
+                // uint32_t *pages)` — marshal X0 = delta, X1 = &__wasm_mem,
+                // X2 = &__wasm_mem_pages (the previous bare `bl` passed no
+                // register arguments at all, so the helper read garbage
+                // pointers for mem/pages — only latent until a guest
+                // actually grew its memory).
+                self.wasm_pop(ctx, arch, Reg(0))?; // X0 ← delta
+                crate::load_label_addr(
+                    self,
+                    ctx,
+                    arch,
+                    &reg(Reg(1)),
+                    AArch64Label::External {
+                        name: "__wasm_mem".into(),
+                    },
+                )?; // X1 ← &__wasm_mem
+                crate::load_label_addr(
+                    self,
+                    ctx,
+                    arch,
+                    &reg(Reg(2)),
+                    AArch64Label::External {
+                        name: "__wasm_mem_pages".into(),
+                    },
+                )?; // X2 ← &__wasm_mem_pages
                 crate::load_label_addr(
                     self,
                     ctx,
@@ -1560,7 +1586,11 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                         name: "__wasm_memory_grow".into(),
                     },
                 )?;
-                self.bl(ctx, arch, &reg(T0))
+                self.bl(ctx, arch, &reg(T0))?;
+                // Result (old page count) is an i32 return: push
+                // zero-extended per the i32 operand model.
+                self.uxt(ctx, arch, &reg(T0), &reg32(Reg(0)))?;
+                self.wasm_push(ctx, arch, T0)
             }
             // ---- memory.init ------------------------------------------------
             // Pop (dest, src_offset, len) off the WASM stack (len on top) and
@@ -2030,6 +2060,12 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             Instruction::ReturnCallIndirect { .. } => {
                 // Table index is on the operand stack; load fn ptr then true-tail.
                 self.wasm_pop(ctx, arch, T0)?; // table index
+                // `__wasm_table` is the array itself (a drive-emitted data
+                // blob of fn pointers), NOT a pointer variable like
+                // `__wasm_mem`: load its base address directly — the previous
+                // extra `ldr` dereferenced table[0] (an import's host
+                // address) and used *that* as the array base, sending every
+                // indirect tail call to a wild address.
                 crate::load_label_addr(
                     self,
                     ctx,
@@ -2039,7 +2075,6 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                         name: "__wasm_table".into(),
                     },
                 )?;
-                self.ldr(ctx, arch, &reg(T1), &mem_base_disp(T1, 0))?;
                 let lit = |v: u64| MemArgKind::NoMem(ArgKind::Lit(v));
                 self.lsl(ctx, arch, &reg(T0), &reg(T0), &lit(3))?;
                 self.add(ctx, arch, &reg(T1), &reg(T1), &reg(T0))?;
