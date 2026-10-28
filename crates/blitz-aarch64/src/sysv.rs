@@ -717,7 +717,10 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
 
                 // One extra slot (frame bottom) holds the spilled probe base for
                 // mid-function sites.
-                let locals_slots = data.num_params as i64 + state.control_depth as i64 * 2 + 3;
+                let locals_slots = data.num_params as i64
+                    + data.num_locals as i64
+                    + state.control_depth as i64 * 2
+                    + 3;
                 // Round the frame to 16 bytes so SP stays 16-byte aligned.
                 let frame_bytes = (locals_slots as u64 * 8 + 15) & !15;
                 let size = MemArgKind::NoMem(ArgKind::Lit(frame_bytes));

@@ -95,7 +95,8 @@ where
         w.mv(ctx, arch, &FP, &SP)?;
 
         // Allocate space for locals + control-flow slots
-        let locals_slots = state.local_count as i32 + state.control_depth as i32 * 2 + 4;
+        let locals_slots =
+            (state.local_count + data.num_locals) as i32 + state.control_depth as i32 * 2 + 4;
         if locals_slots > 0 {
             w.addi(ctx, arch, &SP, &SP, -(locals_slots * 8))?;
         }
@@ -253,7 +254,7 @@ where
         }
 
         // Standard RISC-V SysV prologue
-        let frame_slots = data.num_params + 2 + state.control_depth * 2 + 2;
+        let frame_slots = data.num_params + data.num_locals + 2 + state.control_depth * 2 + 2;
         let frame_sz = (frame_slots * 8) as i32;
         w.addi(ctx, arch, &SP, &SP, -frame_sz)?;
         // Save RA and old FP

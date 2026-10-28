@@ -1102,8 +1102,9 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
 
                 // One extra slot (at the frame bottom) holds the spilled probe
                 // base for mid-function sites; +16 headroom is the pre-existing
-                // local budget.
-                let slots = data.num_params + 16 + 1;
+                // local budget. `num_locals` covers declared (non-param) locals
+                // so high-index local slots never alias the operand stack.
+                let slots = data.num_params + data.num_locals + 16 + 1;
                 let frame_sz = (slots * 8 + 15) & !15;
                 self.mov64(ctx, arch, &RAX, frame_sz as u64)
                     .map_err(Err::from)?;

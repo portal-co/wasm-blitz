@@ -2486,7 +2486,9 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                     .map_err(Err::from)?;
                 self.mov(ctx, arch, &reg(FP), &reg(SP)).map_err(Err::from)?;
 
-                let locals_slots = state.local_count as i64 + state.control_depth as i64 * 2 + 2;
+                let locals_slots = (state.local_count + data.num_locals) as i64
+                    + state.control_depth as i64 * 2
+                    + 2;
                 if locals_slots > 0 {
                     // Round the frame to 16 bytes so SP stays 16-byte aligned.
                     let bytes = (locals_slots as u64 * 8 + 15) & !15;

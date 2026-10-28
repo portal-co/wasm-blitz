@@ -390,40 +390,48 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                 //   [SP+8]  = saved old-FP   ← bottom two slots for callee-saves
                 //   [SP+0]  = saved RA
                 let shard_extra = if state.shard.is_some() { 1 } else { 0 };
-                let frame_slots = data.num_params + 2 + state.control_depth * 2 + 3 + shard_extra;
+                let frame_slots =
+                    data.num_params + data.num_locals + 2 + state.control_depth * 2 + 3 + shard_extra;
                 let frame_sz = (frame_slots * 8) as i32;
                 state.sysv_frame_sz = frame_sz;
-                self.addi(ctx, arch, &SP, &SP, -frame_sz).map_err(Err::from)?;
+                self.addi(ctx, arch, &SP, &SP, -frame_sz)
+                    .map_err(Err::from)?;
                 self.sd(ctx, arch, &RA, &mem64(SP, 0)).map_err(Err::from)?;
                 self.sd(ctx, arch, &FP, &mem64(SP, 8)).map_err(Err::from)?;
                 if state.shard.is_some() {
-                    self.sd(ctx, arch, &SCR, &mem64(SP, 24)).map_err(Err::from)?;
+                    self.sd(ctx, arch, &SCR, &mem64(SP, 24))
+                        .map_err(Err::from)?;
                 }
-                self.addi(ctx, arch, &FP, &SP, frame_sz).map_err(Err::from)?;
+                self.addi(ctx, arch, &FP, &SP, frame_sz)
+                    .map_err(Err::from)?;
 
                 // Spill the virtual-param base (t2) to the [SP+16] slot and point
                 // mid-function sites at it (fp-relative).
                 if data.probes.as_ref().map(|c| c.enabled).unwrap_or(false) {
                     let disp = -frame_sz + 16;
                     state.probe_base = ProbeBase::FrameSlot(disp);
-                    self.sd(ctx, arch, &Reg(PROBE_BASE_REG), &mem64(FP, disp)).map_err(Err::from)?;
+                    self.sd(ctx, arch, &Reg(PROBE_BASE_REG), &mem64(FP, disp))
+                        .map_err(Err::from)?;
                 }
 
                 match state.call_abi {
                     CallAbi::RegSysv => {
                         for i in 0..data.num_params.min(8) {
-                            self.sysv_store_local(ctx, arch, ARG_REGS[i], i).map_err(Err::from)?;
+                            self.sysv_store_local(ctx, arch, ARG_REGS[i], i)
+                                .map_err(Err::from)?;
                         }
                         // psABI overflow arguments begin at caller SP, which is FP
                         // after this backend's prologue.
                         for i in 8..data.num_params {
-                            self.ld(ctx, arch, &T0, &mem64(FP, ((i - 8) * 8) as i32)).map_err(Err::from)?;
+                            self.ld(ctx, arch, &T0, &mem64(FP, ((i - 8) * 8) as i32))
+                                .map_err(Err::from)?;
                             self.sysv_store_local(ctx, arch, T0, i).map_err(Err::from)?;
                         }
                     }
                     CallAbi::AllStack => {
                         for i in 0..data.num_params {
-                            self.ld(ctx, arch, &T0, &mem64(FP, (i * 8) as i32)).map_err(Err::from)?;
+                            self.ld(ctx, arch, &T0, &mem64(FP, (i * 8) as i32))
+                                .map_err(Err::from)?;
                             self.sysv_store_local(ctx, arch, T0, i).map_err(Err::from)?;
                         }
                     }

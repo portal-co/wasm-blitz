@@ -200,7 +200,14 @@ pub fn mach_operators_for_function<'a, Annot: FromWasmInfo, E: From<BinaryReader
 ) -> impl Iterator<Item = Result<MachOperator<'a, Annot>, E>> {
     (|| -> Result<_, E> {
         let operators = body.get_operators_reader()?;
-        let locals = body.get_locals_reader()?;
+        // Collect the locals up front so the total declared-local count can
+        // ride in `FnData::num_locals`: backend prologues size the frame at
+        // `StartFn`, before the `Local` ops arrive.
+        let locals: Vec<(u32, wasmparser::ValType)> = body
+            .get_locals_reader()?
+            .into_iter()
+            .collect::<Result<_, _>>()?;
+        let num_locals: usize = locals.iter().map(|(count, _)| *count as usize).sum();
         Ok::<_, E>(
             [MachOperator::StartFn {
                 id: function_id,
@@ -208,6 +215,7 @@ pub fn mach_operators_for_function<'a, Annot: FromWasmInfo, E: From<BinaryReader
                     num_params: sig.params().len(),
                     num_returns: sig.results().len(),
                     control_depth: control_depth(body),
+                    num_locals,
                     probes: None,
                     probe_plan: None,
                 },
@@ -215,9 +223,8 @@ pub fn mach_operators_for_function<'a, Annot: FromWasmInfo, E: From<BinaryReader
             .into_iter()
             .map(Ok)
             .chain(locals.into_iter().map(|local| {
-                local
-                    .map(|(count, ty)| MachOperator::Local { count, ty })
-                    .map_err(E::from)
+                let (count, ty) = local;
+                Ok(MachOperator::Local { count, ty })
             }))
             .chain([MachOperator::StartBody].map(Ok))
             .chain(operators.into_iter_with_offsets().map(
@@ -423,6 +430,14 @@ pub struct FnData {
     pub num_returns: usize,
     /// Maximum nesting depth of control flow structures in the function.
     pub control_depth: usize,
+    /// Number of declared (non-parameter) locals the function body declares.
+    ///
+    /// Backends with FP-relative local frames must size the frame for
+    /// `num_params + num_locals` slots; sizing from `num_params` alone
+    /// under-allocates and lets high-index locals alias the operand-stack
+    /// region below the frame. Drivers that construct `FnData` by hand must
+    /// set this; the `mach_operators` pipeline computes it automatically.
+    pub num_locals: usize,
     /// Optional probe-table configuration.  `None` (or `enabled: false`) → no
     /// probe code emitted (zero overhead on the fast path).
     pub probes: Option<ProbeTableConfig>,
@@ -437,6 +452,7 @@ impl PartialEq for FnData {
         self.num_params == other.num_params
             && self.num_returns == other.num_returns
             && self.control_depth == other.control_depth
+            && self.num_locals == other.num_locals
     }
 }
 impl Eq for FnData {}

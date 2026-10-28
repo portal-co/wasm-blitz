@@ -8038,3 +8038,74 @@ fn test_sharing_disabled_matches_plain_compile() {
         assert_eq!(driver_off, plain, "disabled sharing must be byte-identical for {arch:?}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Frame-size probe: many declared locals vs. sysv prologue frame sizing.
+// ---------------------------------------------------------------------------
+
+/// Module with one function `(func (result i64) (local i64 x N))`: set every
+/// local to its index, push a deep operand-stack run, then sum all locals.
+/// If the frame is under-sized, deep operand pushes collide with high-index
+/// local slots and the sum comes out wrong.
+fn many_locals_wasm(n_locals: u32, operand_depth: u32) -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([], [ValType::I64]);
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    let mut f = Function::new([(n_locals, ValType::I64)]);
+    for i in 0..n_locals {
+        f.instruction(&Instruction::I64Const(i as i64 + 1));
+        f.instruction(&Instruction::LocalSet(i));
+    }
+    // Deep operand-stack run: push `operand_depth` values, then drop them.
+    for _ in 0..operand_depth {
+        f.instruction(&Instruction::I64Const(-1));
+    }
+    for _ in 0..operand_depth {
+        f.instruction(&Instruction::Drop);
+    }
+    // Sum locals 0..n.
+    f.instruction(&Instruction::LocalGet(0));
+    for i in 1..n_locals {
+        f.instruction(&Instruction::LocalGet(i));
+        f.instruction(&Instruction::I64Add);
+    }
+    f.instruction(&Instruction::End);
+    code.function(&f);
+    module.section(&code);
+    module.finish()
+}
+
+#[test]
+fn test_unicorn_x86_64_allstack_many_locals() {
+    let n = 30u32;
+    let wasm = many_locals_wasm(n, 64);
+    let (code, entry) = compile_allstack_binary(&wasm, NativeArch::X86_64);
+    let expected: u64 = (1..=n as u64).sum();
+    assert_eq!(run_allstack_entry(NativeArch::X86_64, &code, entry, &[], 100_000), expected);
+}
+
+#[test]
+fn test_unicorn_aarch64_allstack_many_locals() {
+    let n = 30u32;
+    let wasm = many_locals_wasm(n, 64);
+    let (code, entry) = compile_allstack_binary(&wasm, NativeArch::AArch64);
+    let expected: u64 = (1..=n as u64).sum();
+    assert_eq!(run_allstack_entry(NativeArch::AArch64, &code, entry, &[], 100_000), expected);
+}
+
+#[test]
+fn test_unicorn_riscv64_allstack_many_locals() {
+    let n = 30u32;
+    let wasm = many_locals_wasm(n, 64);
+    let (code, entry) = compile_allstack_binary(&wasm, NativeArch::Riscv64);
+    let expected: u64 = (1..=n as u64).sum();
+    assert_eq!(run_allstack_entry(NativeArch::Riscv64, &code, entry, &[], 100_000), expected);
+}

@@ -122,7 +122,8 @@ where
         w.mov(ctx, arch, &reg(FP), &reg(SP))?;
 
         // Allocate frame for locals + control flow slots
-        let locals_slots = state.local_count as i64 + state.control_depth as i64 * 2 + 2;
+        let locals_slots =
+            (state.local_count + data.num_locals) as i64 + state.control_depth as i64 * 2 + 2;
         if locals_slots > 0 {
             let size = MemArgKind::NoMem(ArgKind::Lit((locals_slots * 8) as u64));
             w.sub(ctx, arch, &reg(SP), &reg(SP), &size)?;
@@ -277,7 +278,9 @@ where
         w.mov(ctx, arch, &reg(FP), &reg(SP))?;
 
         // Allocate frame for locals + control flow slots
-        let locals_slots = data.num_params as i64 + state.control_depth as i64 * 2 + 2;
+        let locals_slots = (data.num_params + data.num_locals) as i64
+            + state.control_depth as i64 * 2
+            + 2;
         if locals_slots > 0 {
             let size = MemArgKind::NoMem(ArgKind::Lit((locals_slots * 8) as u64));
             w.sub(ctx, arch, &reg(SP), &reg(SP), &size)?;

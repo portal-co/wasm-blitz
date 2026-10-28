@@ -1332,8 +1332,9 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
 
                 self.mv(ctx, arch, &fp, &sp).map_err(Err::from)?;
 
-                let locals_slots =
-                    (state.local_count as i32) + (state.control_depth as i32) * 2 + 4;
+                let locals_slots = (state.local_count + data.num_locals) as i32
+                    + (state.control_depth as i32) * 2
+                    + 4;
                 let alloc_bytes = locals_slots * 8;
                 if alloc_bytes > 0 {
                     self.addi(ctx, arch, &sp, &sp, -alloc_bytes).map_err(Err::from)?;

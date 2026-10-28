@@ -399,8 +399,8 @@ where
         w.push(ctx, arch, &RBP)?;
         w.mov(ctx, arch, &RBP, &RSP)?;
 
-        // Allocate frame: params + 16 slots, 16-byte aligned
-        let frame_sz = ((data.num_params + 16) * 8 + 15) & !15;
+        // Allocate frame: params + declared locals + 16 slots, 16-byte aligned
+        let frame_sz = ((data.num_params + data.num_locals + 16) * 8 + 15) & !15;
         w.mov64(ctx, arch, &RAX, frame_sz as u64)?;
         w.sub(ctx, arch, &RSP, &RAX)?;
 
