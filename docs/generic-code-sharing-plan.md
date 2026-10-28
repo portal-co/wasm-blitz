@@ -413,6 +413,20 @@ wasmparser operators through the drivers (normalized via the rewriter) and
 handle function lifecycle (`start_fn` resets, `end_body` finalizes). The
 sink tests drive the `Operator` path end-to-end. LFI paths remain unwired.
 
+blitz-tests e2e validation (`test_unicorn_*_sharing_executes_outlined`,
+`test_riscv64_sharing_outlines_repeated_region`,
+`test_sharing_disabled_matches_plain_compile`) drives a real WASM module
+two identical `i64.const 40; i64.const 2; i64.add; local.set 0` regions in a
+`(func (result i64) (local i64))`, separated by a depth-neutral ineligible
+pair through the full `mach_operators` pipeline into the rewindable binary
+writers. x86-64 and AArch64 run the outlined code under Unicorn and assert
+the result (42), proving `local.set`/`local.get` inside helpers observe the
+correct frame slots across the extra call-pushed return address (the
+AllStack frame is FP-based, so locals are undisturbed). RV64 asserts the
+outline structurally (its `memory.size` separator carries an external
+`__wasm_mem_pages` reference that cannot run standalone in Unicorn).
+Disabled mode is asserted byte-identical to `compile_allstack_binary`.
+
 1. Add the `asm-writer` dependency to `crates/blitz-codegen` and a
    `code_sharing` module containing `ShareContract`, a per-function
    coordinator, accounting, diagnostics, and an off-by-default configuration.
