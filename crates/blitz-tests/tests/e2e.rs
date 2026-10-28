@@ -10123,3 +10123,174 @@ fn test_sharing_disabled_matches_plain_compile() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Frame-size probe: many declared locals vs. sysv prologue frame sizing.
+// ---------------------------------------------------------------------------
+
+/// Module with one function `(func (result i64) (local i64 x N))`: set every
+/// local to its index, push a deep operand-stack run, then sum all locals.
+/// If the frame is under-sized, deep operand pushes collide with high-index
+/// local slots and the sum comes out wrong.
+fn many_locals_wasm(n_locals: u32, operand_depth: u32) -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([], [ValType::I64]);
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    let mut f = Function::new([(n_locals, ValType::I64)]);
+    for i in 0..n_locals {
+        f.instruction(&Instruction::I64Const(i as i64 + 1));
+        f.instruction(&Instruction::LocalSet(i));
+    }
+    // Deep operand-stack run: push `operand_depth` values, then drop them.
+    for _ in 0..operand_depth {
+        f.instruction(&Instruction::I64Const(-1));
+    }
+    for _ in 0..operand_depth {
+        f.instruction(&Instruction::Drop);
+    }
+    // Sum locals 0..n.
+    f.instruction(&Instruction::LocalGet(0));
+    for i in 1..n_locals {
+        f.instruction(&Instruction::LocalGet(i));
+        f.instruction(&Instruction::I64Add);
+    }
+    f.instruction(&Instruction::End);
+    code.function(&f);
+    module.section(&code);
+    module.finish()
+}
+
+#[test]
+fn test_unicorn_x86_64_allstack_many_locals() {
+    let n = 30u32;
+    let wasm = many_locals_wasm(n, 64);
+    let (code, entry) = compile_allstack_binary(&wasm, NativeArch::X86_64);
+    let expected: u64 = (1..=n as u64).sum();
+    assert_eq!(
+        run_allstack_entry(NativeArch::X86_64, &code, entry, &[], 100_000),
+        expected
+    );
+}
+
+#[test]
+fn test_unicorn_aarch64_allstack_many_locals() {
+    let n = 30u32;
+    let wasm = many_locals_wasm(n, 64);
+    let (code, entry) = compile_allstack_binary(&wasm, NativeArch::AArch64);
+    let expected: u64 = (1..=n as u64).sum();
+    assert_eq!(
+        run_allstack_entry(NativeArch::AArch64, &code, entry, &[], 100_000),
+        expected
+    );
+}
+
+#[test]
+fn test_unicorn_riscv64_allstack_many_locals() {
+    let n = 30u32;
+    let wasm = many_locals_wasm(n, 64);
+    let (code, entry) = compile_allstack_binary(&wasm, NativeArch::Riscv64);
+    let expected: u64 = (1..=n as u64).sum();
+    assert_eq!(
+        run_allstack_entry(NativeArch::Riscv64, &code, entry, &[], 100_000),
+        expected
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Frame-size probe #2: many locals + wide internal call (megabinary shape:
+// slot functions have 100+ params AND declared scratch locals).
+// ---------------------------------------------------------------------------
+
+/// Two-function module: `f0` has `n_locals` declared i64 locals, fills them
+/// from `local 0..`, does a deep operand run, then calls `f1` with
+/// `call_arity` i64 args (each = local[i] + 1) and returns the call result
+/// plus the sum of its own locals. `f1` returns the sum of its args.
+/// Exercises the frame + outgoing-area interaction end to end.
+fn many_locals_wide_call_wasm(n_locals: u32, call_arity: u32) -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([], [ValType::I64]); // f0
+    types.ty().function(vec![ValType::I64; call_arity as usize], [ValType::I64]); // f1
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    functions.function(1);
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+
+    let mut code = CodeSection::new();
+    let mut f0 = Function::new([(n_locals, ValType::I64)]);
+    for i in 0..n_locals {
+        f0.instruction(&Instruction::I64Const(i as i64 + 1));
+        f0.instruction(&Instruction::LocalSet(i));
+    }
+    // Push call_arity args: arg i = local[i % n_locals].
+    for i in 0..call_arity {
+        f0.instruction(&Instruction::LocalGet(i % n_locals));
+    }
+    f0.instruction(&Instruction::Call(1));
+    // Sum locals and add the call result.
+    for i in 0..n_locals {
+        f0.instruction(&Instruction::LocalGet(i));
+        f0.instruction(&Instruction::I64Add);
+    }
+    f0.instruction(&Instruction::End);
+    code.function(&f0);
+
+    let mut f1 = Function::new([]);
+    f1.instruction(&Instruction::LocalGet(0));
+    for i in 1..call_arity {
+        f1.instruction(&Instruction::LocalGet(i));
+        f1.instruction(&Instruction::I64Add);
+    }
+    f1.instruction(&Instruction::End);
+    code.function(&f1);
+    module.section(&code);
+    module.finish()
+}
+
+fn many_locals_wide_call_expected(n_locals: u32, call_arity: u32) -> u64 {
+    let local_vals: Vec<u64> = (0..n_locals).map(|i| i as u64 + 1).collect();
+    let call_result: u64 = (0..call_arity).map(|i| local_vals[(i % n_locals) as usize]).sum();
+    let local_sum: u64 = local_vals.iter().sum();
+    call_result + local_sum
+}
+
+#[test]
+fn test_unicorn_x86_64_allstack_many_locals_wide_call() {
+    let wasm = many_locals_wide_call_wasm(120, 108);
+    let (code, entry) = compile_allstack_binary(&wasm, NativeArch::X86_64);
+    assert_eq!(
+        run_allstack_entry(NativeArch::X86_64, &code, entry, &[], 500_000),
+        many_locals_wide_call_expected(120, 108)
+    );
+}
+
+#[test]
+fn test_unicorn_aarch64_allstack_many_locals_wide_call() {
+    for arity in [8u32, 32, 48, 108] {
+        let wasm = many_locals_wide_call_wasm(120, arity);
+        let (code, entry) = compile_allstack_binary(&wasm, NativeArch::AArch64);
+        let got = run_allstack_entry(NativeArch::AArch64, &code, entry, &[], 500_000);
+        assert_eq!(got, many_locals_wide_call_expected(120, arity), "arity {arity}");
+    }
+}
+
+#[test]
+fn test_unicorn_riscv64_allstack_many_locals_wide_call() {
+    let wasm = many_locals_wide_call_wasm(120, 108);
+    let (code, entry) = compile_allstack_binary(&wasm, NativeArch::Riscv64);
+    assert_eq!(
+        run_allstack_entry(NativeArch::Riscv64, &code, entry, &[], 500_000),
+        many_locals_wide_call_expected(120, 108)
+    );
+}
