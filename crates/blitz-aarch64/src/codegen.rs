@@ -303,7 +303,12 @@ where
     > {
         let r = portal_solutions_asm_aarch64::regalloc::init_regalloc::<32>(self.arch);
         let mut frames = portal_solutions_blitz_codegen::regalloc_adapter::Frames(r.frames);
-        for reg in [9u8, 10, 11, 27] {
+        // x9/x10/x11 = naive T0/T1/T2 fixed scratch; x27 = SCR; x16/x17 = IP0/IP1,
+        // which the binary assembler silently clobbers as address-materialization
+        // scratch whenever an ldr/str displacement falls outside simm9 (locals at
+        // [FP - disp] with disp > 256, i.e. local index >= 32) — invisible to the
+        // allocator, so they must never hold a WASM operand.
+        for reg in [9u8, 10, 11, 16, 17, 27] {
             frames.0[0][reg as usize] = portal_solutions_asm_regalloc::RegAllocFrame::Reserved;
         }
         portal_solutions_asm_regalloc::RegAlloc { frames, tos: r.tos }
@@ -505,7 +510,8 @@ where
 }
 
 /// Conservative AArch64 naive sharing contract (distinct ABI key from SysV).
-pub const AARCH64_NAIVE_SHARE_CONTRACT: portal_solutions_blitz_codegen::code_sharing::ShareContract =
+pub const AARCH64_NAIVE_SHARE_CONTRACT:
+    portal_solutions_blitz_codegen::code_sharing::ShareContract =
     portal_solutions_blitz_codegen::code_sharing::ShareContract::new(
         0xA64,
         0x4e41_4956, // "NAIV"
