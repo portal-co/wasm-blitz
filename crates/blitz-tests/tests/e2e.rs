@@ -7787,3 +7787,254 @@ fn test_multi_memory_js() {
     let v: i64 = String::from_utf8(o.stdout).unwrap().trim().parse().unwrap();
     assert_eq!(v, 99);
 }
+
+// ---------------------------------------------------------------------------
+// Tests — generic code sharing (outlined helper regions)
+//
+// These drive the SysV sharing drivers (`sysv_handle_op_sharing`) through the
+// real `mach_operators` pipeline into the rewindable binary writers. x86-64
+// and AArch64 additionally execute the outlined code under Unicorn; RV64's
+// separator (`memory.size`) carries an external `__wasm_mem_pages` reference
+// that cannot run standalone in Unicorn, so RV64 asserts the outline
+// structurally instead.
+// ---------------------------------------------------------------------------
+
+/// Separator kind between the two identical regions: must be depth-neutral,
+/// region-ineligible, and (for the executed arches) free of external relocs.
+#[derive(Clone, Copy)]
+enum SharingSep {
+    F32,
+    MemSize,
+}
+
+/// Single-function module `(func (result i64) (local i64))` containing two
+/// identical straight-line regions (`i64.const 40; i64.const 2; i64.add;
+/// local.set 0`) separated by `sep`, returning local 0 (= 42). The trailing
+/// `local.get 0` is region-eligible, so a second separator keeps it out of the
+/// second region (otherwise the occurrences would differ and never share).
+fn sharing_repeat_wasm(sep: SharingSep) -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([], [ValType::I64]);
+    module.section(&types);
+
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+
+    if matches!(sep, SharingSep::MemSize) {
+        let mut mems = MemorySection::new();
+        mems.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+        module.section(&mems);
+    }
+
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+
+    let mut code = CodeSection::new();
+    let mut f = Function::new([(1, ValType::I64)]);
+    let mut region = |f: &mut Function| {
+        f.instruction(&Instruction::I64Const(40));
+        f.instruction(&Instruction::I64Const(2));
+        f.instruction(&Instruction::I64Add);
+        f.instruction(&Instruction::LocalSet(0));
+    };
+    let mut separator = |f: &mut Function| match sep {
+        SharingSep::F32 => {
+            f.instruction(&Instruction::F32Const(0.0f32.into()));
+            f.instruction(&Instruction::Drop);
+        }
+        SharingSep::MemSize => {
+            f.instruction(&Instruction::MemorySize(0));
+            f.instruction(&Instruction::Drop);
+        }
+    };
+    region(&mut f);
+    separator(&mut f);
+    region(&mut f);
+    separator(&mut f);
+    f.instruction(&Instruction::LocalGet(0));
+    f.instruction(&Instruction::End);
+    code.function(&f);
+    module.section(&code);
+    module.finish()
+}
+
+/// Error type joining every sharing-driver error source across the three
+/// backends (RV64's rewind error has no `HandleOpError` conversion).
+#[derive(Debug)]
+enum ShareTestErr {
+    Fmt,
+    Reencode,
+    Rewind,
+}
+impl From<core::convert::Infallible> for ShareTestErr {
+    fn from(x: core::convert::Infallible) -> Self { match x {} }
+}
+impl From<core::fmt::Error> for ShareTestErr {
+    fn from(_: core::fmt::Error) -> Self { ShareTestErr::Fmt }
+}
+impl From<portal_solutions_blitz_common::wasm_encoder::reencode::Error<core::convert::Infallible>>
+    for ShareTestErr
+{
+    fn from(_: portal_solutions_blitz_common::wasm_encoder::reencode::Error<core::convert::Infallible>) -> Self {
+        ShareTestErr::Reencode
+    }
+}
+impl From<portal_solutions_asm_riscv64::out::rv_asm_backend::RvRewindError> for ShareTestErr {
+    fn from(_: portal_solutions_asm_riscv64::out::rv_asm_backend::RvRewindError) -> Self {
+        ShareTestErr::Rewind
+    }
+}
+
+/// Compile `wasm` with the SysV sharing driver in `CallAbi::AllStack` mode.
+/// Mirrors [`compile_allstack_binary`] but routes every operator through
+/// `sysv_handle_op_sharing` with the given sharing switch.
+fn compile_allstack_binary_sharing(wasm: &[u8], arch: NativeArch, enabled: bool) -> (Vec<u8>, u64) {
+    let (sigs_wp, _enc, fsigs) = parse_sigs(wasm);
+    let call_params: Vec<u32> =
+        fsigs.iter().map(|&ti| sigs_wp[ti as usize].params().len() as u32).collect();
+    let call_results: Vec<u32> =
+        fsigs.iter().map(|&ti| sigs_wp[ti as usize].results().len() as u32).collect();
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut reencoder = RoundtripReencoder;
+    let mut ctx = ();
+    let config = portal_solutions_blitz_codegen::code_sharing::CodeSharingConfig {
+        enabled,
+        ..portal_solutions_blitz_codegen::code_sharing::CodeSharingConfig::default()
+    };
+    match arch {
+        NativeArch::X86_64 => {
+            use portal_solutions_blitz_x86_64::{sysv, X64Arch, X64Label};
+            use portal_solutions_asm_x86_64::out::iced::IcedWriter;
+            let mut out = IcedWriter::<X64Label>::new(0x100000);
+            let mut state = sysv::SysVState::default();
+            state.call_abi = sysv::CallAbi::AllStack;
+            state.call_params = call_params;
+            state.call_results = call_results;
+            state.sig_params = sigs_wp.iter().map(|s| s.params().len() as u32).collect();
+            state.sig_results = sigs_wp.iter().map(|s| s.results().len() as u32).collect();
+            let mut sharing = sysv::SysVSharing::new(config);
+            for op in ops {
+                sysv::SysVSharingWriterExt::sysv_handle_op_sharing::<_, HandleOpError<_>, _>(
+                    &mut out, &mut ctx, X64Arch::default(), &mut state, &mut sharing, &[],
+                    &op.unwrap(), &mut reencoder, 0,
+                )
+                .unwrap();
+            }
+            let (bytes, labels, relocs) = out.into_parts_with_relocs();
+            assert!(relocs.is_empty(), "unexpected external relocs: {relocs:?}");
+            (bytes, labels[&X64Label::Func { r#fn: 0 }] as u64)
+        }
+        NativeArch::AArch64 => {
+            use portal_solutions_blitz_aarch64::{naive, sysv, AArch64Arch, AArch64Label};
+            use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+            let mut out = AArch64Writer::<AArch64Label>::new();
+            let mut state = naive::State::default();
+            state.call_abi = naive::CallAbi::AllStack;
+            state.call_params = call_params;
+            state.call_results = call_results;
+            state.sig_params = sigs_wp.iter().map(|s| s.params().len() as u32).collect();
+            state.sig_results = sigs_wp.iter().map(|s| s.results().len() as u32).collect();
+            let mut sharing = sysv::AArch64Sharing::new(config);
+            for op in ops {
+                sysv::SysVSharingWriterExt::sysv_handle_op_sharing::<_, HandleOpError<_>, _>(
+                    &mut out, &mut ctx, AArch64Arch::default(), &mut state, &mut sharing, &[],
+                    &op.unwrap(), &mut reencoder, 0,
+                )
+                .unwrap();
+            }
+            let (bytes, labels, relocs) = out.into_parts_with_relocs();
+            assert!(relocs.is_empty(), "unexpected external relocs: {relocs:?}");
+            (bytes, labels[&AArch64Label::Indexed { idx: 0x8000_0000 }] as u64)
+        }
+        NativeArch::Riscv64 => {
+            use portal_solutions_blitz_riscv64::{sysv, RiscV64Arch, RiscvLabel};
+            use portal_solutions_asm_riscv64::out::rv_asm_backend::RvAsmWriter;
+            let mut out = RvAsmWriter::<RiscvLabel>::new();
+            let mut state = sysv::SysVState::default();
+            state.call_abi = sysv::CallAbi::AllStack;
+            state.n_imports = 0;
+            state.call_params = call_params;
+            state.call_results = call_results;
+            state.sig_params = sigs_wp.iter().map(|s| s.params().len() as u32).collect();
+            state.sig_results = sigs_wp.iter().map(|s| s.results().len() as u32).collect();
+            let mut sharing = sysv::Rv64Sharing::new(config);
+            for op in ops {
+                sysv::SysVSharingWriterExt::sysv_handle_op_sharing::<_, ShareTestErr, _>(
+                    &mut out, &mut ctx, RiscV64Arch::default(), &mut state, &mut sharing, &[],
+                    &op.unwrap(), &mut reencoder, 0,
+                )
+                .unwrap();
+            }
+            // `memory.size` leaves an external `__wasm_mem_pages` reference;
+            // this test never executes the bytes, so drop relocs silently.
+            let (bytes, labels) = out.into_parts();
+            (bytes, labels[&RiscvLabel::Indexed { idx: 1 << 28 }] as u64)
+        }
+        NativeArch::Riscv32 | NativeArch::Arm | NativeArch::I686 => {
+            panic!("AllStack sharing binary not implemented for {arch:?}");
+        }
+    }
+}
+
+#[test]
+fn test_unicorn_x86_64_sharing_executes_outlined() {
+    let wasm = sharing_repeat_wasm(SharingSep::F32);
+    let (plain_code, plain_entry) = compile_allstack_binary_sharing(&wasm, NativeArch::X86_64, false);
+    let (shared_code, shared_entry) = compile_allstack_binary_sharing(&wasm, NativeArch::X86_64, true);
+    assert!(
+        shared_code.len() < plain_code.len(),
+        "shared {} must be smaller than plain {}",
+        shared_code.len(),
+        plain_code.len()
+    );
+    assert_eq!(run_allstack_entry(NativeArch::X86_64, &plain_code, plain_entry, &[], 100_000), 42);
+    assert_eq!(run_allstack_entry(NativeArch::X86_64, &shared_code, shared_entry, &[], 100_000), 42);
+}
+
+#[test]
+fn test_unicorn_aarch64_sharing_executes_outlined() {
+    let wasm = sharing_repeat_wasm(SharingSep::F32);
+    let (plain_code, plain_entry) = compile_allstack_binary_sharing(&wasm, NativeArch::AArch64, false);
+    let (shared_code, shared_entry) = compile_allstack_binary_sharing(&wasm, NativeArch::AArch64, true);
+    assert!(
+        shared_code.len() < plain_code.len(),
+        "shared {} must be smaller than plain {}",
+        shared_code.len(),
+        plain_code.len()
+    );
+    assert_eq!(run_allstack_entry(NativeArch::AArch64, &plain_code, plain_entry, &[], 100_000), 42);
+    assert_eq!(run_allstack_entry(NativeArch::AArch64, &shared_code, shared_entry, &[], 100_000), 42);
+}
+
+#[test]
+fn test_riscv64_sharing_outlines_repeated_region() {
+    let wasm = sharing_repeat_wasm(SharingSep::MemSize);
+    let (plain_code, _) = compile_allstack_binary_sharing(&wasm, NativeArch::Riscv64, false);
+    let (shared_code, _) = compile_allstack_binary_sharing(&wasm, NativeArch::Riscv64, true);
+    assert!(
+        shared_code.len() < plain_code.len(),
+        "shared {} must be smaller than plain {}",
+        shared_code.len(),
+        plain_code.len()
+    );
+}
+
+#[test]
+fn test_sharing_disabled_matches_plain_compile() {
+    let wasm = sharing_repeat_wasm(SharingSep::F32);
+    for arch in [NativeArch::X86_64, NativeArch::AArch64] {
+        let (driver_off, _) = compile_allstack_binary_sharing(&wasm, arch, false);
+        let (plain, _) = compile_allstack_binary(&wasm, arch);
+        assert_eq!(driver_off, plain, "disabled sharing must be byte-identical for {arch:?}");
+    }
+}
