@@ -971,9 +971,10 @@ mod sysv_manyarg_tests {
     fn marshalled_call_targets_label_and_grows_with_arity() {
         let (small, rel) = marshal(4, 1, AArch64Label::Indexed { idx: 0x8000_0000 }, false);
         let (big, _) = marshal(20, 1, AArch64Label::Indexed { idx: 0x8000_0000 }, false);
-        // Exactly one relocation — the call branch — pointing at the requested target.
-        assert_eq!(rel.len(), 1);
-        assert!(matches!(&rel[0], AArch64Label::Indexed { idx } if *idx == 0x8000_0000));
+        // Two relocation slots — the ADRP and ADD of the target address load
+        // — both pointing at the requested target.
+        assert_eq!(rel.len(), 2);
+        assert!(rel.iter().all(|l| matches!(l, AArch64Label::Indexed { idx } if *idx == 0x8000_0000)));
         // AllStack internals put every arg on the stack — more arity → more code.
         assert!(big.len() > small.len());
     }

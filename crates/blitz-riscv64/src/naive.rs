@@ -337,16 +337,23 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
             if state.body == 0 && state.body_labels.is_empty() {
                 state.body = target;
             } else {
-                self.jal_label(
+                // JAL is only ±1MB; out-of-line bodies can sit farther away
+                // in a megabinary. `la` (AUIPC+ADDI, ±2GB) + jalr reaches any
+                // in-buffer target. Scratch t0 is free here (no live WASM
+                // values in registers at the body-switch boundary).
+                let lbl = RiscvLabel::Indexed {
+                    idx: *state.body_labels.entry(state.body).or_insert_with(|| {
+                        state.label_index += 1;
+                        state.label_index - 1
+                    }),
+                };
+                self.la_label(ctx, arch, &portal_solutions_blitz_common::asm::Reg(5), lbl)?;
+                self.jalr(
                     ctx,
                     arch,
                     &Reg(0),
-                    RiscvLabel::Indexed {
-                        idx: *state.body_labels.entry(state.body).or_insert_with(|| {
-                            state.label_index += 1;
-                            state.label_index - 1
-                        }),
-                    },
+                    &portal_solutions_blitz_common::asm::Reg(5),
+                    0,
                 )?;
                 state.body = target;
                 if let Some(idx) = state.body_labels.remove(&state.body) {

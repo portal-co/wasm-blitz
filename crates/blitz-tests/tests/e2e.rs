@@ -3767,7 +3767,9 @@ fn run_allstack_entry(
         unicorn_const::{Arch, Mode, Prot},
     };
     const CODE: u64 = 0x100000;
-    const STACK: u64 = 0x200000;
+    // Keep the stack far above the code window: far-call tests build >1MB of
+    // code, which would overlap a stack parked at 0x200000.
+    const STACK: u64 = 0x8000000;
     const STACK_SIZE: u64 = 0x40000;
     let n = args.len();
     let ret = CODE + code.len() as u64; // emu stops when control returns here
@@ -3776,7 +3778,9 @@ fn run_allstack_entry(
         NativeArch::X86_64 => {
             use unicorn_engine::RegisterX86;
             let mut uc = Unicorn::new(Arch::X86, Mode::MODE_64).unwrap();
-            uc.mem_map(CODE, 0x40000, Prot::ALL).unwrap();
+            // Far-call tests exceed the old 256KB fixed code window.
+            let code_len = ((code.len() + 0xFFF) & !0xFFF).max(0x40000) as u64;
+            uc.mem_map(CODE, code_len, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
             // AllStack (x86): every param is read from the incoming stack.
@@ -3797,7 +3801,10 @@ fn run_allstack_entry(
         NativeArch::AArch64 => {
             use unicorn_engine::RegisterARM64;
             let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
-            uc.mem_map(CODE, 0x40000, Prot::ALL).unwrap();
+            // Far-call megabinary-scale tests exceed the old 256KB fixed code
+            // window; round the mapping up to the actual code size.
+            let code_len = ((code.len() + 0xFFF) & !0xFFF).max(0x40000) as u64;
+            uc.mem_map(CODE, code_len, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
             // AllStack (aarch64): every param is on the incoming stack, matching
@@ -3818,7 +3825,9 @@ fn run_allstack_entry(
         NativeArch::Riscv64 => {
             use unicorn_engine::RegisterRISCV;
             let mut uc = Unicorn::new(Arch::RISCV, Mode::RISCV64).unwrap();
-            uc.mem_map(CODE, 0x40000, Prot::ALL).unwrap();
+            // Far-call tests exceed the old 256KB fixed code window.
+            let code_len = ((code.len() + 0xFFF) & !0xFFF).max(0x40000) as u64;
+            uc.mem_map(CODE, code_len, Prot::ALL).unwrap();
             uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
             uc.mem_write(CODE, code).unwrap();
             // RISC-V AllStack: the callee's FP is the caller's SP after its
@@ -4082,7 +4091,7 @@ fn test_unicorn_aarch64_return_call_ref() {
 // load/store-width family under the `Raw` mem_base (address == host pointer, so
 // the test uses an address inside Unicorn's mapped stack region).
 
-const LSW_ADDR: i32 = 0x21_0000; // inside the Unicorn STACK mapping (0x200000..0x240000)
+const LSW_ADDR: i32 = 0x801_0000; // inside the Unicorn STACK mapping (0x8000000..0x8040000)
 const LSW_VAL: u64 = 0x8090_A0B0_C0D0_E0F0;
 
 fn loadstore_widths_wasm() -> Vec<u8> {
@@ -10351,13 +10360,21 @@ fn mem_threading_wasm() -> Vec<u8> {
     let n_params = 108u32;
     let mut module = Module::new();
     let mut types = TypeSection::new();
-    types.ty().function(vec![ValType::I64; n_params as usize], [ValType::I64]);
+    types
+        .ty()
+        .function(vec![ValType::I64; n_params as usize], [ValType::I64]);
     module.section(&types);
     let mut functions = FunctionSection::new();
     functions.function(0);
     module.section(&functions);
     let mut mems = MemorySection::new();
-    mems.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    mems.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
     module.section(&mems);
     let mut exports = ExportSection::new();
     exports.export("f", ExportKind::Func, 0);
@@ -10367,14 +10384,22 @@ fn mem_threading_wasm() -> Vec<u8> {
     // mem[param[1] as u32] = param[0]
     f.instruction(&Instruction::LocalGet(1));
     f.instruction(&Instruction::LocalGet(0));
-    f.instruction(&Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+    f.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+        offset: 0,
+        align: 0,
+        memory_index: 0,
+    }));
     // Read a few more params (touch high-index slots) then load back.
     for i in 50..54 {
         f.instruction(&Instruction::LocalGet(i));
         f.instruction(&Instruction::Drop);
     }
     f.instruction(&Instruction::LocalGet(1));
-    f.instruction(&Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+    f.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+        offset: 0,
+        align: 0,
+        memory_index: 0,
+    }));
     f.instruction(&Instruction::LocalGet(2));
     f.instruction(&Instruction::I64Add);
     f.instruction(&Instruction::End);
@@ -10387,13 +10412,17 @@ fn mem_threading_wasm() -> Vec<u8> {
 /// data cell we place in the Unicorn map. Returns (code, entry_off, mem_cell_addr).
 fn compile_aarch64_membase(wasm: &[u8]) -> (Vec<u8>, u64, u64) {
     use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
-    use portal_solutions_blitz_aarch64::{naive, sysv, AArch64Arch, AArch64Label};
+    use portal_solutions_blitz_aarch64::{AArch64Arch, AArch64Label, naive, sysv};
 
     let (sigs_wp, _enc, fsigs) = parse_sigs(wasm);
-    let call_params: Vec<u32> =
-        fsigs.iter().map(|&ti| sigs_wp[ti as usize].params().len() as u32).collect();
-    let call_results: Vec<u32> =
-        fsigs.iter().map(|&ti| sigs_wp[ti as usize].results().len() as u32).collect();
+    let call_params: Vec<u32> = fsigs
+        .iter()
+        .map(|&ti| sigs_wp[ti as usize].params().len() as u32)
+        .collect();
+    let call_results: Vec<u32> = fsigs
+        .iter()
+        .map(|&ti| sigs_wp[ti as usize].results().len() as u32)
+        .collect();
     let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
     for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
         if let wasmparser::Payload::CodeSectionEntry(body) = payload {
@@ -10414,8 +10443,14 @@ fn compile_aarch64_membase(wasm: &[u8]) -> (Vec<u8>, u64, u64) {
     state.mem_base = naive::MemBase::WasmMemSymbol;
     for op in ops {
         sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
-            &mut out, &mut ctx, AArch64Arch::default(), &mut state, &[], &op.unwrap(),
-            &mut reencoder, 0,
+            &mut out,
+            &mut ctx,
+            AArch64Arch::default(),
+            &mut state,
+            &[],
+            &op.unwrap(),
+            &mut reencoder,
+            0,
         )
         .unwrap();
     }
@@ -10432,7 +10467,10 @@ fn compile_aarch64_membase(wasm: &[u8]) -> (Vec<u8>, u64, u64) {
 
 #[test]
 fn test_unicorn_aarch64_allstack_mem_threading_108() {
-    use unicorn_engine::{RegisterARM64, Unicorn, unicorn_const::{Arch, Mode, Prot}};
+    use unicorn_engine::{
+        RegisterARM64, Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
+    };
     const CODE: u64 = 0x100000;
     const STACK: u64 = 0x200000;
     const STACK_SIZE: u64 = 0x40000;
@@ -10493,7 +10531,13 @@ fn mem_threading_tailcall_wasm() -> Vec<u8> {
     functions.function(0);
     module.section(&functions);
     let mut mems = MemorySection::new();
-    mems.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    mems.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
     module.section(&mems);
     let mut exports = ExportSection::new();
     exports.export("f", ExportKind::Func, 0);
@@ -10504,7 +10548,11 @@ fn mem_threading_tailcall_wasm() -> Vec<u8> {
     let mut f0 = Function::new([]);
     f0.instruction(&Instruction::LocalGet(1));
     f0.instruction(&Instruction::LocalGet(0));
-    f0.instruction(&Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+    f0.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+        offset: 0,
+        align: 0,
+        memory_index: 0,
+    }));
     for i in 0..n_params {
         f0.instruction(&Instruction::LocalGet(i));
     }
@@ -10515,7 +10563,11 @@ fn mem_threading_tailcall_wasm() -> Vec<u8> {
     // f1: load mem[p1] back, add p2, return
     let mut f1 = Function::new([]);
     f1.instruction(&Instruction::LocalGet(1));
-    f1.instruction(&Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+    f1.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+        offset: 0,
+        align: 0,
+        memory_index: 0,
+    }));
     f1.instruction(&Instruction::LocalGet(2));
     f1.instruction(&Instruction::I64Add);
     f1.instruction(&Instruction::End);
@@ -10526,7 +10578,10 @@ fn mem_threading_tailcall_wasm() -> Vec<u8> {
 
 #[test]
 fn test_unicorn_aarch64_allstack_mem_threading_tailcall_108() {
-    use unicorn_engine::{RegisterARM64, Unicorn, unicorn_const::{Arch, Mode, Prot}};
+    use unicorn_engine::{
+        RegisterARM64, Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
+    };
     const CODE: u64 = 0x100000;
     const STACK: u64 = 0x200000;
     const STACK_SIZE: u64 = 0x40000;
@@ -10623,6 +10678,106 @@ fn test_unicorn_aarch64_allstack_multiresult_call_108() {
             "n={n}"
         );
     }
+}
+
+/// A `call` to a callee whose native entry is more than ±1MB from the call
+/// site (a scale artifact of megabinaries: tens of thousands of functions
+/// place most callees outside a single ADR/JAL (±1MB) displacement).
+/// f0 calls fT directly, 108 params in, 108 results out; the callee echoes
+/// its params and f0 keeps the stack top (result 107 = 214). Padding
+/// functions between caller and callee push the callee's entry >1MB away
+/// from the call site. Internal call targets must be materialized with
+/// ADRP+ADD / AUIPC+ADDI (±4GB/±2GB), never single ADR/JAL.
+fn far_call_wasm(npads: u32, pairs: u32) -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([], [ValType::I64]); // 0: pad/f0 signature
+    let sig: Vec<ValType> = vec![ValType::I64; 108];
+    types.ty().function(sig.clone(), sig.clone()); // 1: callee signature
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0); // f0
+    for _ in 0..npads {
+        functions.function(0); // padding
+    }
+    let target = 1 + npads;
+    functions.function(1); // fT
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    let mut f0 = Function::new([]);
+    for i in 0..108u32 {
+        f0.instruction(&Instruction::I64Const(i as i64 * 2));
+    }
+    f0.instruction(&Instruction::Call(target));
+    f0.instruction(&Instruction::End);
+    code.function(&f0);
+    for _ in 0..npads {
+        let mut f = Function::new([]);
+        for i in 0..pairs {
+            f.instruction(&Instruction::I64Const(i as i64));
+            f.instruction(&Instruction::Drop);
+        }
+        f.instruction(&Instruction::End);
+        code.function(&f);
+    }
+    let mut ft = Function::new([]);
+    for i in 0..108u32 {
+        ft.instruction(&Instruction::LocalGet(i));
+    }
+    ft.instruction(&Instruction::End);
+    code.function(&ft);
+    module.section(&code);
+    module.finish()
+}
+
+#[test]
+fn test_unicorn_aarch64_allstack_far_call_108() {
+    // >1MB between the call site (f0) and the callee (fT), with 108-result
+    // threading across the far direct call.
+    let wasm = far_call_wasm(4096, 128);
+    let (code, entry) = compile_allstack_binary(&wasm, NativeArch::AArch64);
+    assert!(
+        code.len() > 1 << 20,
+        "callee must be >1MB from caller: got {} bytes",
+        code.len()
+    );
+    assert_eq!(
+        run_allstack_entry(NativeArch::AArch64, &code, entry, &[], 2_000_000),
+        214
+    );
+}
+
+#[test]
+fn test_unicorn_riscv64_allstack_far_call_108() {
+    let wasm = far_call_wasm(4096, 128);
+    let (code, entry) = compile_allstack_binary(&wasm, NativeArch::Riscv64);
+    assert!(
+        code.len() > 1 << 20,
+        "callee must be >1MB from caller: got {} bytes",
+        code.len()
+    );
+    assert_eq!(
+        run_allstack_entry(NativeArch::Riscv64, &code, entry, &[], 2_000_000),
+        214
+    );
+}
+
+#[test]
+fn test_unicorn_x86_64_allstack_far_call_108() {
+    let wasm = far_call_wasm(4096, 128);
+    let (code, entry) = compile_allstack_binary(&wasm, NativeArch::X86_64);
+    assert!(
+        code.len() > 1 << 20,
+        "callee must be >1MB from caller: got {} bytes",
+        code.len()
+    );
+    assert_eq!(
+        run_allstack_entry(NativeArch::X86_64, &code, entry, &[], 2_000_000),
+        214
+    );
 }
 
 #[test]

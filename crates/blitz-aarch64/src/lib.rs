@@ -11,7 +11,9 @@
 //! - FP  = Reg(29)/x29 — frame pointer (callee-saved in prologue)
 //! - LR  = Reg(30)/x30 — link register (callee-saved in prologue)
 //! - Locals at `[FP − (N+1)*8]`
-//! - Function call: `adr_label dest, fn_N` + `bl dest`
+//! - Function call: `adrp dest, fn_N` + `add dest, dest, fn_N` + `bl dest`
+//!   (ADRP+ADD reaches ±4GB; a single ADR is ±1MB and silently overflowed on
+//!   >1MB megabinaries, so `load_label_addr` never emits a bare ADR)
 //! - Return: `ret` (branches to LR)
 
 #![no_std]
@@ -34,12 +36,14 @@ pub const LR: Reg = Reg(30);
 
 /// Load the address of `label` into `dest`.
 ///
-/// Internal labels (`Func`/`Indexed`) resolve within the same code buffer, so a
-/// single PC-relative `ADR` (±1MB) suffices. External/ambient symbols become
-/// relocations, and AArch64 Mach-O cannot relocate a plain `ADR` — they require
-/// an `ADRP`+`ADD` pair (`PAGE21` + `PAGEOFF12`, ±4GB). Use this everywhere an
-/// external symbol address is materialized so the emitted instruction matches
-/// the relocation the object writer produces.
+/// All labels (internal `Func`/`Indexed` and external/ambient alike) are
+/// materialized as an `ADRP`+`ADD` pair (±4GB). Internal labels are resolved
+/// in-buffer by the binary writer (page delta between two in-buffer offsets,
+/// valid under the page-aligned load base the JIT path guarantees); external
+/// symbols become relocations (`PAGE21` + `PAGEOFF12`). A single `ADR`
+/// (±1MB) silently overflowed its 21-bit immediate once a binary's text
+/// exceeded ~1MB (e.g. 227k-function megabinaries), producing wild branch
+/// targets — do not reintroduce it here.
 pub fn load_label_addr<W, Context>(
     w: &mut W,
     ctx: &mut Context,
@@ -50,13 +54,8 @@ pub fn load_label_addr<W, Context>(
 where
     W: portal_solutions_asm_aarch64::out::Writer<AArch64Label, Context>,
 {
-    match &label {
-        AArch64Label::External { .. } | AArch64Label::Ambient { .. } => {
-            w.adrp_label(ctx, arch, dest, label.clone())?;
-            w.add_lo12_label(ctx, arch, dest, dest, label)
-        }
-        _ => w.adr_label(ctx, arch, dest, label),
-    }
+    w.adrp_label(ctx, arch, dest, label.clone())?;
+    w.add_lo12_label(ctx, arch, dest, dest, label)
 }
 
 /// Label types for AArch64 code generation.

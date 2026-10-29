@@ -1997,7 +1997,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                         }
                         None => {
                             let idx = fn_idx_val - func_imports.len() as u32;
-                            self.adr_label(ctx, arch, &reg(T0), AArch64Label::Func { r#fn: idx })?;
+                            crate::load_label_addr(self, ctx, arch, &reg(T0), AArch64Label::Func { r#fn: idx })?;
                             self.bl(ctx, arch, &reg(T0))?;
                         }
                     },

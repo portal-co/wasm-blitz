@@ -151,7 +151,10 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
         if let Some(reg) = target_reg {
             self.jalr(ctx, arch, &RA, &reg, 0)?;
         } else {
-            self.jal_label(ctx, arch, &RA, target.unwrap())?;
+            // JAL is only ±1MB; a megabinary's functions can be farther
+            // apart. `la` (AUIPC+ADDI, ±2GB) + jalr reaches any target.
+            self.la_label(ctx, arch, &T1, target.unwrap())?;
+            self.jalr(ctx, arch, &RA, &T1, 0)?;
         }
         self.ld(ctx, arch, &T3, &mem64(SP, (slots * 8) as i32))?;
         if !is_import && results > 0 && results <= arity {
@@ -212,14 +215,20 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
         if let Some(reg) = target_reg {
             self.jalr(ctx, arch, &Reg(0), &reg, 0)
         } else {
-            self.jal_label(ctx, arch, &Reg(0), target.unwrap())
+            // Same far-range concern as the call path: la + jalr (±2GB).
+            self.la_label(ctx, arch, &T1, target.unwrap())?;
+            self.jalr(ctx, arch, &Reg(0), &T1, 0)
         }
     }
 
     /// Load local N from the FP-relative frame into `dest`.
-    fn sysv_load_local(&mut self, ctx: &mut Context, arch: RiscV64Arch, dest: Reg, n: usize)
-        -> Result<(), Self::Error>
-    {
+    fn sysv_load_local(
+        &mut self,
+        ctx: &mut Context,
+        arch: RiscV64Arch,
+        dest: Reg,
+        n: usize,
+    ) -> Result<(), Self::Error> {
         // Frame layout (from FP downward):
         //   [FP-8]  = local 0    ← same as naive, regalloc-compatible
         //   [FP-16] = local 1
