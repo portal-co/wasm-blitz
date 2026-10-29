@@ -10217,7 +10217,9 @@ fn many_locals_wide_call_wasm(n_locals: u32, call_arity: u32) -> Vec<u8> {
     let mut module = Module::new();
     let mut types = TypeSection::new();
     types.ty().function([], [ValType::I64]); // f0
-    types.ty().function(vec![ValType::I64; call_arity as usize], [ValType::I64]); // f1
+    types
+        .ty()
+        .function(vec![ValType::I64; call_arity as usize], [ValType::I64]); // f1
     module.section(&types);
     let mut functions = FunctionSection::new();
     functions.function(0);
@@ -10260,7 +10262,9 @@ fn many_locals_wide_call_wasm(n_locals: u32, call_arity: u32) -> Vec<u8> {
 
 fn many_locals_wide_call_expected(n_locals: u32, call_arity: u32) -> u64 {
     let local_vals: Vec<u64> = (0..n_locals).map(|i| i as u64 + 1).collect();
-    let call_result: u64 = (0..call_arity).map(|i| local_vals[(i % n_locals) as usize]).sum();
+    let call_result: u64 = (0..call_arity)
+        .map(|i| local_vals[(i % n_locals) as usize])
+        .sum();
     let local_sum: u64 = local_vals.iter().sum();
     call_result + local_sum
 }
@@ -10281,7 +10285,11 @@ fn test_unicorn_aarch64_allstack_many_locals_wide_call() {
         let wasm = many_locals_wide_call_wasm(120, arity);
         let (code, entry) = compile_allstack_binary(&wasm, NativeArch::AArch64);
         let got = run_allstack_entry(NativeArch::AArch64, &code, entry, &[], 500_000);
-        assert_eq!(got, many_locals_wide_call_expected(120, arity), "arity {arity}");
+        assert_eq!(
+            got,
+            many_locals_wide_call_expected(120, arity),
+            "arity {arity}"
+        );
     }
 }
 
@@ -10293,4 +10301,352 @@ fn test_unicorn_riscv64_allstack_many_locals_wide_call() {
         run_allstack_entry(NativeArch::Riscv64, &code, entry, &[], 500_000),
         many_locals_wide_call_expected(120, 108)
     );
+}
+
+// ---------------------------------------------------------------------------
+// Megabinary-shaped repro: 108 params, 0 locals, i64.load/store through
+// `__wasm_mem` (MemBase::WasmMemSymbol), return_call threading the full
+// register file. Mirrors the speet busybox slot functions.
+// ---------------------------------------------------------------------------
+
+/// Patch an AArch64 ADRP+ADD external reloc pair to point at `sym_addr`,
+/// given the code's load base. Returns the patched bytes.
+fn patch_aarch64_relocs(
+    mut bytes: Vec<u8>,
+    relocs: &[portal_solutions_asm_aarch64::out::bin::UnresolvedReloc<
+        portal_solutions_blitz_aarch64::AArch64Label,
+    >],
+    code_base: u64,
+    sym_addr: u64,
+) -> Vec<u8> {
+    use portal_solutions_asm_aarch64::out::bin::AsmRelocKind;
+    for r in relocs {
+        let off = r.byte_offset;
+        let insn_addr = code_base + off as u64;
+        let insn = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
+        let patched = match r.kind {
+            AsmRelocKind::A64AdrpPage21 => {
+                let page_delta = ((sym_addr & !0xFFF) as i64 - (insn_addr & !0xFFF) as i64) >> 12;
+                assert!(page_delta.abs() < (1 << 20), "ADRP out of range");
+                let imm = ((page_delta as u32) & 0x1F_FFFF) as u64;
+                let immlo = (imm & 3) << 29;
+                let immhi = (imm >> 2) << 5;
+                (insn & !0x60FF_FFE0) | (immlo as u32) | (immhi as u32)
+            }
+            AsmRelocKind::A64AddAbsLo12 => {
+                let lo12 = (sym_addr & 0xFFF) as u32;
+                (insn & !0x3FFC00) | (lo12 << 10)
+            }
+            other => panic!("unexpected reloc kind {other:?}"),
+        };
+        bytes[off..off + 4].copy_from_slice(&patched.to_le_bytes());
+    }
+    bytes
+}
+
+/// One function: 108 i64 params, 0 locals. Stores param[0] to mem[param[1]],
+/// loads it back, adds param[2], and returns. Memory ops interleave with
+/// param reads so a base leak into a param slot would corrupt the result.
+fn mem_threading_wasm() -> Vec<u8> {
+    let n_params = 108u32;
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function(vec![ValType::I64; n_params as usize], [ValType::I64]);
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+    let mut mems = MemorySection::new();
+    mems.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    module.section(&mems);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    let mut f = Function::new([]);
+    // mem[param[1] as u32] = param[0]
+    f.instruction(&Instruction::LocalGet(1));
+    f.instruction(&Instruction::LocalGet(0));
+    f.instruction(&Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+    // Read a few more params (touch high-index slots) then load back.
+    for i in 50..54 {
+        f.instruction(&Instruction::LocalGet(i));
+        f.instruction(&Instruction::Drop);
+    }
+    f.instruction(&Instruction::LocalGet(1));
+    f.instruction(&Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+    f.instruction(&Instruction::LocalGet(2));
+    f.instruction(&Instruction::I64Add);
+    f.instruction(&Instruction::End);
+    code.function(&f);
+    module.section(&code);
+    module.finish()
+}
+
+/// Compile with `MemBase::WasmMemSymbol` and patch `__wasm_mem` relocs to a
+/// data cell we place in the Unicorn map. Returns (code, entry_off, mem_cell_addr).
+fn compile_aarch64_membase(wasm: &[u8]) -> (Vec<u8>, u64, u64) {
+    use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+    use portal_solutions_blitz_aarch64::{naive, sysv, AArch64Arch, AArch64Label};
+
+    let (sigs_wp, _enc, fsigs) = parse_sigs(wasm);
+    let call_params: Vec<u32> =
+        fsigs.iter().map(|&ti| sigs_wp[ti as usize].params().len() as u32).collect();
+    let call_results: Vec<u32> =
+        fsigs.iter().map(|&ti| sigs_wp[ti as usize].results().len() as u32).collect();
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut reencoder = RoundtripReencoder;
+    let mut ctx = ();
+    let mut out = AArch64Writer::<AArch64Label>::new();
+    let mut state = naive::State::default();
+    state.call_abi = naive::CallAbi::AllStack;
+    state.call_params = call_params;
+    state.call_results = call_results;
+    state.sig_params = sigs_wp.iter().map(|s| s.params().len() as u32).collect();
+    state.sig_results = sigs_wp.iter().map(|s| s.results().len() as u32).collect();
+    state.mem_base = naive::MemBase::WasmMemSymbol;
+    for op in ops {
+        sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+            &mut out, &mut ctx, AArch64Arch::default(), &mut state, &[], &op.unwrap(),
+            &mut reencoder, 0,
+        )
+        .unwrap();
+    }
+    let (bytes, labels, relocs) = out.into_parts_with_relocs();
+    let entry = labels[&AArch64Label::Indexed { idx: 0x8000_0000 }] as u64;
+    // __wasm_mem cell lives in a data page; the guest memory itself follows it.
+    const CODE: u64 = 0x100000;
+    const CELL: u64 = 0x300000;
+    const GUEST_MEM: u64 = 0x310000;
+    let bytes = patch_aarch64_relocs(bytes, &relocs, CODE, CELL);
+    let _ = GUEST_MEM;
+    (bytes, entry, CELL)
+}
+
+#[test]
+fn test_unicorn_aarch64_allstack_mem_threading_108() {
+    use unicorn_engine::{RegisterARM64, Unicorn, unicorn_const::{Arch, Mode, Prot}};
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x200000;
+    const STACK_SIZE: u64 = 0x40000;
+    const CELL: u64 = 0x300000;
+    const GUEST_MEM: u64 = 0x310000;
+
+    let wasm = mem_threading_wasm();
+    let (code, entry, cell) = compile_aarch64_membase(&wasm);
+    assert_eq!(cell, CELL);
+
+    let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+    uc.mem_map(CODE, 0x40000, Prot::ALL).unwrap();
+    uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+    uc.mem_map(CELL, 0x20000, Prot::ALL).unwrap();
+    uc.mem_write(CODE, &code).unwrap();
+    // __wasm_mem cell holds the guest memory base.
+    uc.mem_write(CELL, &GUEST_MEM.to_le_bytes()).unwrap();
+
+    // 108 params on the stack: param0 = 40 (value), param1 = 64 (guest addr),
+    // param2 = 2 (addend), rest = i+1000 (distinct sentinels).
+    let n = 108u64;
+    let frame = ((n + 2) * 8 + 15) & !15;
+    let sp = (STACK + STACK_SIZE - frame - 16) & !15;
+    let ret = CODE + code.len() as u64;
+    // AArch64 AllStack: LR = return address; param i at [sp + i*8].
+    for i in 0..n {
+        let v = match i {
+            0 => 40u64,
+            1 => 64u64,
+            2 => 2u64,
+            _ => i + 1000,
+        };
+        uc.mem_write(sp + i * 8, &v.to_le_bytes()).unwrap();
+    }
+    uc.reg_write(RegisterARM64::SP, sp).unwrap();
+    uc.reg_write(RegisterARM64::LR, ret).unwrap();
+    uc.emu_start(CODE + entry, ret, 0, 100_000).unwrap();
+    // Expected: mem[64] = 40; load → 40; + param[2]=2 → 42.
+    assert_eq!(uc.reg_read(RegisterARM64::X0).unwrap(), 42);
+    // Guest memory cell really written.
+    let mut buf = [0u8; 8];
+    uc.mem_read(GUEST_MEM + 64, &mut buf).unwrap();
+    assert_eq!(u64::from_le_bytes(buf), 40);
+}
+
+/// Two functions, 108 params each, threaded by return_call, with interleaved
+/// memory ops. f0: mem[p1]=p0; return_call f1(p0..p107). f1: loads mem[p1],
+/// adds p2, returns. Exercises the AllStack tail-call + memory interplay.
+fn mem_threading_tailcall_wasm() -> Vec<u8> {
+    let n_params = 108u32;
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    let sig = vec![ValType::I64; n_params as usize];
+    types.ty().function(sig.clone(), [ValType::I64]);
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    functions.function(0);
+    module.section(&functions);
+    let mut mems = MemorySection::new();
+    mems.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    module.section(&mems);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+
+    // f0: mem[p1] = p0; touch high params; return_call f1(p0..p107)
+    let mut f0 = Function::new([]);
+    f0.instruction(&Instruction::LocalGet(1));
+    f0.instruction(&Instruction::LocalGet(0));
+    f0.instruction(&Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+    for i in 0..n_params {
+        f0.instruction(&Instruction::LocalGet(i));
+    }
+    f0.instruction(&Instruction::ReturnCall(1));
+    f0.instruction(&Instruction::End);
+    code.function(&f0);
+
+    // f1: load mem[p1] back, add p2, return
+    let mut f1 = Function::new([]);
+    f1.instruction(&Instruction::LocalGet(1));
+    f1.instruction(&Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+    f1.instruction(&Instruction::LocalGet(2));
+    f1.instruction(&Instruction::I64Add);
+    f1.instruction(&Instruction::End);
+    code.function(&f1);
+    module.section(&code);
+    module.finish()
+}
+
+#[test]
+fn test_unicorn_aarch64_allstack_mem_threading_tailcall_108() {
+    use unicorn_engine::{RegisterARM64, Unicorn, unicorn_const::{Arch, Mode, Prot}};
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x200000;
+    const STACK_SIZE: u64 = 0x40000;
+    const CELL: u64 = 0x300000;
+    const GUEST_MEM: u64 = 0x310000;
+
+    let wasm = mem_threading_tailcall_wasm();
+    let (code, entry, _) = compile_aarch64_membase(&wasm);
+
+    let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+    uc.mem_map(CODE, 0x40000, Prot::ALL).unwrap();
+    uc.mem_map(STACK, STACK_SIZE, Prot::ALL).unwrap();
+    uc.mem_map(CELL, 0x20000, Prot::ALL).unwrap();
+    uc.mem_write(CODE, &code).unwrap();
+    uc.mem_write(CELL, &GUEST_MEM.to_le_bytes()).unwrap();
+
+    let n = 108u64;
+    let frame = ((n + 2) * 8 + 15) & !15;
+    let sp = (STACK + STACK_SIZE - frame - 16) & !15;
+    let ret = CODE + code.len() as u64;
+    for i in 0..n {
+        let v = match i {
+            0 => 40u64,
+            1 => 64u64,
+            2 => 2u64,
+            _ => i + 1000,
+        };
+        uc.mem_write(sp + i * 8, &v.to_le_bytes()).unwrap();
+    }
+    uc.reg_write(RegisterARM64::SP, sp).unwrap();
+    uc.reg_write(RegisterARM64::LR, ret).unwrap();
+    uc.emu_start(CODE + entry, ret, 0, 100_000).unwrap();
+    assert_eq!(uc.reg_read(RegisterARM64::X0).unwrap(), 42);
+    let mut buf = [0u8; 8];
+    uc.mem_read(GUEST_MEM + 64, &mut buf).unwrap();
+    assert_eq!(u64::from_le_bytes(buf), 40);
+}
+
+/// Multi-result call round-trip: f1 is (n params) -> n results returning
+/// its params unchanged; f0 calls it with args = (i*2) and returns
+/// result[n-1] (the deepest result — index 0 pushed first, so result n-1 is
+/// on top after the call: drop nothing, it's already the top).
+/// If the AllStack call ABI only round-trips 2 results, result[n-1] for
+/// n > 2 is stale stack garbage.
+fn multiresult_call_wasm(n: u32) -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    let sig: Vec<ValType> = vec![ValType::I64; n as usize];
+    types.ty().function([], [ValType::I64]); // f0
+    types.ty().function(sig.clone(), sig.clone()); // f1
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    functions.function(1);
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+
+    // Result n-1 is the top of stack after the call (results pushed in
+    // declaration order, so result n-1 is pushed last).
+    let mut f0 = Function::new([]);
+    for i in 0..n {
+        f0.instruction(&Instruction::I64Const(i as i64 * 2));
+    }
+    f0.instruction(&Instruction::Call(1));
+    f0.instruction(&Instruction::End);
+    code.function(&f0);
+
+    // f1: return params unchanged — push local 0..107 in order, then end.
+    // (Results are the operand stack contents at return.)
+    let mut f1 = Function::new([]);
+    for i in 0..n {
+        f1.instruction(&Instruction::LocalGet(i));
+    }
+    f1.instruction(&Instruction::End);
+    code.function(&f1);
+    module.section(&code);
+    module.finish()
+}
+
+#[test]
+fn test_unicorn_aarch64_allstack_multiresult_call_108() {
+    // n=2 must pass even before the fix (X0/X1 round-trip); n=4 and n=108
+    // require stack-carried results.
+    for n in [2u32, 4, 108] {
+        let wasm = multiresult_call_wasm(n);
+        let (code, entry) = compile_allstack_binary(&wasm, NativeArch::AArch64);
+        // f1 returns param[i] = i*2; f0 keeps result[n-1] = (n-1)*2.
+        assert_eq!(
+            run_allstack_entry(NativeArch::AArch64, &code, entry, &[], 500_000),
+            (n as u64 - 1) * 2,
+            "n={n}"
+        );
+    }
+}
+
+#[test]
+fn test_unicorn_riscv64_allstack_multiresult_call_108() {
+    for n in [2u32, 4, 108] {
+        let wasm = multiresult_call_wasm(n);
+        let (code, entry) = compile_allstack_binary(&wasm, NativeArch::Riscv64);
+        assert_eq!(
+            run_allstack_entry(NativeArch::Riscv64, &code, entry, &[], 500_000),
+            (n as u64 - 1) * 2,
+            "n={n}"
+        );
+    }
+}
+
+#[test]
+fn test_unicorn_x86_64_allstack_multiresult_call_108() {
+    for n in [2u32, 4, 108] {
+        let wasm = multiresult_call_wasm(n);
+        let (code, entry) = compile_allstack_binary(&wasm, NativeArch::X86_64);
+        assert_eq!(
+            run_allstack_entry(NativeArch::X86_64, &code, entry, &[], 500_000),
+            (n as u64 - 1) * 2,
+            "n={n}"
+        );
+    }
 }

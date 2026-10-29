@@ -395,19 +395,45 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
             self.mov(ctx, arch, &r15, &mem64(RSP, stack_args * 8))?; // restore base
             self.lea(ctx, arch, &RSP, &mem64(r15, arity * 8))?; // pop args
         } else {
+            // Internal AllStack: every param on the outgoing stack. The area
+            // is sized for `max(arity, results)` slots because the callee's
+            // epilogue writes its results back into the incoming-args area
+            // (see `sysv_emit_epilogue`), plus one slot preserving the
+            // operand base across the call.
+            let slots = arity.max(results);
             self.mov(ctx, arch, &RSP, &r15)?;
-            self.mov64(ctx, arch, &RAX, (arity as u64 + 1) * 8)?;
+            self.mov64(ctx, arch, &RAX, (slots as u64 + 1) * 8)?;
             self.sub(ctx, arch, &RSP, &RAX)?;
             self.and(ctx, arch, &RSP, &lit((-16i64) as u64))?;
             for i in 0..arity {
                 self.mov(ctx, arch, &RAX, &mem64(r15, (arity - 1 - i) * 8))?;
                 self.mov(ctx, arch, &mem64(RSP, i * 8), &RAX)?;
             }
-            self.mov(ctx, arch, &mem64(RSP, arity * 8), &r15)?; // save base above args
+            self.mov(ctx, arch, &mem64(RSP, slots * 8), &r15)?; // save base above args
             self.lea_label(ctx, arch, &RAX, target)?;
             self.call(ctx, arch, &RAX)?;
-            self.mov(ctx, arch, &r15, &mem64(RSP, arity * 8))?; // restore base
-            self.lea(ctx, arch, &RSP, &mem64(r15, arity * 8))?; // pop args
+            self.mov(ctx, arch, &r15, &mem64(RSP, slots * 8))?; // restore base
+            if results > 0 && results <= arity {
+                // The callee left result i at [RSP + i*8]. Copy result i to
+                // its final operand-stack slot [r15 + (arity-i-1)*8]; source
+                // and destination are disjoint when results <= arity. Result
+                // 0 lands deepest, result n-1 on top.
+                for i in 0..results {
+                    self.mov(ctx, arch, &RAX, &mem64(RSP, i * 8))?;
+                    self.mov(ctx, arch, &mem64(r15, (arity - 1 - i) * 8), &RAX)?;
+                }
+                // Pop args, push results: net SP change is (arity - results) * 8.
+                self.lea(ctx, arch, &RSP, &mem64(r15, (arity - results) * 8))?;
+            } else {
+                // Legacy register path: pop args, push result 0 (imports can
+                // only return through RAX, and results > arity cannot be
+                // recovered from the outgoing area without an overlap).
+                self.lea(ctx, arch, &RSP, &mem64(r15, arity * 8))?;
+                if results > 0 {
+                    self.push(ctx, arch, &RAX)?;
+                }
+            }
+            return Ok(());
         }
         if results > 0 {
             self.push(ctx, arch, &RAX)?;
@@ -579,6 +605,24 @@ pub trait SysVWriterExt<Context>: Writer<X64Label, Context> + NaiveExt<Context> 
         // regalloc-held result isn't silently skipped.
         self.sysv_flush_regalloc(ctx, arch, state)?;
         let n = state.ret_count;
+        // AllStack result return: copy *all* results into the incoming-args
+        // area ([RBP + 16 + scr_extra + i*8], dead by now) so the caller can
+        // recover them onto its operand stack. The incoming area is sized by
+        // the caller for `max(arity, results)` slots (see
+        // `sysv_emit_marshalled_call`), so any result count fits.
+        if matches!(state.call_abi, CallAbi::AllStack) && n > 0 {
+            let scr_extra: u32 = if state.shard.is_some() { 8 } else { 0 };
+            for i in 0..n {
+                let src = ((n - 1 - i) * 8) as u32;
+                self.mov(ctx, arch, &Reg(11), &mem64(RSP, src))?;
+                self.mov(
+                    ctx,
+                    arch,
+                    &mem64(RBP, 16 + scr_extra + (i as u32) * 8),
+                    &Reg(11),
+                )?;
+            }
+        }
         if n > 0 {
             self.mov(ctx, arch, &RAX, &mem64(RSP, ((n - 1) * 8) as u32))?;
         }

@@ -108,19 +108,37 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
     /// Marshal a normal call. Internal targets receive every parameter in an
     /// AllStack outgoing area; imports retain the RISC-V psABI register split.
     fn sysv_emit_marshalled_call(
-        &mut self, ctx: &mut Context, arch: RiscV64Arch,
-        target: Option<RiscvLabel>, target_reg: Option<Reg>,
-        arity: u32, results: u32, is_import: bool,
+        &mut self,
+        ctx: &mut Context,
+        arch: RiscV64Arch,
+        target: Option<RiscvLabel>,
+        target_reg: Option<Reg>,
+        arity: u32,
+        results: u32,
+        is_import: bool,
     ) -> Result<(), Self::Error>
-    where Self: Sized {
+    where
+        Self: Sized,
+    {
         self.mv(ctx, arch, &T3, &SP)?;
-        let stack_args = if is_import { arity.saturating_sub(8) } else { arity };
+        let slots = if is_import {
+            arity
+        } else {
+            // Internal AllStack: the callee's epilogue writes its results back
+            // into the incoming-args area, so size for max(arity, results).
+            arity.max(results)
+        };
         // One additional slot preserves the operand base across the call. Round
         // to 16 bytes so host imports retain psABI stack alignment.
-        let bytes = (((stack_args + 1) * 8 + 15) & !15) as i32;
+        let bytes = (((slots + 1) * 8 + 15) & !15) as i32;
         if is_import {
             for i in 0..arity.min(8) {
-                self.ld(ctx, arch, &ARG_REGS[i as usize], &mem64(T3, ((arity - 1 - i) * 8) as i32))?;
+                self.ld(
+                    ctx,
+                    arch,
+                    &ARG_REGS[i as usize],
+                    &mem64(T3, ((arity - 1 - i) * 8) as i32),
+                )?;
             }
         }
         self.addi(ctx, arch, &SP, &SP, -bytes)?;
@@ -129,28 +147,53 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
             let dst = if is_import { (i - 8) * 8 } else { i * 8 };
             self.sd(ctx, arch, &T1, &mem64(SP, dst as i32))?;
         }
-        self.sd(ctx, arch, &T3, &mem64(SP, (stack_args * 8) as i32))?;
+        self.sd(ctx, arch, &T3, &mem64(SP, (slots * 8) as i32))?;
         if let Some(reg) = target_reg {
             self.jalr(ctx, arch, &RA, &reg, 0)?;
         } else {
             self.jal_label(ctx, arch, &RA, target.unwrap())?;
         }
-        self.ld(ctx, arch, &T3, &mem64(SP, (stack_args * 8) as i32))?;
-        // Discard exactly the consumed operand args; padding is discarded too.
-        self.addi(ctx, arch, &SP, &T3, (arity * 8) as i32)?;
-        if results > 1 { push(self, ctx, arch, A1)?; }
-        if results > 0 { push(self, ctx, arch, A0)?; }
+        self.ld(ctx, arch, &T3, &mem64(SP, (slots * 8) as i32))?;
+        if !is_import && results > 0 && results <= arity {
+            // The callee left result i at [SP + i*8]. Copy result i to its
+            // final operand-stack slot [T3 + (arity-1-i)*8]; source and
+            // destination are disjoint when results <= arity. Result 0 lands
+            // deepest, result n-1 on top.
+            for i in 0..results {
+                self.ld(ctx, arch, &T1, &mem64(SP, (i * 8) as i32))?;
+                self.sd(ctx, arch, &T1, &mem64(T3, ((arity - 1 - i) * 8) as i32))?;
+            }
+            // Discard args, keep results: net SP change is (arity - results)*8.
+            self.addi(ctx, arch, &SP, &T3, ((arity - results) * 8) as i32)?;
+        } else {
+            // Legacy register path (imports, or results > arity which cannot
+            // be recovered from the outgoing area without an overlap).
+            self.addi(ctx, arch, &SP, &T3, (arity * 8) as i32)?;
+            if results > 1 {
+                push(self, ctx, arch, A1)?;
+            }
+            if results > 0 {
+                push(self, ctx, arch, A0)?;
+            }
+        }
         Ok(())
     }
 
     /// Emit a genuine internal AllStack tail call. The current prologue sets FP
     /// to the incoming caller SP, therefore incoming parameters start at FP+0.
     fn sysv_emit_tail_call(
-        &mut self, ctx: &mut Context, arch: RiscV64Arch,
-        target: Option<RiscvLabel>, target_reg: Option<Reg>, arity: u32,
-        frame_sz: i32, shard: bool,
+        &mut self,
+        ctx: &mut Context,
+        arch: RiscV64Arch,
+        target: Option<RiscvLabel>,
+        target_reg: Option<Reg>,
+        arity: u32,
+        frame_sz: i32,
+        shard: bool,
     ) -> Result<(), Self::Error>
-    where Self: Sized {
+    where
+        Self: Sized,
+    {
         self.mv(ctx, arch, &T3, &SP)?;
         for i in 0..arity {
             self.ld(ctx, arch, &T1, &mem64(T3, ((arity - 1 - i) * 8) as i32))?;
@@ -281,18 +324,33 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
             // test exercising `num_returns > 1` before relying on this in
             // a real native RISC-V build.
             Instruction::Return => {
+                // Flush first so every result is on the memory stack; the
+                // AllStack result-return copy below reads them by SP offset.
+                flush_regalloc(self, ctx, arch, state)?;
+                // AllStack: copy *all* results into the incoming-args area
+                // ([FP + i*8], dead by now) so the caller can recover them
+                // onto its operand stack. The caller sizes its outgoing area
+                // for max(arity, results) slots (see sysv_emit_marshalled_call).
+                if matches!(state.call_abi, CallAbi::AllStack) && state.num_returns > 0 {
+                    let n = state.num_returns;
+                    let scratch = Reg(6); // t1
+                    for i in 0..n {
+                        let src = ((n - 1 - i) * 8) as i32;
+                        self.ld(ctx, arch, &scratch, &mem64(SP, src))?;
+                        self.sd(ctx, arch, &scratch, &mem64(FP, (i * 8) as i32))?;
+                    }
+                }
                 // Use pop_regalloc_to: pops from regalloc (if active) or memory stack.
                 let scratch = Reg(6); // t1: caller-saved, not PROBE_BASE_REG (t2/Reg(7))
                 for _ in 0..state.num_returns.saturating_sub(2) {
-                    pop_regalloc_to(self, ctx, arch, state, scratch)?;
+                    pop(self, ctx, arch, &scratch)?;
                 }
                 if state.num_returns > 1 {
-                    pop_regalloc_to(self, ctx, arch, state, A1)?;
+                    pop(self, ctx, arch, &A1)?;
                 }
                 if state.num_returns > 0 {
-                    pop_regalloc_to(self, ctx, arch, state, A0)?;
+                    pop(self, ctx, arch, &A0)?;
                 }
-                flush_regalloc(self, ctx, arch, state)?;
                 // Restore RA/old-FP from the frame, then SP := incoming SP (FP).
                 self.mv(ctx, arch, &T2, &FP)?;
                 self.addi(ctx, arch, &SP, &FP, -state.sysv_frame_sz)?;
@@ -308,6 +366,17 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
             // See the matching multi-value-order comment on `Return` above.
             Instruction::End if state.if_stack.is_empty() => {
                 flush_regalloc(self, ctx, arch, state)?;
+                // AllStack: copy *all* results into the incoming-args area
+                // (see the matching note on `Return` above).
+                if matches!(state.call_abi, CallAbi::AllStack) && state.num_returns > 0 {
+                    let n = state.num_returns;
+                    let scratch = Reg(6); // t1
+                    for i in 0..n {
+                        let src = ((n - 1 - i) * 8) as i32;
+                        self.ld(ctx, arch, &scratch, &mem64(SP, src))?;
+                        self.sd(ctx, arch, &scratch, &mem64(FP, (i * 8) as i32))?;
+                    }
+                }
                 let scratch = Reg(6); // t1
                 for _ in 0..state.num_returns.saturating_sub(2) {
                     pop(self, ctx, arch, &scratch)?;

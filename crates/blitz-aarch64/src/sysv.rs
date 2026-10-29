@@ -253,8 +253,13 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 &lit(arity as u64 * WASM_SLOT as u64),
             )?;
         } else {
-            // Internal AllStack: every param on the outgoing stack.
-            let needed = (arity as u64 + 1) * 8;
+            // Internal AllStack: every param on the outgoing stack. The area
+            // is sized for `max(arity, results)` slots because the callee's
+            // epilogue writes its results back into the incoming-args area
+            // (see `sysv_emit_epilogue`), plus one slot preserving the
+            // operand base across the call.
+            let slots = arity.max(results);
+            let needed = (slots as u64 + 1) * 8;
             self.sub(ctx, arch, &reg(s9), &reg(base), &lit(needed))?;
             self.mov_imm(ctx, arch, &reg(s10), (-16i64) as u64)?;
             self.and(ctx, arch, &reg(s9), &reg(s9), &reg(s10))?;
@@ -264,7 +269,7 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 self.ldr(ctx, arch, &reg(s10), &mem_base_disp(base, src))?;
                 self.str(ctx, arch, &reg(s10), &mem_base_disp(SP, (i * 8) as i32))?;
             }
-            let base_slot = (arity * 8) as i32;
+            let base_slot = (slots * 8) as i32;
             self.str(ctx, arch, &reg(base), &mem_base_disp(SP, base_slot))?;
             if let Some(r) = target_reg {
                 self.bl(ctx, arch, &reg(r))?;
@@ -273,13 +278,43 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
                 self.bl(ctx, arch, &reg(s9))?;
             }
             self.ldr(ctx, arch, &reg(base), &mem_base_disp(SP, base_slot))?;
-            self.add(
-                ctx,
-                arch,
-                &reg(SP),
-                &reg(base),
-                &lit(arity as u64 * WASM_SLOT as u64),
-            )?;
+            if results > 0 && results <= arity {
+                // The callee left result i at [SP + i*8]. Copy result i to
+                // its final operand-stack slot [base + (arity-i-1)*SLOT];
+                // source and destination are disjoint when results <= arity.
+                // Result 0 lands deepest, result n-1 on top.
+                for i in 0..results {
+                    self.ldr(ctx, arch, &reg(s10), &mem_base_disp(SP, (i * 8) as i32))?;
+                    let dst = (arity - i - 1) as i32 * WASM_SLOT;
+                    self.str(ctx, arch, &reg(s10), &mem_base_disp(base, dst))?;
+                }
+                // Net SP change: pop args, push results.
+                self.add(
+                    ctx,
+                    arch,
+                    &reg(SP),
+                    &reg(base),
+                    &lit((arity as u64 * WASM_SLOT as u64) - (results as u64 * WASM_SLOT as u64)),
+                )?;
+            } else {
+                // Legacy register path: imports return via X0/X1, and
+                // results > arity cannot be recovered from the outgoing area
+                // without an overlapping copy.
+                self.add(
+                    ctx,
+                    arch,
+                    &reg(SP),
+                    &reg(base),
+                    &lit(arity as u64 * WASM_SLOT as u64),
+                )?;
+                if results > 1 {
+                    self.wasm_push(ctx, arch, Reg(1))?;
+                }
+                if results > 0 {
+                    self.wasm_push(ctx, arch, Reg(0))?;
+                }
+            }
+            return Ok(());
         }
         if results > 1 {
             self.wasm_push(ctx, arch, Reg(1))?;
@@ -436,6 +471,24 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         // regalloc-held result isn't silently skipped.
         self.sysv_flush_regalloc(ctx, arch, state)?;
         let n = state.num_returns;
+        // AllStack result return: copy *all* results into the incoming-args
+        // area ([FP + 16 + scr_extra + i*8], dead by now) so the caller can
+        // recover them onto its operand stack. The incoming area is sized by
+        // the caller for `max(arity, results)` slots (see
+        // `sysv_emit_marshalled_call`), so any result count fits.
+        if matches!(state.call_abi, CallAbi::AllStack) && n > 0 {
+            let scr_extra: i32 = if state.shard.is_some() { 16 } else { 0 };
+            for i in 0..n {
+                let src = (n - 1 - i) as i32 * WASM_SLOT;
+                self.ldr(ctx, arch, &reg(Reg(9)), &mem_base_disp(SP, src))?;
+                self.str(
+                    ctx,
+                    arch,
+                    &reg(Reg(9)),
+                    &mem_base_disp(FP, 16 + scr_extra + (i as i32) * 8),
+                )?;
+            }
+        }
         if n > 0 {
             let disp = (n - 1) as i32 * WASM_SLOT;
             self.ldr(ctx, arch, &reg(Reg(0)), &mem_base_disp(SP, disp))?;
