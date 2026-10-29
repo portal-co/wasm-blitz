@@ -388,14 +388,34 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
     where
         Self: Sized,
     {
-        if arity == 0 {
+        self.sysv_emit_allstack_entry_veneer_with_results(ctx, arch, target, arity, arity)
+    }
+
+    /// Entry veneer variant that also sizes the incoming area for `results`
+    /// outgoing slots, since the callee's epilogue spills that many results
+    /// into the incoming-args area on return (see `sysv_emit_epilogue`).
+    fn sysv_emit_allstack_entry_veneer_with_results(
+        &mut self,
+        ctx: &mut Context,
+        arch: AArch64Arch,
+        target: AArch64Label,
+        arity: u32,
+        results: u32,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        if arity == 0 && results == 0 {
             return self.b_label(ctx, arch, target);
         }
 
         let scratch = Reg(9);
         let lit = |v: u64| MemArgKind::NoMem(ArgKind::Lit(v));
         // Keep the AAPCS64 stack alignment required at the branch boundary.
-        let frame_bytes = ((arity as u64 * 8) + 15) & !15;
+        // Size for the caller-provided args plus any extra results slots the
+        // epilogue writes back into this area.
+        let slots = arity.max(results);
+        let frame_bytes = ((slots as u64 * 8) + 15) & !15;
         self.sub(ctx, arch, &reg(SP), &reg(SP), &lit(frame_bytes))?;
 
         // The first eight C arguments still reside in their AAPCS64 registers.
