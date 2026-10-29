@@ -11015,8 +11015,12 @@ fn test_unicorn_aarch64_allstack_far_return_call_indirect_108() {
 /// frame slots stay active, matching the megabinary's frame layout.
 struct SingleShardMap;
 impl portal_solutions_blitz_common::shard::ShardMap for SingleShardMap {
-    fn shard_for(&self, _fn_idx: u32) -> usize { 0 }
-    fn shard_count(&self) -> usize { 1 }
+    fn shard_for(&self, _fn_idx: u32) -> usize {
+        0
+    }
+    fn shard_count(&self) -> usize {
+        1
+    }
 }
 
 /// Compile `wasm` (AArch64 AllStack) with sharding enabled (SCR save/restore,
@@ -11245,7 +11249,9 @@ fn compile_aarch64_sharded_mem(wasm: &[u8]) -> (Vec<u8>, u64) {
     let (bytes, labels, relocs) = out.into_parts_with_relocs();
     // External __wasm_mem must surface as a reloc (patched below).
     assert!(
-        relocs.iter().any(|r| matches!(&r.label, AArch64Label::External { name } if name == "__wasm_mem")),
+        relocs
+            .iter()
+            .any(|r| matches!(&r.label, AArch64Label::External { name } if name == "__wasm_mem")),
         "expected __wasm_mem relocs"
     );
     let entry = labels[&AArch64Label::Indexed { idx: 0x8000_0000 }] as u64;
@@ -11444,6 +11450,196 @@ fn test_unicorn_aarch64_allstack_sharded_far_return_call_indirect_108() {
     uc.reg_write(RegisterARM64::LR, ret).unwrap();
     uc.emu_start(CODE + entry, ret, 0, 5_000_000).unwrap();
     assert_eq!(uc.reg_read(RegisterARM64::X0).unwrap(), 1337);
+}
+
+/// A far `call_indirect` (register-indirect CALL that returns, not tail):
+/// f0 pushes 108 params, indexes __wasm_table[0], calls the far target, then
+/// returns result[0]. This is the `blr x2` shape — the marshalled-call path
+/// with a register target, distinct from the direct-Call and tail-call paths.
+fn far_call_indirect_wasm(npads: u32, pairs: u32) -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    let sig: Vec<ValType> = vec![ValType::I64; 108];
+    types.ty().function(sig.clone(), sig.clone()); // 0: f0/fT signature
+    types.ty().function([], [ValType::I64]); // 1: pad signature
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0); // f0
+    for _ in 0..npads {
+        functions.function(1); // padding
+    }
+    let target = 1 + npads;
+    functions.function(0); // fT
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    let mut f0 = Function::new([]);
+    for i in 0..108u32 {
+        f0.instruction(&Instruction::LocalGet(i));
+    }
+    f0.instruction(&Instruction::I32Const(0)); // table index
+    f0.instruction(&Instruction::CallIndirect {
+        type_index: 0,
+        table_index: 0,
+    });
+    // Results are on the operand stack; return them (f0 is 108/108 too... but
+    // f0's declared signature is sig with 108 results, so return them all).
+    f0.instruction(&Instruction::End);
+    code.function(&f0);
+    for _ in 0..npads {
+        let mut f = Function::new([]);
+        for i in 0..pairs {
+            f.instruction(&Instruction::I64Const(i as i64));
+            f.instruction(&Instruction::Drop);
+        }
+        f.instruction(&Instruction::End);
+        code.function(&f);
+    }
+    let mut ft = Function::new([]);
+    for i in 0..108u32 {
+        ft.instruction(&Instruction::LocalGet(i));
+    }
+    ft.instruction(&Instruction::End);
+    code.function(&ft);
+    let _ = target;
+    module.section(&code);
+    module.finish()
+}
+
+#[test]
+fn test_unicorn_aarch64_allstack_sharded_far_call_indirect_108() {
+    use unicorn_engine::{
+        RegisterARM64, Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
+    };
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x8000000;
+    const TABLE: u64 = 0x4000000;
+    const CELL: u64 = 0x5000000;
+    const GUEST_MEM: u64 = 0x5100000;
+
+    // `blr x2` shape: register-indirect CALL (not tail), >1MB away, 108/108,
+    // sharded, threading a distinctive value through param[0].
+    let wasm = far_call_indirect_wasm(4096, 128);
+    let (code, entry, ft_off) = compile_aarch64_sharded_indirect(&wasm);
+    assert!(ft_off > 1 << 20, "fT must be >1MB in: {ft_off:#x}");
+    let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+    let code_len = ((code.len() + 0xFFF) & !0xFFF).max(0x40000) as u64;
+    uc.mem_map(CODE, code_len, Prot::ALL).unwrap();
+    uc.mem_map(STACK, 0x40000, Prot::ALL).unwrap();
+    uc.mem_map(TABLE, 0x1000, Prot::ALL).unwrap();
+    uc.mem_map(CELL & !0xFFF, 0x2000, Prot::ALL).unwrap();
+    uc.mem_map(GUEST_MEM, 0x10000, Prot::ALL).unwrap();
+    uc.mem_write(CODE, &code).unwrap();
+    uc.mem_write(CELL, &GUEST_MEM.to_le_bytes()).unwrap();
+    uc.mem_write(TABLE, &(CODE + ft_off).to_le_bytes()).unwrap();
+    let mut args: Vec<u64> = (0..108u64).map(|i| i * 2).collect();
+    args[0] = 1337;
+    let frame = ((108u64 + 2) * 8 + 15) & !15;
+    let sp = (STACK + 0x40000 - frame - 16) & !15;
+    for (i, &a) in args.iter().enumerate() {
+        uc.mem_write(sp + (i as u64) * 8, &a.to_le_bytes()).unwrap();
+    }
+    uc.reg_write(RegisterARM64::SP, sp).unwrap();
+    uc.reg_write(RegisterARM64::X27, 0x500000).unwrap();
+    let ret = CODE + code_len;
+    uc.reg_write(RegisterARM64::LR, ret).unwrap();
+    uc.emu_start(CODE + entry, ret, 0, 5_000_000).unwrap();
+    assert_eq!(uc.reg_read(RegisterARM64::X0).unwrap(), 1337);
+}
+
+/// High-param-index threading through call_indirect: fT returns param[105]
+/// (a high index, near where the megabinary keeps guest SP). Catches a
+/// marshalling gap that a low-index echo would miss.
+fn high_param_indirect_wasm(npads: u32, pairs: u32, pick: u32) -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function(vec![ValType::I64; 108], [ValType::I64]); // 0: 108 params -> 1 result
+    types.ty().function([], [ValType::I64]); // 1: pad signature
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0); // f0
+    for _ in 0..npads {
+        functions.function(1); // padding
+    }
+    functions.function(0); // fT
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    let mut f0 = Function::new([]);
+    for i in 0..108u32 {
+        f0.instruction(&Instruction::LocalGet(i));
+    }
+    f0.instruction(&Instruction::I32Const(0)); // table index
+    f0.instruction(&Instruction::CallIndirect {
+        type_index: 0,
+        table_index: 0,
+    });
+    f0.instruction(&Instruction::End);
+    code.function(&f0);
+    for _ in 0..npads {
+        let mut f = Function::new([]);
+        for i in 0..pairs {
+            f.instruction(&Instruction::I64Const(i as i64));
+            f.instruction(&Instruction::Drop);
+        }
+        f.instruction(&Instruction::End);
+        code.function(&f);
+    }
+    let mut ft = Function::new([]);
+    ft.instruction(&Instruction::LocalGet(pick));
+    ft.instruction(&Instruction::End);
+    code.function(&ft);
+    module.section(&code);
+    module.finish()
+}
+
+#[test]
+fn test_unicorn_aarch64_allstack_sharded_high_param_indirect() {
+    use unicorn_engine::{
+        RegisterARM64, Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
+    };
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x8000000;
+    const TABLE: u64 = 0x4000000;
+    const CELL: u64 = 0x5000000;
+    const GUEST_MEM: u64 = 0x5100000;
+
+    for pick in [0u32, 50, 105, 107] {
+        let wasm = high_param_indirect_wasm(4096, 128, pick);
+        let (code, entry, ft_off) = compile_aarch64_sharded_indirect(&wasm);
+        let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+        let code_len = ((code.len() + 0xFFF) & !0xFFF).max(0x40000) as u64;
+        uc.mem_map(CODE, code_len, Prot::ALL).unwrap();
+        uc.mem_map(STACK, 0x40000, Prot::ALL).unwrap();
+        uc.mem_map(TABLE, 0x1000, Prot::ALL).unwrap();
+        uc.mem_map(CELL & !0xFFF, 0x2000, Prot::ALL).unwrap();
+        uc.mem_map(GUEST_MEM, 0x10000, Prot::ALL).unwrap();
+        uc.mem_write(CODE, &code).unwrap();
+        uc.mem_write(CELL, &GUEST_MEM.to_le_bytes()).unwrap();
+        uc.mem_write(TABLE, &(CODE + ft_off).to_le_bytes()).unwrap();
+        let args: Vec<u64> = (0..108u64).map(|i| 0xAAAA_0000 + i).collect();
+        let frame = ((108u64 + 2) * 8 + 15) & !15;
+        let sp = (STACK + 0x40000 - frame - 16) & !15;
+        for (i, &a) in args.iter().enumerate() {
+            uc.mem_write(sp + (i as u64) * 8, &a.to_le_bytes()).unwrap();
+        }
+        uc.reg_write(RegisterARM64::SP, sp).unwrap();
+        uc.reg_write(RegisterARM64::X27, 0x500000).unwrap();
+        let ret = CODE + code_len;
+        uc.reg_write(RegisterARM64::LR, ret).unwrap();
+        uc.emu_start(CODE + entry, ret, 0, 5_000_000).unwrap();
+        assert_eq!(
+            uc.reg_read(RegisterARM64::X0).unwrap(),
+            0xAAAA_0000 + pick as u64,
+            "pick={pick}"
+        );
+    }
 }
 
 #[test]
