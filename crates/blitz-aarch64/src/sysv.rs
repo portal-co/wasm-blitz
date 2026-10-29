@@ -361,7 +361,11 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         if let Some(r) = target_reg {
             self.br(ctx, arch, &reg(r))
         } else {
-            self.b_label(ctx, arch, target.unwrap())
+            // B is only ±128MB; a megabinary's tail-call targets can be
+            // farther. ADRP+ADD (±4GB) + br reaches any target. x9 is dead
+            // here: the frame is already torn down above.
+            crate::load_label_addr(self, ctx, arch, &reg(Reg(9)), target.unwrap())?;
+            self.br(ctx, arch, &reg(Reg(9)))
         }
     }
 
@@ -406,7 +410,13 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
         Self: Sized,
     {
         if arity == 0 && results == 0 {
-            return self.b_label(ctx, arch, target);
+            // B is only ±128MB; the target can be farther in a megabinary.
+            // Use ADRP+ADD (±4GB) + br. x9 is a free scratch here (the C
+            // caller's args are already in the incoming area or there are
+            // none).
+            let scratch = Reg(9);
+            crate::load_label_addr(self, ctx, arch, &reg(scratch), target)?;
+            return self.br(ctx, arch, &reg(scratch));
         }
 
         let scratch = Reg(9);
@@ -433,7 +443,10 @@ pub trait SysVWriterExt<Context>: Writer<AArch64Label, Context> + WriterExt<Cont
             self.ldr(ctx, arch, &reg(scratch), &mem_base_disp(SP, src))?;
             self.str(ctx, arch, &reg(scratch), &mem_base_disp(SP, (i * 8) as i32))?;
         }
-        self.b_label(ctx, arch, target)
+        // B is only ±128MB; the target can be farther in a megabinary.
+        // Use ADRP+ADD (±4GB) + br.
+        crate::load_label_addr(self, ctx, arch, &reg(scratch), target)?;
+        self.br(ctx, arch, &reg(scratch))
     }
 
     /// Emit the AAPCS64 epilogue (restore frame) and return. Shared by `Return`,

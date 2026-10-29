@@ -2052,7 +2052,18 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                         }
                         None => {
                             let idx = fn_idx_val - func_imports.len() as u32;
-                            self.b_label(ctx, arch, AArch64Label::Func { r#fn: idx })
+                            // B is only ±128MB; a megabinary's tail-call
+                            // targets can be farther. ADRP+ADD (±4GB) + br
+                            // reaches any target. T0 is dead here (frame is
+                            // already torn down above).
+                            crate::load_label_addr(
+                                self,
+                                ctx,
+                                arch,
+                                &reg(T0),
+                                AArch64Label::Func { r#fn: idx },
+                            )?;
+                            self.br(ctx, arch, &reg(T0))
                         }
                     },
                 }
@@ -2551,7 +2562,20 @@ where
                 name: (*name).into(),
             },
         )?;
-        w.b_label(ctx, arch, AArch64Label::Func { r#fn: *id })?;
+        // B is only ±128MB; the target function can be farther in a
+        // megabinary. Use ADRP+ADD (±4GB) + br. x9 is a free scratch (the
+        // dispatcher is a leaf that hasn't touched argument registers... it
+        // must NOT clobber them: the callee reads X0..X7. Use x16 (IP0),
+        // which the AAPCS64 reserves for exactly this veneer purpose.
+        w.adrp_label(ctx, arch, &reg(Reg(16)), AArch64Label::Func { r#fn: *id })?;
+        w.add_lo12_label(
+            ctx,
+            arch,
+            &reg(Reg(16)),
+            &reg(Reg(16)),
+            AArch64Label::Func { r#fn: *id },
+        )?;
+        w.br(ctx, arch, &reg(Reg(16)))?;
     }
     Ok(())
 }
