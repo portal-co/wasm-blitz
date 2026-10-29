@@ -10852,6 +10852,164 @@ fn test_unicorn_aarch64_allstack_far_return_call_108() {
     );
 }
 
+/// A far `return_call_indirect`: f0 tail-calls through `__wasm_table[0]`,
+/// whose entry points at fT >1MB away. Exercises the table-dispatch path
+/// (sysv_load_indirect_target: `__wasm_table` address via ADRP+ADD reloc, then
+/// `ldr target, [tbl + idx*8]; br target`) at megabinary scale. 108 params /
+/// 108 results thread through the indirect tail call.
+fn far_return_call_indirect_wasm(npads: u32, pairs: u32) -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    let sig: Vec<ValType> = vec![ValType::I64; 108];
+    types.ty().function(sig.clone(), sig.clone()); // 0: f0/fT signature
+    types.ty().function([], [ValType::I64]); // 1: pad signature
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0); // f0
+    for _ in 0..npads {
+        functions.function(1); // padding
+    }
+    let target = 1 + npads;
+    functions.function(0); // fT
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    let mut f0 = Function::new([]);
+    for i in 0..108u32 {
+        f0.instruction(&Instruction::LocalGet(i));
+    }
+    f0.instruction(&Instruction::I32Const(0)); // table index
+    f0.instruction(&Instruction::ReturnCallIndirect {
+        type_index: 0,
+        table_index: 0,
+    });
+    f0.instruction(&Instruction::End);
+    code.function(&f0);
+    for _ in 0..npads {
+        let mut f = Function::new([]);
+        for i in 0..pairs {
+            f.instruction(&Instruction::I64Const(i as i64));
+            f.instruction(&Instruction::Drop);
+        }
+        f.instruction(&Instruction::End);
+        code.function(&f);
+    }
+    let mut ft = Function::new([]);
+    for i in 0..108u32 {
+        ft.instruction(&Instruction::LocalGet(i));
+    }
+    ft.instruction(&Instruction::End);
+    code.function(&ft);
+    let _ = target;
+    module.section(&code);
+    module.finish()
+}
+
+/// Compile `wasm` (AArch64 AllStack) and patch the `__wasm_table` ADRP+ADD
+/// reloc to point at a guest table page. Returns the bytes, f0's entry offset,
+/// and fT's offset (the value table[0] must hold).
+fn compile_aarch64_far_indirect(wasm: &[u8]) -> (Vec<u8>, u64, u64) {
+    use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+    use portal_solutions_blitz_aarch64::{AArch64Arch, AArch64Label, naive, sysv};
+
+    let (sigs_wp, _enc, fsigs) = parse_sigs(wasm);
+    let call_params: Vec<u32> = fsigs
+        .iter()
+        .map(|&ti| sigs_wp[ti as usize].params().len() as u32)
+        .collect();
+    let call_results: Vec<u32> = fsigs
+        .iter()
+        .map(|&ti| sigs_wp[ti as usize].results().len() as u32)
+        .collect();
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let nfuncs = bodies.len() as u32;
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut reencoder = RoundtripReencoder;
+    let mut ctx = ();
+    let mut out = AArch64Writer::<AArch64Label>::new();
+    let mut state = naive::State::default();
+    state.call_abi = naive::CallAbi::AllStack;
+    state.call_params = call_params;
+    state.call_results = call_results;
+    state.sig_params = sigs_wp.iter().map(|s| s.params().len() as u32).collect();
+    state.sig_results = sigs_wp.iter().map(|s| s.results().len() as u32).collect();
+    state.mem_base = naive::MemBase::WasmMemSymbol;
+    for op in ops {
+        sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+            &mut out,
+            &mut ctx,
+            AArch64Arch::default(),
+            &mut state,
+            &[],
+            &op.unwrap(),
+            &mut reencoder,
+            0,
+        )
+        .unwrap();
+    }
+    let (bytes, labels, relocs) = out.into_parts_with_relocs();
+    let entry = labels[&AArch64Label::Indexed { idx: 0x8000_0000 }] as u64;
+    // fT is the last function; its internal id is nfuncs-1.
+    let ft_off = labels[&AArch64Label::Indexed {
+        idx: (nfuncs - 1) as usize + 0x8000_0000,
+    }] as u64;
+    const CODE: u64 = 0x100000;
+    const TABLE: u64 = 0x4000000;
+    let bytes = patch_aarch64_relocs(bytes, &relocs, CODE, TABLE);
+    (bytes, entry, ft_off)
+}
+
+#[test]
+fn test_unicorn_aarch64_allstack_far_return_call_indirect_108() {
+    use unicorn_engine::{
+        RegisterARM64, Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
+    };
+    const CODE: u64 = 0x100000;
+    // Code is >1MB, so the stack and table must sit well clear of it.
+    const STACK: u64 = 0x8000000;
+    const TABLE: u64 = 0x4000000;
+
+    let wasm = far_return_call_indirect_wasm(4096, 128);
+    let (code, entry, ft_off) = compile_aarch64_far_indirect(&wasm);
+    assert!(
+        code.len() > 1 << 20,
+        "callee must be >1MB from caller: got {} bytes",
+        code.len()
+    );
+    assert!(ft_off > 1 << 20, "fT must be >1MB in: {ft_off:#x}");
+
+    let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+    let code_len = ((code.len() + 0xFFF) & !0xFFF).max(0x40000) as u64;
+    uc.mem_map(CODE, code_len, Prot::ALL).unwrap();
+    uc.mem_map(STACK, 0x40000, Prot::ALL).unwrap();
+    uc.mem_map(TABLE, 0x1000, Prot::ALL).unwrap();
+    uc.mem_write(CODE, &code).unwrap();
+    // table[0] = runtime address of fT.
+    uc.mem_write(TABLE, &(CODE + ft_off).to_le_bytes()).unwrap();
+    // f0 takes 108 params; echo must return param[0]. Pass 1337 as param[0].
+    let mut args: Vec<u64> = (0..108u64).map(|i| i * 2).collect();
+    args[0] = 1337;
+    let frame = ((108u64 + 2) * 8 + 15) & !15;
+    let sp = (STACK + 0x40000 - frame - 16) & !15;
+    for (i, &a) in args.iter().enumerate() {
+        uc.mem_write(sp + (i as u64) * 8, &a.to_le_bytes()).unwrap();
+    }
+    uc.reg_write(RegisterARM64::SP, sp).unwrap();
+    let ret = CODE + code.len() as u64;
+    uc.reg_write(RegisterARM64::LR, ret).unwrap();
+    uc.emu_start(CODE + entry, ret, 0, 5_000_000).unwrap();
+    assert_eq!(uc.reg_read(RegisterARM64::X0).unwrap(), 1337);
+}
+
 #[test]
 fn test_unicorn_riscv64_allstack_multiresult_call_108() {
     for n in [2u32, 4, 108] {
