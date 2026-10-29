@@ -10780,6 +10780,78 @@ fn test_unicorn_x86_64_allstack_far_call_108() {
     );
 }
 
+/// Like [`far_call_wasm`] but f0 uses `return_call` (true tail call) to the
+/// far target instead of `call`. Exercises the ADRP+ADD+br tail-branch
+/// lowering (the `call` path materializes via load_label_addr + blr, which
+/// far_call_wasm already covers).
+fn far_return_call_wasm(npads: u32, pairs: u32) -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    let sig: Vec<ValType> = vec![ValType::I64; 108];
+    types.ty().function(sig.clone(), sig.clone()); // 0: f0/fT signature (return_call needs matching sigs)
+    types.ty().function([], [ValType::I64]); // 1: pad signature
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0); // f0
+    for _ in 0..npads {
+        functions.function(1); // padding
+    }
+    let target = 1 + npads;
+    functions.function(0); // fT
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    let mut f0 = Function::new([]);
+    for i in 0..108u32 {
+        f0.instruction(&Instruction::LocalGet(i));
+    }
+    f0.instruction(&Instruction::ReturnCall(target));
+    f0.instruction(&Instruction::End);
+    code.function(&f0);
+    for _ in 0..npads {
+        let mut f = Function::new([]);
+        for i in 0..pairs {
+            f.instruction(&Instruction::I64Const(i as i64));
+            f.instruction(&Instruction::Drop);
+        }
+        f.instruction(&Instruction::End);
+        code.function(&f);
+    }
+    let mut ft = Function::new([]);
+    for i in 0..108u32 {
+        ft.instruction(&Instruction::LocalGet(i));
+    }
+    ft.instruction(&Instruction::End);
+    code.function(&ft);
+    module.section(&code);
+    module.finish()
+}
+
+#[test]
+fn test_unicorn_aarch64_allstack_far_return_call_108() {
+    // >1MB between the tail-call site (f0) and the callee (fT); the 108
+    // params must thread through the true tail call intact.
+    let wasm = far_return_call_wasm(4096, 128);
+    let (code, entry) = compile_allstack_binary(&wasm, NativeArch::AArch64);
+    assert!(
+        code.len() > 1 << 20,
+        "callee must be >1MB from caller: got {} bytes",
+        code.len()
+    );
+    let args: Vec<u64> = (0..108u64).map(|i| i * 2).collect();
+    // f0 tail-calls fT; fT echoes params; the C-facing result is X0 = result 0
+    // = param 0 = 0. Check X1 is wired too would need a different harness
+    // read; instead echo a distinctive value as result 0: use args[0] = 1337.
+    let mut args = args;
+    args[0] = 1337;
+    assert_eq!(
+        run_allstack_entry(NativeArch::AArch64, &code, entry, &args, 2_000_000),
+        1337
+    );
+}
+
 #[test]
 fn test_unicorn_riscv64_allstack_multiresult_call_108() {
     for n in [2u32, 4, 108] {
