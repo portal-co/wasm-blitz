@@ -11247,13 +11247,9 @@ fn compile_aarch64_sharded_mem(wasm: &[u8]) -> (Vec<u8>, u64) {
         .unwrap();
     }
     let (bytes, labels, relocs) = out.into_parts_with_relocs();
-    // External __wasm_mem must surface as a reloc (patched below).
-    assert!(
-        relocs
-            .iter()
-            .any(|r| matches!(&r.label, AArch64Label::External { name } if name == "__wasm_mem")),
-        "expected __wasm_mem relocs"
-    );
+    // External __wasm_mem surfaces as a reloc only when the module uses memory;
+    // assert that only in the sharded-mem tests (the small-helper test has no
+    // memory ops and produces no relocs).
     let entry = labels[&AArch64Label::Indexed { idx: 0x8000_0000 }] as u64;
     const CODE: u64 = 0x100000;
     const CELL: u64 = 0x300000;
@@ -11637,6 +11633,89 @@ fn test_unicorn_aarch64_allstack_sharded_high_param_indirect() {
         assert_eq!(
             uc.reg_read(RegisterARM64::X0).unwrap(),
             0xAAAA_0000 + pick as u64,
+            "pick={pick}"
+        );
+    }
+}
+
+/// A 108-param function calls a SMALL-arity helper (like the megabinary's
+/// strlen-like leaf), then reads back a high param (105). The register file
+/// lives in the caller's locals; a small call must not clobber them. This is
+/// the one arity-mixing shape the uniform 108/108 repros don't cover.
+fn call_small_helper_wasm(pick: u32) -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function(vec![ValType::I64; 108], [ValType::I64]); // 0: f0 108->1
+    types.ty().function(vec![ValType::I64; 3], [ValType::I64]); // 1: helper 3->1
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0); // f0
+    functions.function(1); // helper
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    // f0: push params 0..2, call helper (3->1), drop the result, then return
+    // param[pick] — it must survive the call.
+    let mut f0 = Function::new([]);
+    for i in 0..3u32 {
+        f0.instruction(&Instruction::LocalGet(i));
+    }
+    f0.instruction(&Instruction::Call(1));
+    f0.instruction(&Instruction::Drop);
+    f0.instruction(&Instruction::LocalGet(pick));
+    f0.instruction(&Instruction::End);
+    code.function(&f0);
+    // helper: a strlen-ish loop shape — sum its 3 params.
+    let mut h = Function::new([]);
+    h.instruction(&Instruction::LocalGet(0));
+    h.instruction(&Instruction::LocalGet(1));
+    h.instruction(&Instruction::I64Add);
+    h.instruction(&Instruction::LocalGet(2));
+    h.instruction(&Instruction::I64Add);
+    h.instruction(&Instruction::End);
+    code.function(&h);
+    module.section(&code);
+    module.finish()
+}
+
+#[test]
+fn test_unicorn_aarch64_allstack_sharded_call_small_helper_108() {
+    use unicorn_engine::{
+        RegisterARM64, Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
+    };
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x8000000;
+    const CELL: u64 = 0x5000000;
+    const GUEST_MEM: u64 = 0x5100000;
+
+    for pick in [0u32, 50, 105, 107] {
+        let wasm = call_small_helper_wasm(pick);
+        let (code, entry) = compile_aarch64_sharded_mem(&wasm);
+        let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+        let code_len = ((code.len() + 0xFFF) & !0xFFF).max(0x40000) as u64;
+        uc.mem_map(CODE, code_len, Prot::ALL).unwrap();
+        uc.mem_map(STACK, 0x40000, Prot::ALL).unwrap();
+        uc.mem_map(CELL & !0xFFF, 0x2000, Prot::ALL).unwrap();
+        uc.mem_map(GUEST_MEM, 0x10000, Prot::ALL).unwrap();
+        uc.mem_write(CODE, &code).unwrap();
+        uc.mem_write(CELL, &GUEST_MEM.to_le_bytes()).unwrap();
+        let args: Vec<u64> = (0..108u64).map(|i| 0xBBBB_0000 + i).collect();
+        let frame = ((108u64 + 2) * 8 + 15) & !15;
+        let sp = (STACK + 0x40000 - frame - 16) & !15;
+        for (i, &a) in args.iter().enumerate() {
+            uc.mem_write(sp + (i as u64) * 8, &a.to_le_bytes()).unwrap();
+        }
+        uc.reg_write(RegisterARM64::SP, sp).unwrap();
+        uc.reg_write(RegisterARM64::X27, 0x500000).unwrap();
+        let ret = CODE + code_len;
+        uc.reg_write(RegisterARM64::LR, ret).unwrap();
+        uc.emu_start(CODE + entry, ret, 0, 500_000).unwrap();
+        assert_eq!(
+            uc.reg_read(RegisterARM64::X0).unwrap(),
+            0xBBBB_0000 + pick as u64,
             "pick={pick}"
         );
     }
