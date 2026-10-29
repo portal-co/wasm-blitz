@@ -11010,6 +11010,442 @@ fn test_unicorn_aarch64_allstack_far_return_call_indirect_108() {
     assert_eq!(uc.reg_read(RegisterARM64::X0).unwrap(), 1337);
 }
 
+/// Single-shard map: every function lands in shard 0, so all calls classify
+/// as `Local` direct branches — but SCR save/restore and the scr_extra=16
+/// frame slots stay active, matching the megabinary's frame layout.
+struct SingleShardMap;
+impl portal_solutions_blitz_common::shard::ShardMap for SingleShardMap {
+    fn shard_for(&self, _fn_idx: u32) -> usize { 0 }
+    fn shard_count(&self) -> usize { 1 }
+}
+
+/// Compile `wasm` (AArch64 AllStack) with sharding enabled (SCR save/restore,
+/// scr_extra=16). Returns bytes, f0 entry, and fT offset. SCR is dead in the
+/// harness (single shard, no cross-shard table) but the frame layout differs.
+fn compile_aarch64_sharded(wasm: &[u8]) -> (Vec<u8>, u64, u64) {
+    use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+    use portal_solutions_blitz_aarch64::{AArch64Arch, AArch64Label, naive, sysv};
+    use portal_solutions_blitz_common::shard::{SecondCtxConfig, ShardConfig};
+
+    let (sigs_wp, _enc, fsigs) = parse_sigs(wasm);
+    let call_params: Vec<u32> = fsigs
+        .iter()
+        .map(|&ti| sigs_wp[ti as usize].params().len() as u32)
+        .collect();
+    let call_results: Vec<u32> = fsigs
+        .iter()
+        .map(|&ti| sigs_wp[ti as usize].results().len() as u32)
+        .collect();
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let nfuncs = bodies.len() as u32;
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut reencoder = RoundtripReencoder;
+    let mut ctx = ();
+    let mut out = AArch64Writer::<AArch64Label>::new();
+    let second_ctx = SecondCtxConfig::for_shard(ShardConfig {
+        imports_len: 0,
+        total_fns: nfuncs,
+    });
+    let map = SingleShardMap;
+    let mut state = naive::State::default();
+    state.call_abi = naive::CallAbi::AllStack;
+    state.call_params = call_params;
+    state.call_results = call_results;
+    state.sig_params = sigs_wp.iter().map(|s| s.params().len() as u32).collect();
+    state.sig_results = sigs_wp.iter().map(|s| s.results().len() as u32).collect();
+    state.shard = Some(naive::NaiveShardState::new(second_ctx, 0, 0, &map));
+    for op in ops {
+        sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+            &mut out,
+            &mut ctx,
+            AArch64Arch::default(),
+            &mut state,
+            &[],
+            &op.unwrap(),
+            &mut reencoder,
+            0,
+        )
+        .unwrap();
+    }
+    let (bytes, labels, relocs) = out.into_parts_with_relocs();
+    assert!(relocs.is_empty(), "unexpected external relocs: {relocs:?}");
+    let entry = labels[&AArch64Label::Indexed { idx: 0x8000_0000 }] as u64;
+    let ft_off = labels[&AArch64Label::Indexed {
+        idx: (nfuncs - 1) as usize + 0x8000_0000,
+    }] as u64;
+    (bytes, entry, ft_off)
+}
+
+#[test]
+fn test_unicorn_aarch64_allstack_sharded_far_return_call_108() {
+    use unicorn_engine::{
+        RegisterARM64, Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
+    };
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x8000000;
+
+    // True tail call >1MB with sharding (scr_extra=16): 108 params thread
+    // through the tail call into the far callee.
+    let wasm = far_return_call_wasm(4096, 128);
+    let (code, entry, ft_off) = compile_aarch64_sharded(&wasm);
+    assert!(code.len() > 1 << 20, "got {} bytes", code.len());
+    assert!(ft_off > 1 << 20, "fT must be >1MB in: {ft_off:#x}");
+    let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+    let code_len = ((code.len() + 0xFFF) & !0xFFF).max(0x40000) as u64;
+    uc.mem_map(CODE, code_len, Prot::ALL).unwrap();
+    uc.mem_map(STACK, 0x40000, Prot::ALL).unwrap();
+    uc.mem_write(CODE, &code).unwrap();
+    let mut args: Vec<u64> = (0..108u64).map(|i| i * 2).collect();
+    args[0] = 1337;
+    let frame = ((108u64 + 2) * 8 + 15) & !15;
+    let sp = (STACK + 0x40000 - frame - 16) & !15;
+    for (i, &a) in args.iter().enumerate() {
+        uc.mem_write(sp + (i as u64) * 8, &a.to_le_bytes()).unwrap();
+    }
+    uc.reg_write(RegisterARM64::SP, sp).unwrap();
+    // SCR (x27) would hold the cross-shard table base in a real deploy;
+    // point it at scratch so a leak is detectable (not a fault).
+    uc.reg_write(RegisterARM64::X27, 0x500000).unwrap();
+    let ret = CODE + code_len;
+    uc.reg_write(RegisterARM64::LR, ret).unwrap();
+    uc.emu_start(CODE + entry, ret, 0, 2_000_000).unwrap();
+    assert_eq!(uc.reg_read(RegisterARM64::X0).unwrap(), 1337);
+}
+
+/// Megabinary failure shape: nested `bl` calls each returning 108 results,
+/// interleaved with loads/stores and local updates (register-offset and
+/// post-index idioms), with sharding on — a host base leaking into a guest
+/// param/result slot corrupts the subsequent call or table index.
+/// f0: args -> local temps (simulating register-offset deps), Call f1,
+/// tweak temps (post-index idiom), Call f2, ret.
+/// f1/f2: echo their 108 params.
+fn shard_nested_bl_wasm() -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    let sig: Vec<ValType> = vec![ValType::I64; 108];
+    types.ty().function(sig.clone(), sig.clone()); // 0: f0/f1/f2
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0); // f0
+    functions.function(0); // f1
+    functions.function(0); // f2
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    // f0: store/load guest memory interleaved with nested 108-result calls,
+    // plus post-index-idiom local updates. If a host mem base leaks into a
+    // local/operand slot it will corrupt a call result.
+    let mut f0 = Function::new([(2, ValType::I64)]);
+    let m = |align| MemArg {
+        offset: 0,
+        align,
+        memory_index: 0,
+    };
+    // mem[0] = param0 (store), then reload into a scratch local
+    f0.instruction(&Instruction::I32Const(0));
+    f0.instruction(&Instruction::LocalGet(0));
+    f0.instruction(&Instruction::I64Store(m(3)));
+    f0.instruction(&Instruction::I32Const(0));
+    f0.instruction(&Instruction::I64Load(m(3)));
+    f0.instruction(&Instruction::LocalSet(108));
+    // post-index idiom: t1 = param1; t0 = t0 + 8
+    f0.instruction(&Instruction::LocalGet(1));
+    f0.instruction(&Instruction::LocalSet(109));
+    f0.instruction(&Instruction::LocalGet(108));
+    f0.instruction(&Instruction::I64Const(8));
+    f0.instruction(&Instruction::I64Add);
+    f0.instruction(&Instruction::LocalSet(108));
+    // push all 108 params, call f1 (108 results replace them on stack)
+    for i in 0..108u32 {
+        f0.instruction(&Instruction::LocalGet(i));
+    }
+    f0.instruction(&Instruction::Call(1));
+    // another store between calls (guest `str` after a `bl`)
+    f0.instruction(&Instruction::I32Const(8));
+    f0.instruction(&Instruction::LocalGet(2));
+    f0.instruction(&Instruction::I64Store(m(3)));
+    // push f1's results (still on operand stack) as f2's args, call f2
+    // First stash them to locals so the store above didn't clobber ordering.
+    // Actually results are already on the operand stack; just call f2.
+    f0.instruction(&Instruction::Call(2));
+    f0.instruction(&Instruction::End);
+    code.function(&f0);
+    for _ in 0..2 {
+        let mut f = Function::new([]);
+        for i in 0..108u32 {
+            f.instruction(&Instruction::LocalGet(i));
+        }
+        f.instruction(&Instruction::End);
+        code.function(&f);
+    }
+    module.section(&code);
+    module.finish()
+}
+
+fn compile_aarch64_sharded_mem(wasm: &[u8]) -> (Vec<u8>, u64) {
+    use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+    use portal_solutions_blitz_aarch64::{AArch64Arch, AArch64Label, naive, sysv};
+    use portal_solutions_blitz_common::shard::{SecondCtxConfig, ShardConfig};
+
+    let (sigs_wp, _enc, fsigs) = parse_sigs(wasm);
+    let call_params: Vec<u32> = fsigs
+        .iter()
+        .map(|&ti| sigs_wp[ti as usize].params().len() as u32)
+        .collect();
+    let call_results: Vec<u32> = fsigs
+        .iter()
+        .map(|&ti| sigs_wp[ti as usize].results().len() as u32)
+        .collect();
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut reencoder = RoundtripReencoder;
+    let mut ctx = ();
+    let mut out = AArch64Writer::<AArch64Label>::new();
+    let second_ctx = SecondCtxConfig::for_shard(ShardConfig {
+        imports_len: 0,
+        total_fns: bodies.len() as u32,
+    });
+    let map = SingleShardMap;
+    let mut state = naive::State::default();
+    state.call_abi = naive::CallAbi::AllStack;
+    state.call_params = call_params;
+    state.call_results = call_results;
+    state.sig_params = sigs_wp.iter().map(|s| s.params().len() as u32).collect();
+    state.sig_results = sigs_wp.iter().map(|s| s.results().len() as u32).collect();
+    state.mem_base = naive::MemBase::WasmMemSymbol;
+    state.shard = Some(naive::NaiveShardState::new(second_ctx, 0, 0, &map));
+    for op in ops {
+        sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+            &mut out,
+            &mut ctx,
+            AArch64Arch::default(),
+            &mut state,
+            &[],
+            &op.unwrap(),
+            &mut reencoder,
+            0,
+        )
+        .unwrap();
+    }
+    let (bytes, labels, relocs) = out.into_parts_with_relocs();
+    // External __wasm_mem must surface as a reloc (patched below).
+    assert!(
+        relocs.iter().any(|r| matches!(&r.label, AArch64Label::External { name } if name == "__wasm_mem")),
+        "expected __wasm_mem relocs"
+    );
+    let entry = labels[&AArch64Label::Indexed { idx: 0x8000_0000 }] as u64;
+    const CODE: u64 = 0x100000;
+    const CELL: u64 = 0x300000;
+    const GUEST_MEM: u64 = 0x310000;
+    let bytes = patch_aarch64_relocs(bytes, &relocs, CODE, CELL);
+    let _ = GUEST_MEM;
+    (bytes, entry)
+}
+
+#[test]
+fn test_unicorn_aarch64_allstack_sharded_nested_bl_108() {
+    use unicorn_engine::{
+        RegisterARM64, Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
+    };
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x8000000;
+    const CELL: u64 = 0x300000;
+    const GUEST_MEM: u64 = 0x310000;
+
+    let wasm = shard_nested_bl_wasm();
+    let (code, entry) = compile_aarch64_sharded_mem(&wasm);
+    let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+    let code_len = ((code.len() + 0xFFF) & !0xFFF).max(0x40000) as u64;
+    uc.mem_map(CODE, code_len, Prot::ALL).unwrap();
+    uc.mem_map(STACK, 0x40000, Prot::ALL).unwrap();
+    uc.mem_map(CELL & !0xFFF, 0x2000, Prot::ALL).unwrap();
+    uc.mem_map(GUEST_MEM, 0x10000, Prot::ALL).unwrap();
+    uc.mem_write(CODE, &code).unwrap();
+    uc.mem_write(CELL, &GUEST_MEM.to_le_bytes()).unwrap();
+    let args: Vec<u64> = (0..108u64).map(|i| 1000 + i).collect();
+    let frame = ((108u64 + 2) * 8 + 15) & !15;
+    let sp = (STACK + 0x40000 - frame - 16) & !15;
+    for (i, &a) in args.iter().enumerate() {
+        uc.mem_write(sp + (i as u64) * 8, &a.to_le_bytes()).unwrap();
+    }
+    uc.reg_write(RegisterARM64::SP, sp).unwrap();
+    uc.reg_write(RegisterARM64::X27, 0x500000).unwrap();
+    let ret = CODE + code_len;
+    uc.reg_write(RegisterARM64::LR, ret).unwrap();
+    uc.emu_start(CODE + entry, ret, 0, 2_000_000).unwrap();
+    // f1 echoes f0's params; f2 echoes f1's results. So result[0] = param[0].
+    // If a host mem base leaked into any slot, this (or a crash) diverges.
+    assert_eq!(uc.reg_read(RegisterARM64::X0).unwrap(), 1000);
+    // And the guest memory round-trip: mem[8] should hold param[2] = 1002.
+    let mut buf = [0u8; 8];
+    uc.mem_read(GUEST_MEM + 8, &mut buf).unwrap();
+    assert_eq!(u64::from_le_bytes(buf), 1002);
+}
+
+/// Compile with sharding on AND a __wasm_table reloc (table dispatch) — the
+/// megabinary's actual frame+dispatch combination.
+fn compile_aarch64_sharded_indirect(wasm: &[u8]) -> (Vec<u8>, u64, u64) {
+    use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+    use portal_solutions_blitz_aarch64::{AArch64Arch, AArch64Label, naive, sysv};
+    use portal_solutions_blitz_common::shard::{SecondCtxConfig, ShardConfig};
+
+    let (sigs_wp, _enc, fsigs) = parse_sigs(wasm);
+    let call_params: Vec<u32> = fsigs
+        .iter()
+        .map(|&ti| sigs_wp[ti as usize].params().len() as u32)
+        .collect();
+    let call_results: Vec<u32> = fsigs
+        .iter()
+        .map(|&ti| sigs_wp[ti as usize].results().len() as u32)
+        .collect();
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let nfuncs = bodies.len() as u32;
+    let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+    let ops = dce_pass!(raw_ops);
+    let mut reencoder = RoundtripReencoder;
+    let mut ctx = ();
+    let mut out = AArch64Writer::<AArch64Label>::new();
+    let second_ctx = SecondCtxConfig::for_shard(ShardConfig {
+        imports_len: 0,
+        total_fns: nfuncs,
+    });
+    let map = SingleShardMap;
+    let mut state = naive::State::default();
+    state.call_abi = naive::CallAbi::AllStack;
+    state.call_params = call_params;
+    state.call_results = call_results;
+    state.sig_params = sigs_wp.iter().map(|s| s.params().len() as u32).collect();
+    state.sig_results = sigs_wp.iter().map(|s| s.results().len() as u32).collect();
+    state.mem_base = naive::MemBase::WasmMemSymbol;
+    state.shard = Some(naive::NaiveShardState::new(second_ctx, 0, 0, &map));
+    for op in ops {
+        sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+            &mut out,
+            &mut ctx,
+            AArch64Arch::default(),
+            &mut state,
+            &[],
+            &op.unwrap(),
+            &mut reencoder,
+            0,
+        )
+        .unwrap();
+    }
+    let (bytes, labels, relocs) = out.into_parts_with_relocs();
+    let entry = labels[&AArch64Label::Indexed { idx: 0x8000_0000 }] as u64;
+    let ft_off = labels[&AArch64Label::Indexed {
+        idx: (nfuncs - 1) as usize + 0x8000_0000,
+    }] as u64;
+    const CODE: u64 = 0x100000;
+    const TABLE: u64 = 0x4000000;
+    const CELL: u64 = 0x5000000;
+    // Two external symbols: __wasm_table (dispatch) and __wasm_mem (mem base).
+    // Patch each ADRP+ADD pair to its own address.
+    let mut bytes = bytes;
+    for r in &relocs {
+        let sym_addr = match &r.label {
+            AArch64Label::External { name } if name == "__wasm_table" => TABLE,
+            AArch64Label::External { name } if name == "__wasm_mem" => CELL,
+            other => panic!("unexpected reloc label {other:?}"),
+        };
+        bytes = patch_aarch64_relocs_single(bytes, r, CODE, sym_addr);
+    }
+    (bytes, entry, ft_off)
+}
+
+/// Patch a single ADRP+ADD reloc pair to `sym_addr` given the code load base.
+fn patch_aarch64_relocs_single(
+    mut bytes: Vec<u8>,
+    r: &portal_solutions_asm_aarch64::out::bin::UnresolvedReloc<
+        portal_solutions_blitz_aarch64::AArch64Label,
+    >,
+    code_base: u64,
+    sym_addr: u64,
+) -> Vec<u8> {
+    use portal_solutions_asm_aarch64::out::bin::AsmRelocKind;
+    let off = r.byte_offset;
+    let insn_addr = code_base + off as u64;
+    let insn = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
+    let patched = match r.kind {
+        AsmRelocKind::A64AdrpPage21 => {
+            let page_delta = ((sym_addr & !0xFFF) as i64 - (insn_addr & !0xFFF) as i64) >> 12;
+            assert!(page_delta.abs() < (1 << 20), "ADRP out of range");
+            let imm = ((page_delta as u32) & 0x1F_FFFF) as u64;
+            let immlo = (imm & 3) << 29;
+            let immhi = (imm >> 2) << 5;
+            (insn & !0x60FF_FFE0) | (immlo as u32) | (immhi as u32)
+        }
+        AsmRelocKind::A64AddAbsLo12 => {
+            let lo12 = (sym_addr & 0xFFF) as u32;
+            (insn & !0x3FFC00) | (lo12 << 10)
+        }
+        other => panic!("unexpected reloc kind {other:?}"),
+    };
+    bytes[off..off + 4].copy_from_slice(&patched.to_le_bytes());
+    bytes
+}
+
+#[test]
+fn test_unicorn_aarch64_allstack_sharded_far_return_call_indirect_108() {
+    use unicorn_engine::{
+        RegisterARM64, Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
+    };
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x8000000;
+    const TABLE: u64 = 0x4000000;
+    const CELL: u64 = 0x5000000;
+    const GUEST_MEM: u64 = 0x5100000;
+
+    let wasm = far_return_call_indirect_wasm(4096, 128);
+    let (code, entry, ft_off) = compile_aarch64_sharded_indirect(&wasm);
+    assert!(ft_off > 1 << 20, "fT must be >1MB in: {ft_off:#x}");
+    let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+    let code_len = ((code.len() + 0xFFF) & !0xFFF).max(0x40000) as u64;
+    uc.mem_map(CODE, code_len, Prot::ALL).unwrap();
+    uc.mem_map(STACK, 0x40000, Prot::ALL).unwrap();
+    uc.mem_map(TABLE, 0x1000, Prot::ALL).unwrap();
+    uc.mem_map(CELL & !0xFFF, 0x2000, Prot::ALL).unwrap();
+    uc.mem_map(GUEST_MEM, 0x10000, Prot::ALL).unwrap();
+    uc.mem_write(CODE, &code).unwrap();
+    uc.mem_write(CELL, &GUEST_MEM.to_le_bytes()).unwrap();
+    uc.mem_write(TABLE, &(CODE + ft_off).to_le_bytes()).unwrap();
+    let mut args: Vec<u64> = (0..108u64).map(|i| i * 2).collect();
+    args[0] = 1337;
+    let frame = ((108u64 + 2) * 8 + 15) & !15;
+    let sp = (STACK + 0x40000 - frame - 16) & !15;
+    for (i, &a) in args.iter().enumerate() {
+        uc.mem_write(sp + (i as u64) * 8, &a.to_le_bytes()).unwrap();
+    }
+    uc.reg_write(RegisterARM64::SP, sp).unwrap();
+    uc.reg_write(RegisterARM64::X27, 0x500000).unwrap();
+    let ret = CODE + code_len;
+    uc.reg_write(RegisterARM64::LR, ret).unwrap();
+    uc.emu_start(CODE + entry, ret, 0, 5_000_000).unwrap();
+    assert_eq!(uc.reg_read(RegisterARM64::X0).unwrap(), 1337);
+}
+
 #[test]
 fn test_unicorn_riscv64_allstack_multiresult_call_108() {
     for n in [2u32, 4, 108] {
@@ -11033,5 +11469,137 @@ fn test_unicorn_x86_64_allstack_multiresult_call_108() {
             (n as u64 - 1) * 2,
             "n={n}"
         );
+    }
+}
+
+/// Scaling probe for megabinary compile cost: each padding function adds a
+/// label + several fixups, so this would be visibly superlinear if set_label
+/// still scanned all pending fixups. Run with --nocapture to see timings.
+#[test]
+fn bench_far_compile_scaling() {
+    for npads in [1024u32, 2048, 4096, 8192] {
+        let wasm = far_call_wasm(npads, 128);
+        let t = std::time::Instant::now();
+        let (code, _entry) = compile_allstack_binary(&wasm, NativeArch::AArch64);
+        eprintln!("npads={npads} code_len={} elapsed={:?}", code.len(), t.elapsed());
+    }
+}
+
+/// Object-mode variant of the scaling probe: ADRP/ADD fixups stay pending, so
+/// this exercises the BTreeMap-indexed pending-fixup path that the megabinary
+/// hits. Run with --nocapture.
+#[test]
+fn bench_far_compile_scaling_object_mode() {
+    use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+    use portal_solutions_blitz_aarch64::{AArch64Arch, AArch64Label, naive, sysv};
+    for npads in [1024u32, 2048, 4096, 8192] {
+        let wasm = far_call_wasm(npads, 128);
+        let (sigs_wp, _enc, fsigs) = parse_sigs(&wasm);
+        let call_params: Vec<u32> = fsigs.iter().map(|&ti| sigs_wp[ti as usize].params().len() as u32).collect();
+        let call_results: Vec<u32> = fsigs.iter().map(|&ti| sigs_wp[ti as usize].results().len() as u32).collect();
+        let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+        for payload in wasmparser::Parser::new(0).parse_all(&wasm).flatten() {
+            if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+                bodies.push(body);
+            }
+        }
+        let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+        let ops = dce_pass!(raw_ops);
+        let mut reencoder = RoundtripReencoder;
+        let mut ctx = ();
+        let mut out = AArch64Writer::<AArch64Label>::new();
+        out.set_object_mode(true);
+        let mut state = naive::State::default();
+        state.call_abi = naive::CallAbi::AllStack;
+        state.call_params = call_params;
+        state.call_results = call_results;
+        state.sig_params = sigs_wp.iter().map(|s| s.params().len() as u32).collect();
+        state.sig_results = sigs_wp.iter().map(|s| s.results().len() as u32).collect();
+        let t = std::time::Instant::now();
+        for op in ops {
+            sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                &mut out, &mut ctx, AArch64Arch::default(), &mut state, &[],
+                &op.unwrap(), &mut reencoder, 0,
+            ).unwrap();
+        }
+        let (bytes, _labels, relocs) = out.into_parts_with_relocs();
+        eprintln!("npads={npads} code_len={} relocs={} elapsed={:?}", bytes.len(), relocs.len(), t.elapsed());
+    }
+}
+
+/// Padding functions that each call f0 (an internal label), so in object mode
+/// every function contributes a pending ADRP/ADD reloc pair — the megabinary's
+/// 859K-reloc shape. Verifies the label-indexed pending-fixup map stays linear.
+fn far_call_many_reloc_wasm(npads: u32) -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([], [ValType::I64]); // 0: shared signature
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    for _ in 0..=npads {
+        functions.function(0);
+    }
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    // f0: leaf returning 42.
+    let mut f0 = Function::new([]);
+    f0.instruction(&Instruction::I64Const(42));
+    f0.instruction(&Instruction::End);
+    code.function(&f0);
+    // Each pad: a few `call 0; drop` so each emits label references.
+    for _ in 0..npads {
+        let mut f = Function::new([]);
+        for _ in 0..8 {
+            f.instruction(&Instruction::Call(0));
+            f.instruction(&Instruction::Drop);
+        }
+        f.instruction(&Instruction::End);
+        code.function(&f);
+    }
+    module.section(&code);
+    module.finish()
+}
+
+/// Object-mode scaling with many pending ADRP/ADD relocs per function — the
+/// real megabinary's shape (859K relocs). Run with --nocapture.
+#[test]
+fn bench_far_compile_object_mode_many_relocs() {
+    use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+    use portal_solutions_blitz_aarch64::{AArch64Arch, AArch64Label, naive, sysv};
+    for npads in [512u32, 1024, 2048, 4096] {
+        let wasm = far_call_many_reloc_wasm(npads);
+        let (sigs_wp, _enc, fsigs) = parse_sigs(&wasm);
+        let call_params: Vec<u32> = fsigs.iter().map(|&ti| sigs_wp[ti as usize].params().len() as u32).collect();
+        let call_results: Vec<u32> = fsigs.iter().map(|&ti| sigs_wp[ti as usize].results().len() as u32).collect();
+        let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+        for payload in wasmparser::Parser::new(0).parse_all(&wasm).flatten() {
+            if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+                bodies.push(body);
+            }
+        }
+        let raw_ops = mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, 0);
+        let ops = dce_pass!(raw_ops);
+        let mut reencoder = RoundtripReencoder;
+        let mut ctx = ();
+        let mut out = AArch64Writer::<AArch64Label>::new();
+        out.set_object_mode(true);
+        let mut state = naive::State::default();
+        state.call_abi = naive::CallAbi::AllStack;
+        state.call_params = call_params;
+        state.call_results = call_results;
+        state.sig_params = sigs_wp.iter().map(|s| s.params().len() as u32).collect();
+        state.sig_results = sigs_wp.iter().map(|s| s.results().len() as u32).collect();
+        let t = std::time::Instant::now();
+        for op in ops {
+            sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+                &mut out, &mut ctx, AArch64Arch::default(), &mut state, &[],
+                &op.unwrap(), &mut reencoder, 0,
+            ).unwrap();
+        }
+        let (bytes, _labels, relocs) = out.into_parts_with_relocs();
+        eprintln!("npads={npads} code_len={} relocs={} elapsed={:?}", bytes.len(), relocs.len(), t.elapsed());
     }
 }
