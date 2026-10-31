@@ -12534,6 +12534,11 @@ fn megabinary_unicorn_watch_sp() {
     let last_sp2 = last_sp.clone();
     let entry_seq = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
     let entry_seq2 = entry_seq.clone();
+    // Register-file trace: (fnidx, x0, x1, x20, pc) per entry. The corruption
+    // is in the `buf` arg = guest x1/x20, per speet's call-chain disassembly.
+    let reg_trace =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::<(u64, u64, u64, u64, u64)>::new()));
+    let reg_trace2 = reg_trace.clone();
 
     let block_count = std::sync::Arc::new(std::sync::Mutex::new(0u64));
     let block_count2 = block_count.clone();
@@ -12546,8 +12551,32 @@ fn megabinary_unicorn_watch_sp() {
         }
         drop(bc);
         if entries2.binary_search(&addr).is_ok() {
-            entry_seq2.lock().unwrap().push(addr);
+            let mut es = entry_seq2.lock().unwrap();
+            es.push(addr);
+            // Cap: enough to cover startup + divergence into the loop, and
+            // stop the emu so a stuck loop doesn't fill memory.
+            if es.len() >= 30000 {
+                uc.emu_stop().unwrap();
+                return;
+            }
+            drop(es);
             let cur_sp = uc.reg_read(RegisterARM64::SP).unwrap_or(0);
+            let mut p0 = [0u8; 8];
+            let mut p1 = [0u8; 8];
+            let mut p20 = [0u8; 8];
+            let mut p31 = [0u8; 8];
+            let _ = uc.mem_read(cur_sp, &mut p0);
+            let _ = uc.mem_read(cur_sp + 8, &mut p1);
+            let _ = uc.mem_read(cur_sp + 20 * 8, &mut p20);
+            let _ = uc.mem_read(cur_sp + 31 * 8, &mut p31);
+            let fnidx_t = addr_to_fn2.get(&addr).copied().unwrap_or(u32::MAX);
+            reg_trace2.lock().unwrap().push((
+                fnidx_t as u64,
+                u64::from_le_bytes(p0),
+                u64::from_le_bytes(p1),
+                u64::from_le_bytes(p20),
+                u64::from_le_bytes(p31),
+            ));
             let mut buf = [0u8; 8];
             if uc.mem_read(cur_sp + 105 * 8, &mut buf).is_ok() {
                 let v = u64::from_le_bytes(buf);
@@ -12806,6 +12835,158 @@ fn megabinary_unicorn_watch_sp() {
         })
         .unwrap();
     }
+    // Watch reads of the argc/argv block at the guest stack top
+    // (mem0[0x530000..0x530040]) to confirm the guest parses argv correctly.
+    let argv_log = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+    let argv_log2 = argv_log.clone();
+    uc.add_mem_hook(
+        unicorn_engine::unicorn_const::HookType::MEM_READ,
+        MEM0 + 0x52f000,
+        MEM0 + 0x530100,
+        move |uc, _t, addr, size, _v| {
+            let mut n = argv_log2.lock().unwrap();
+            *n += 1;
+            if *n <= 30 {
+                let pc = uc.reg_read(RegisterARM64::PC).unwrap_or(0);
+                let mut buf = [0u8; 8];
+                let _ = uc.mem_read(addr, &mut buf);
+                eprintln!(
+                    "  argv read #{}: [{:#x}] size={} -> {:#x} pc={:#x}",
+                    *n,
+                    addr - MEM0,
+                    size,
+                    u64::from_le_bytes(buf),
+                    pc
+                );
+            }
+            true
+        },
+    )
+    .unwrap();
+
+    // Watch READS of the guest stack slot holding the buffer pointer
+    // (0x52fe40, which correctly holds 0x542040): if the iov builder reads it
+    // back with a BYTE load, that's the width miscompile.
+    let ptrread_log = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+    let ptrread_log2 = ptrread_log.clone();
+    uc.add_mem_hook(
+        unicorn_engine::unicorn_const::HookType::MEM_READ,
+        MEM0 + 0x52fe40,
+        MEM0 + 0x52fe88,
+        move |uc, _t, addr, size, _v| {
+            let mut n = ptrread_log2.lock().unwrap();
+            *n += 1;
+            if *n <= 40 {
+                let pc = uc.reg_read(RegisterARM64::PC).unwrap_or(0);
+                let mut buf = [0u8; 8];
+                let _ = uc.mem_read(addr, &mut buf);
+                eprintln!(
+                    "  bufptr read #{}: [{:#x}] size={} -> {:#x} pc={:#x}",
+                    *n,
+                    addr - MEM0,
+                    size,
+                    u64::from_le_bytes(buf),
+                    pc
+                );
+            }
+            true
+        },
+    )
+    .unwrap();
+
+    // Watch for stores of the stdout buffer pointer (0x542040 in this layout)
+    // anywhere in mem0 — this finds where the FILE.buffer field is assigned
+    // and whether it's stored truncated (the iov later reads back 0x40).
+    let bufptr_log = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+    let bufptr_log2 = bufptr_log.clone();
+    uc.add_mem_hook(
+        unicorn_engine::unicorn_const::HookType::MEM_WRITE,
+        MEM0,
+        MEM0 + mem0_capacity,
+        move |uc, _t, addr, size, value| {
+            let v = value as u64;
+            if (v & 0xFFFF_FFFF) == 0x542040 || (size >= 4 && (v & 0xFFFF_FFFF) == 0x542040) {
+                let mut n = bufptr_log2.lock().unwrap();
+                *n += 1;
+                if *n <= 40 {
+                    let pc = uc.reg_read(RegisterARM64::PC).unwrap_or(0);
+                    eprintln!(
+                        "  bufptr store #{}: [{:#x}] size={} val={:#x} pc={:#x}",
+                        *n,
+                        addr - MEM0,
+                        size,
+                        v,
+                        pc
+                    );
+                }
+            }
+            true
+        },
+    )
+    .unwrap();
+
+    // Watch ALL mem0 writes for the output string bytes: echo builds "hi\n"
+    // somewhere. Lane A builds it at 0x1000; find where JIT writes the 'h'
+    // (0x68) / newline (0x0a) bytes, or prove it never does.
+    let hi_log = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+    let hi_log2 = hi_log.clone();
+    uc.add_mem_hook(
+        unicorn_engine::unicorn_const::HookType::MEM_WRITE,
+        MEM0,
+        MEM0 + mem0_capacity,
+        move |uc, _t, addr, size, value| {
+            let v = value as u64;
+            // byte 'h'=0x68 or 'i'=0x69 or '\n'=0x0a (small stores only)
+            let hit = (size == 1 && (v == 0x68 || v == 0x69 || v == 0x0a))
+                || (size >= 2 && (v & 0xffff) == 0x6968);
+            if hit {
+                let mut n = hi_log2.lock().unwrap();
+                *n += 1;
+                if *n <= 40 {
+                    let pc = uc.reg_read(RegisterARM64::PC).unwrap_or(0);
+                    eprintln!(
+                        "  hi-byte write #{}: [{:#x}] size={} val={:#x} pc={:#x}",
+                        *n,
+                        addr - MEM0,
+                        size,
+                        v,
+                        pc
+                    );
+                }
+            }
+            true
+        },
+    )
+    .unwrap();
+
+    // Watch writes to the guest stdio buffer at mem0[0x1000..0x1100] — Lane A
+    // builds "hi\n" there and points iov0.base at it. If JIT never writes it
+    // (or writes wrong bytes) the string build/copy is the diverging point.
+    let buf_log = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+    let buf_log2 = buf_log.clone();
+    uc.add_mem_hook(
+        unicorn_engine::unicorn_const::HookType::MEM_WRITE,
+        MEM0 + 0x1000,
+        MEM0 + 0x1100,
+        move |uc, _t, addr, size, value| {
+            let mut n = buf_log2.lock().unwrap();
+            *n += 1;
+            if *n <= 40 {
+                let pc = uc.reg_read(RegisterARM64::PC).unwrap_or(0);
+                eprintln!(
+                    "  buf write #{}: [{:#x}] size={} val={:#x} pc={:#x}",
+                    *n,
+                    addr - MEM0,
+                    size,
+                    value as u64,
+                    pc
+                );
+            }
+            true
+        },
+    )
+    .unwrap();
+
     // Watch the guest iov at mem0[0x200..0x210]: who writes it, with what.
     // The stuck fd_write loop reads {base=0,len=0} from here, so the writer
     // reveals whether the string pointer/len is miscomputed.
@@ -12957,6 +13138,27 @@ fn megabinary_unicorn_watch_sp() {
     eprintln!("entry sequence ({} total; last 30):", seq.len());
     for e in seq.iter().rev().take(30).rev() {
         eprintln!("  {:#x}", e);
+    }
+    // Dump the FULL entry sequence (as wasm fn indices) for diffing against
+    // a Lane A (wasmi) function-entry trace to find the first divergence.
+    {
+        let mut s = String::new();
+        for e in seq.iter() {
+            let fnidx = addr_to_fn.get(e).copied().unwrap_or(u32::MAX);
+            s.push_str(&format!("{} {:#x}\n", fnidx, e));
+        }
+        let _ = std::fs::write("/tmp/mega_entry_seq.txt", s);
+        eprintln!("dumped {} entries to /tmp/mega_entry_seq.txt", seq.len());
+    }
+    // Dump the register-file trace (fnidx, x0, x1, x20, pc per entry).
+    {
+        let rt = reg_trace.lock().unwrap();
+        let mut s = String::new();
+        for (f, x0, x1, x20, pc) in rt.iter() {
+            s.push_str(&format!("{} {:#x} {:#x} {:#x} {:#x}\n", f, x0, x1, x20, pc));
+        }
+        let _ = std::fs::write("/tmp/mega_regtrace.txt", s);
+        eprintln!("dumped {} reg-trace rows to /tmp/mega_regtrace.txt", rt.len());
     }
 
     // Report which wasi imports fired (counts), and the exit code if the
