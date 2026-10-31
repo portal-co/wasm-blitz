@@ -12534,11 +12534,12 @@ fn megabinary_unicorn_watch_sp() {
     let last_sp2 = last_sp.clone();
     let entry_seq = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
     let entry_seq2 = entry_seq.clone();
-    // Register-file trace: (fnidx, x0, x1, x20, pc) per entry. The corruption
-    // is in the `buf` arg = guest x1/x20, per speet's call-chain disassembly.
-    let reg_trace =
-        std::sync::Arc::new(std::sync::Mutex::new(Vec::<(u64, u64, u64, u64, u64)>::new()));
+    // Register-file trace: (fnidx, x0, x1, x2, x4, x20, pc) per entry.
+    let reg_trace = std::sync::Arc::new(
+        std::sync::Mutex::new(Vec::<(u64, u64, u64, u64, u64, u64, u64)>::new()),
+    );
     let reg_trace2 = reg_trace.clone();
+    let fulldump_done2 = std::sync::Arc::new(std::sync::Mutex::new(0u32));
 
     let block_count = std::sync::Arc::new(std::sync::Mutex::new(0u64));
     let block_count2 = block_count.clone();
@@ -12563,17 +12564,52 @@ fn megabinary_unicorn_watch_sp() {
             let cur_sp = uc.reg_read(RegisterARM64::SP).unwrap_or(0);
             let mut p0 = [0u8; 8];
             let mut p1 = [0u8; 8];
+            let mut p2 = [0u8; 8];
+            let mut p4 = [0u8; 8];
             let mut p20 = [0u8; 8];
             let mut p31 = [0u8; 8];
             let _ = uc.mem_read(cur_sp, &mut p0);
             let _ = uc.mem_read(cur_sp + 8, &mut p1);
+            let _ = uc.mem_read(cur_sp + 2 * 8, &mut p2);
+            let _ = uc.mem_read(cur_sp + 4 * 8, &mut p4);
             let _ = uc.mem_read(cur_sp + 20 * 8, &mut p20);
             let _ = uc.mem_read(cur_sp + 31 * 8, &mut p31);
             let fnidx_t = addr_to_fn2.get(&addr).copied().unwrap_or(u32::MAX);
+            // Full register-file dump at the iov-store fn and the svc fn (first
+            // occurrence each) for comprehensive Lane A comparison.
+            if fnidx_t == 214500 || fnidx_t == 214508 {
+                let dumped = {
+                    let mut g = fulldump_done2.lock().unwrap();
+                    if *g < 2 {
+                        *g += 1;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if dumped {
+                    eprintln!("=== full regfile at fn {} (guest pc {:#x}) ===", fnidx_t, {
+                        let mut b = [0u8; 8];
+                        let _ = uc.mem_read(cur_sp + 31 * 8, &mut b);
+                        u64::from_le_bytes(b)
+                    });
+                    for i in 0..108u64 {
+                        let mut b = [0u8; 8];
+                        if uc.mem_read(cur_sp + i * 8, &mut b).is_ok() {
+                            let v = u64::from_le_bytes(b);
+                            if v != 0 {
+                                eprintln!("    param{} = {:#x}", i, v);
+                            }
+                        }
+                    }
+                }
+            }
             reg_trace2.lock().unwrap().push((
                 fnidx_t as u64,
                 u64::from_le_bytes(p0),
                 u64::from_le_bytes(p1),
+                u64::from_le_bytes(p2),
+                u64::from_le_bytes(p4),
                 u64::from_le_bytes(p20),
                 u64::from_le_bytes(p31),
             ));
@@ -12678,6 +12714,12 @@ fn megabinary_unicorn_watch_sp() {
     ));
     let exit_code = std::sync::Arc::new(std::sync::Mutex::new(None::<u64>));
     let next_fd = std::sync::Arc::new(std::sync::Mutex::new(3u32));
+    // The os-emulation layer stages wasi iovec/buffers in its OWN memory
+    // (mem1, the handler-statics memory), not the guest's mem0: marshal_iovec
+    // writes iov.base=0x1000 (HOST_COPY_SCRATCH) to mem1[0x200]. So all wasi
+    // pointer args index mem1. (mem0[0x200] only ever holds the debug syscall
+    // ring's syscall# — reading mem0 here was a harness artifact.)
+    let wasi_mem = mem_bases.get(&1).copied().unwrap_or(MEM0);
     for (name, addr) in wasi_stubs.iter() {
         let name = name.clone();
         let counts = wasi_counts.clone();
@@ -12714,7 +12756,7 @@ fn megabinary_unicorn_watch_sp() {
             }
             let guest_mem = |uc: &Unicorn<'_, ()>, ptr: u64, len: usize| -> Vec<u8> {
                 let mut buf = vec![0u8; len];
-                let _ = uc.mem_read(MEM0 + ptr, &mut buf);
+                let _ = uc.mem_read(wasi_mem + ptr, &mut buf);
                 buf
             };
             let mut ret: u64 = 0;
@@ -12764,7 +12806,7 @@ fn megabinary_unicorn_watch_sp() {
                             libc::write(host_fd, out.as_ptr() as *const _, out.len());
                         }
                     }
-                    uc.mem_write(MEM0 + nwritten as u64, &total.to_le_bytes())
+                    uc.mem_write(wasi_mem + nwritten as u64, &total.to_le_bytes())
                         .unwrap();
                 }
                 "fd_read" => {
@@ -12791,7 +12833,7 @@ fn megabinary_unicorn_watch_sp() {
                         *f += 1;
                         v
                     };
-                    uc.mem_write(MEM0 + opened as u64, &fd.to_le_bytes())
+                    uc.mem_write(wasi_mem + opened as u64, &fd.to_le_bytes())
                         .unwrap();
                 }
                 "proc_exit" => {
@@ -12803,21 +12845,21 @@ fn megabinary_unicorn_watch_sp() {
                 }
                 "clock_time_get" => {
                     let time_ptr = x(2) as u32;
-                    uc.mem_write(MEM0 + time_ptr as u64, &0u64.to_le_bytes())
+                    uc.mem_write(wasi_mem + time_ptr as u64, &0u64.to_le_bytes())
                         .unwrap();
                 }
                 "fd_seek" => {
                     let newoff = x(3) as u32;
-                    uc.mem_write(MEM0 + newoff as u64, &0u64.to_le_bytes())
+                    uc.mem_write(wasi_mem + newoff as u64, &0u64.to_le_bytes())
                         .unwrap();
                 }
                 "fd_fdstat_get" => {
                     let stat = x(1) as u32;
-                    uc.mem_write(MEM0 + stat as u64, &[0u8; 24]).unwrap();
+                    uc.mem_write(wasi_mem + stat as u64, &[0u8; 24]).unwrap();
                 }
                 "fd_filestat_get" => {
                     let stat = x(1) as u32;
-                    uc.mem_write(MEM0 + stat as u64, &[0u8; 64]).unwrap();
+                    uc.mem_write(wasi_mem + stat as u64, &[0u8; 64]).unwrap();
                 }
                 "fd_close" | "fd_fdstat_set_flags" => {}
                 "path_filestat_get" | "path_readlink" => {
@@ -12893,6 +12935,42 @@ fn megabinary_unicorn_watch_sp() {
         },
     )
     .unwrap();
+
+    // Multi-memory check: watch writes to offset 0x200 in EVERY memory
+    // (mem0 guest / mem1 / mem2 handler-statics). The debug syscall ring
+    // writes the syscall# to mem0[0x200]; marshal_iovec should write iov.base
+    // (0x1000) to IOVEC_SCRATCH_OFFSET=0x200 — in whichever memory it targets.
+    {
+        let mem_bases_for_watch = mem_bases.clone();
+        let cap = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+        for (midx, mbase) in mem_bases_for_watch.iter() {
+            let midx = *midx;
+            let mbase = *mbase;
+            let cap = cap.clone();
+            uc.add_mem_hook(
+                unicorn_engine::unicorn_const::HookType::MEM_WRITE,
+                mbase + 0x200,
+                mbase + 0x210,
+                move |uc, _t, addr, size, value| {
+                    let mut n = cap.lock().unwrap();
+                    if *n < 60 {
+                        *n += 1;
+                        let pc = uc.reg_read(RegisterARM64::PC).unwrap_or(0);
+                        eprintln!(
+                            "  mem{}[0x200-region] write: [{:#x}] size={} val={:#x} pc={:#x}",
+                            midx,
+                            addr - mbase,
+                            size,
+                            value as u64,
+                            pc
+                        );
+                    }
+                    true
+                },
+            )
+            .unwrap();
+        }
+    }
 
     // Watch for stores of the stdout buffer pointer (0x542040 in this layout)
     // anywhere in mem0 — this finds where the FILE.buffer field is assigned
@@ -13150,12 +13228,15 @@ fn megabinary_unicorn_watch_sp() {
         let _ = std::fs::write("/tmp/mega_entry_seq.txt", s);
         eprintln!("dumped {} entries to /tmp/mega_entry_seq.txt", seq.len());
     }
-    // Dump the register-file trace (fnidx, x0, x1, x20, pc per entry).
+    // Dump the register-file trace (fnidx, x0, x1, x2, x4, x20, pc per entry).
     {
         let rt = reg_trace.lock().unwrap();
         let mut s = String::new();
-        for (f, x0, x1, x20, pc) in rt.iter() {
-            s.push_str(&format!("{} {:#x} {:#x} {:#x} {:#x}\n", f, x0, x1, x20, pc));
+        for (f, x0, x1, x2, x4, x20, pc) in rt.iter() {
+            s.push_str(&format!(
+                "{} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x}\n",
+                f, x0, x1, x2, x4, x20, pc
+            ));
         }
         let _ = std::fs::write("/tmp/mega_regtrace.txt", s);
         eprintln!("dumped {} reg-trace rows to /tmp/mega_regtrace.txt", rt.len());
