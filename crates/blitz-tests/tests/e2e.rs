@@ -11843,13 +11843,25 @@ fn test_unicorn_aarch64_allstack_sharded_ring_load_dispatch() {
 fn megabinary_regfile_wasm(npads: u32, pairs: u32) -> Vec<u8> {
     // The exact mixed-type signature from speet's link.rs (AArch64 arm).
     let mut sig: Vec<ValType> = Vec::new();
-    for _ in 0..31 { sig.push(ValType::I64); } // x0..x30
+    for _ in 0..31 {
+        sig.push(ValType::I64);
+    } // x0..x30
     sig.push(ValType::I64); // PC (31)
-    for _ in 0..4 { sig.push(ValType::I32); } // NZCV (32..35)
-    for _ in 0..3 { sig.push(ValType::I64); } // scratch (36..38)
-    for _ in 0..32 { sig.push(ValType::F64); } // V0..V31 low (39..70)
-    for _ in 0..32 { sig.push(ValType::I64); } // V high (71..102)
-    for _ in 0..5 { sig.push(ValType::I64); } // RA,TPIDR,SP(105),text_base,host_mem_base (103..107)
+    for _ in 0..4 {
+        sig.push(ValType::I32);
+    } // NZCV (32..35)
+    for _ in 0..3 {
+        sig.push(ValType::I64);
+    } // scratch (36..38)
+    for _ in 0..32 {
+        sig.push(ValType::F64);
+    } // V0..V31 low (39..70)
+    for _ in 0..32 {
+        sig.push(ValType::I64);
+    } // V high (71..102)
+    for _ in 0..5 {
+        sig.push(ValType::I64);
+    } // RA,TPIDR,SP(105),text_base,host_mem_base (103..107)
     assert_eq!(sig.len(), 108);
 
     let mut module = Module::new();
@@ -11943,6 +11955,445 @@ fn test_unicorn_aarch64_allstack_sharded_mixed_regfile_far_dispatch() {
     // X0 = result[0] = param[105] (SP slot). If the i32/f64 params shift the
     // frame, this picks up neighbor bits instead of the sentinel.
     assert_eq!(uc.reg_read(RegisterARM64::X0).unwrap(), SP_SENTINEL);
+}
+
+// ── Megabinary differential harness ──────────────────────────────────────────
+// Compile the real busybox megabinary in JIT mode (AllStack + sharded +
+// WasmMemSymbol) and run it under Unicorn with a memory-write watchpoint that
+// catches the exact native instruction that writes 0x100000000 (2^32) into the
+// register file. The 13 wasi imports are stubbed to a brk (they are never
+// called before the SP corruption, which is in musl init).
+
+/// Compile the megabinary JIT-mode. Returns (bytes, start_entry_offset, relocs,
+/// labels). Internal labels resolve in-buffer; only externals (wasi imports,
+/// __wasm_mem, __wasm_table) surface as relocs.
+fn compile_megabinary_jit(
+    wasm: &[u8],
+) -> (
+    Vec<u8>,
+    u64,
+    Vec<portal_solutions_asm_aarch64::out::bin::UnresolvedReloc<
+        portal_solutions_blitz_aarch64::AArch64Label,
+    >>,
+    std::collections::BTreeMap<portal_solutions_blitz_aarch64::AArch64Label, usize>,
+) {
+    use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
+    use portal_solutions_blitz_aarch64::{AArch64Arch, AArch64Label, naive, sysv};
+    use portal_solutions_blitz_common::shard::{SecondCtxConfig, ShardConfig};
+
+    let (sigs_wp, _enc, fsigs) = parse_sigs(wasm);
+    let func_imports: Vec<(String, String)> = {
+        let mut v = Vec::new();
+        for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+            if let wasmparser::Payload::ImportSection(reader) = payload {
+                for imp in reader.into_iter().flatten() {
+                    if let wasmparser::TypeRef::Func(_) = imp.ty {
+                        v.push((imp.module.to_string(), imp.name.to_string()));
+                    }
+                }
+            }
+        }
+        v
+    };
+    let n_imports = func_imports.len() as u32;
+    let func_imports_ref: Vec<(&str, &str)> = func_imports
+        .iter()
+        .map(|(m, n)| (m.as_str(), n.as_str()))
+        .collect();
+    let call_params: Vec<u32> = fsigs
+        .iter()
+        .map(|&ti| sigs_wp[ti as usize].params().len() as u32)
+        .collect();
+    let call_results: Vec<u32> = fsigs
+        .iter()
+        .map(|&ti| sigs_wp[ti as usize].results().len() as u32)
+        .collect();
+    let mut bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::CodeSectionEntry(body) = payload {
+            bodies.push(body);
+        }
+    }
+    let raw_ops =
+        mach_operators::<(), wasmparser::BinaryReaderError>(&bodies, &fsigs, &sigs_wp, n_imports);
+    let ops = dce_pass!(raw_ops);
+    let mut reencoder = RoundtripReencoder;
+    let mut ctx = ();
+    let mut out = AArch64Writer::<AArch64Label>::new();
+    let second_ctx = SecondCtxConfig::for_shard(ShardConfig {
+        imports_len: n_imports,
+        total_fns: fsigs.len() as u32,
+    });
+    let map = SingleShardMap;
+    let mut state = naive::State::default();
+    state.call_abi = naive::CallAbi::AllStack;
+    state.n_imports = n_imports;
+    state.call_params = call_params;
+    state.call_results = call_results;
+    state.sig_params = sigs_wp.iter().map(|s| s.params().len() as u32).collect();
+    state.sig_results = sigs_wp.iter().map(|s| s.results().len() as u32).collect();
+    state.mem_base = naive::MemBase::WasmMemSymbol;
+    state.shard = Some(naive::NaiveShardState::new(second_ctx, 0, n_imports, &map));
+    for op in ops {
+        sysv::SysVWriterExt::sysv_handle_op::<_, HandleOpError<_>>(
+            &mut out,
+            &mut ctx,
+            AArch64Arch::default(),
+            &mut state,
+            &func_imports_ref,
+            &op.unwrap(),
+            &mut reencoder,
+            0,
+        )
+        .unwrap();
+    }
+    let (bytes, labels, relocs) = out.into_parts_with_relocs();
+    // Resolve the `_start` export to its internal function id. It is NOT
+    // necessarily local function 0 — find it via the export section.
+    let mut start_wasm_idx: Option<u32> = None;
+    for payload in wasmparser::Parser::new(0).parse_all(wasm).flatten() {
+        if let wasmparser::Payload::ExportSection(reader) = payload {
+            for exp in reader.into_iter().flatten() {
+                if exp.name == "_start" {
+                    if let wasmparser::ExternalKind::Func = exp.kind {
+                        start_wasm_idx = Some(exp.index);
+                    }
+                }
+            }
+        }
+    }
+    let start_internal = start_wasm_idx.expect("no _start export") - n_imports;
+    let entry = labels[&AArch64Label::Indexed {
+        idx: start_internal as usize + 0x8000_0000,
+    }] as u64;
+    (bytes, entry, relocs, labels)
+}
+
+/// Run the megabinary under Unicorn with a value watchpoint for the corrupted
+/// SP (0x100000000) and per-function-entry SP-param logging. Returns when the
+/// watchpoint fires, when an import is hit, or on emu error. Prints the firing
+/// native PC and the megabinary slot function it maps to.
+#[test]
+fn megabinary_unicorn_watch_sp() {
+    use portal_solutions_asm_aarch64::out::bin::AsmRelocKind;
+    use portal_solutions_blitz_aarch64::AArch64Label;
+    use std::collections::BTreeMap;
+    use unicorn_engine::{
+        RegisterARM64, Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
+    };
+
+    let wasm = match std::fs::read("/tmp/bb_meta.wasm") {
+        Ok(w) => w,
+        Err(_) => {
+            eprintln!("megabinary not present; skipping");
+            return;
+        }
+    };
+    let mem0 = match std::fs::read("/tmp/bb_mem0.bin") {
+        Ok(m) => m,
+        Err(_) => {
+            eprintln!("mem0 image not present; skipping");
+            return;
+        }
+    };
+
+    let t = std::time::Instant::now();
+    let (bytes, entry, relocs, labels) = compile_megabinary_jit(&wasm);
+    eprintln!("compiled in {:?}, code_len={}", t.elapsed(), bytes.len());
+
+    // Layout: ADRP has ±4GB range, and the code is ~1.5GB, so every data region
+    // must sit within 4GB of every ADRP site. Pack everything right after the
+    // code so the farthest ADRP (code start) is < 1.5GB + data spread away.
+    const CODE: u64 = 0x100000;
+    let code_len = ((bytes.len() + 0xFFF) & !0xFFF) as u64;
+    let mut cursor = CODE + code_len;
+    let mut alloc = |size: u64| {
+        let a = cursor;
+        cursor += (size + 0xFFF) & !0xFFF;
+        a
+    };
+    let mem0_len = ((mem0.len() + 0xFFF) & !0xFFF) as u64;
+    let MEM0 = alloc(mem0_len);
+    const HOST_STACK_SIZE: u64 = 0x2000_000; // 32MB
+    let HOST_STACK = alloc(HOST_STACK_SIZE);
+    // table sized below; reserve generously then trim.
+    let table_bytes = ((labels.len() + 64) * 8) as u64;
+    let TABLE = alloc(table_bytes);
+    let STUB = alloc(0x1000);
+    let SYMS = alloc(0x100000); // up to 256 symbol cells
+    let SCRATCH_MEM = alloc(0x1000000); // 16MB scratch for extra memories
+
+    // Build __wasm_table: wasm fn idx -> host addr. Imports → STUB, locals →
+    // CODE + entry offset (Indexed { internal_id + 0x8000_0000 }).
+    let n_imports = 13u32;
+    let n_locals = labels
+        .keys()
+        .filter_map(|l| match l {
+            AArch64Label::Indexed { idx } if *idx >= 0x8000_0000 => Some(idx - 0x8000_0000),
+            _ => None,
+        })
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0) as u32;
+    let table_len = (n_imports + n_locals) as usize;
+    let mut table: Vec<u64> = vec![STUB; table_len];
+    for (l, off) in &labels {
+        if let AArch64Label::Indexed { idx } = l {
+            if *idx >= 0x8000_0000 {
+                let internal = (idx - 0x8000_0000) as u32;
+                let wasm_idx = (n_imports + internal) as usize;
+                table[wasm_idx] = CODE + *off as u64;
+            }
+        }
+    }
+
+    // Assign every external symbol a host address. mem0 gets the real image;
+    // other memories/globals/data-segs get scratch cells/pages (they aren't on
+    // the SP-corruption path, but their ADRP+ADD relocs must resolve).
+    let mut sym_addrs: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let mut next_sym = SYMS;
+    let mut next_mem = SCRATCH_MEM;
+    let mut mem_cells: Vec<(u64, u64)> = Vec::new(); // (cell_addr, mem_base)
+    let mut wasi_stubs: Vec<(String, u64)> = Vec::new(); // (name, stub_addr)
+    let mut next_wasi = STUB;
+    for r in &relocs {
+        if let AArch64Label::External { name } = &r.label {
+            if sym_addrs.contains_key(name) {
+                continue;
+            }
+            let addr = if name == "__wasm_mem" {
+                // cell holding the real mem0 base
+                mem_cells.push((next_sym, MEM0));
+                next_sym += 0x1000;
+                *mem_cells.last().map(|(c, _)| c).unwrap()
+            } else if let Some(rest) = name.strip_prefix("__wasm_mem_") {
+                let _n: u32 = rest.parse().unwrap_or(0);
+                mem_cells.push((next_sym, next_mem));
+                next_sym += 0x1000;
+                next_mem += 0x100000; // 1MB scratch per extra memory
+                mem_cells.last().map(|(c, _)| *c).unwrap()
+            } else if name.starts_with("wasi_snapshot_preview1") {
+                // Each import gets its own stub slot (a `ret`) so we can tell
+                // which import was called.
+                let a = next_wasi;
+                next_wasi += 0x10;
+                wasi_stubs.push((name.clone(), a));
+                a
+            } else if name == "__wasm_table" {
+                TABLE
+            } else {
+                // __wasm_global_N / __wasm_data_seg_N: a scratch cell.
+                let a = next_sym;
+                next_sym += 0x1000;
+                a
+            };
+            sym_addrs.insert(name.clone(), addr);
+        }
+    }
+
+    // Patch every external reloc to its symbol's host address.
+    let mut bytes = bytes;
+    for r in &relocs {
+        let sym_addr = match &r.label {
+            AArch64Label::External { name } => sym_addrs[name],
+            other => panic!("unexpected non-external reloc label {other:?}"),
+        };
+        bytes = patch_aarch64_relocs_single(bytes, r, CODE, sym_addr);
+    }
+
+    let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+    uc.mem_map(CODE, code_len, Prot::ALL).unwrap();
+    uc.mem_map(HOST_STACK, HOST_STACK_SIZE, Prot::ALL).unwrap();
+    uc.mem_map(MEM0, mem0_len, Prot::ALL).unwrap();
+    uc.mem_map(TABLE, ((table_len * 8 + 0xFFF) & !0xFFF) as u64, Prot::ALL)
+        .unwrap();
+    uc.mem_map(
+        STUB,
+        ((wasi_stubs.len() * 0x10 + 0xFFF) & !0xFFF).max(0x1000) as u64,
+        Prot::ALL,
+    )
+    .unwrap();
+    // Symbol cells region (one 4KB page per external symbol) + scratch
+    // memories for non-mem0 `__wasm_mem_N`.
+    let n_sym_pages = ((next_sym - SYMS) + 0xFFF) & !0xFFF;
+    uc.mem_map(SYMS, n_sym_pages.max(0x1000), Prot::ALL).unwrap();
+    let n_scratch = ((next_mem - SCRATCH_MEM) + 0xFFF) & !0xFFF;
+    if n_scratch > 0 {
+        uc.mem_map(SCRATCH_MEM, n_scratch.max(0x100000), Prot::ALL).unwrap();
+    }
+
+    uc.mem_write(CODE, &bytes).unwrap();
+    uc.mem_write(MEM0, &mem0).unwrap();
+    // Populate each memory base cell: __wasm_mem → MEM0, __wasm_mem_N → scratch.
+    for (cell, base) in &mem_cells {
+        uc.mem_write(*cell, &base.to_le_bytes()).unwrap();
+    }
+    // Write the function-pointer table.
+    let mut tbl_bytes = Vec::with_capacity(table_len * 8);
+    for a in &table {
+        tbl_bytes.extend_from_slice(&a.to_le_bytes());
+    }
+    uc.mem_write(TABLE, &tbl_bytes).unwrap();
+    // Each wasi stub: `mov x0, #0; ret` (return success). A code hook on the
+    // stub region logs which import fired.
+    for (_, addr) in &wasi_stubs {
+        uc.mem_write(*addr, &0xD280_0000u32.to_le_bytes()).unwrap(); // mov x0,#0
+        uc.mem_write(*addr + 4, &0xD65F_03C0u32.to_le_bytes()).unwrap(); // ret
+    }
+
+    // Register file: 108 params on the incoming stack, all 0 except
+    // SP(105)=0x530000, text_base(106)=0x400000, host_mem_base(107)=0.
+    let mut args = vec![0u64; 108];
+    args[105] = 0x530000;
+    args[106] = 0x400000;
+    let frame = ((108u64 + 2) * 8 + 15) & !15;
+    let sp = (HOST_STACK + HOST_STACK_SIZE - frame - 16) & !15;
+    for (i, &a) in args.iter().enumerate() {
+        uc.mem_write(sp + (i as u64) * 8, &a.to_le_bytes()).unwrap();
+    }
+    uc.reg_write(RegisterARM64::SP, sp).unwrap();
+    uc.reg_write(RegisterARM64::X27, TABLE).unwrap(); // SCR = cross-shard tbl base
+
+    // Map entry address → wasm func index for readable logging.
+    let mut addr_to_fnidx: std::collections::BTreeMap<u64, u32> = BTreeMap::new();
+    for (l, off) in &labels {
+        if let AArch64Label::Indexed { idx } = l {
+            if *idx >= 0x8000_0000 {
+                let internal = (idx - 0x8000_0000) as u32;
+                addr_to_fnidx.insert(CODE + *off as u64, n_imports + internal);
+            }
+        }
+    }
+    let addr_to_fn = std::sync::Arc::new(addr_to_fnidx);
+    let addr_to_fn2 = addr_to_fn.clone();
+
+    // Sorted FUNCTION-entry addresses only (Indexed >= 0x8000_0000), for
+    // per-entry SP logging and PC→slot mapping. Control-flow/helper labels
+    // are excluded so they aren't misdetected as function entries.
+    let mut entries: Vec<u64> = labels
+        .iter()
+        .filter_map(|(l, off)| match l {
+            AArch64Label::Indexed { idx } if *idx >= 0x8000_0000 => Some(CODE + *off as u64),
+            _ => None,
+        })
+        .collect();
+    entries.sort_unstable();
+    let entries = std::sync::Arc::new(entries);
+    let entries2 = entries.clone();
+
+    // Per-entry SP log + full entry sequence (to see the call chain to the
+    // corruption). Record every function entry; log SP-param on change.
+    let sp_log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(u64, u64)>::new()));
+    let sp_log2 = sp_log.clone();
+    let last_sp = std::sync::Arc::new(std::sync::Mutex::new(0u64));
+    let last_sp2 = last_sp.clone();
+    let entry_seq = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
+    let entry_seq2 = entry_seq.clone();
+
+    uc.add_code_hook(CODE, CODE + code_len, move |uc, addr, _size| {
+        if entries2.binary_search(&addr).is_ok() {
+            entry_seq2.lock().unwrap().push(addr);
+            let cur_sp = uc.reg_read(RegisterARM64::SP).unwrap_or(0);
+            let mut buf = [0u8; 8];
+            if uc.mem_read(cur_sp + 105 * 8, &mut buf).is_ok() {
+                let v = u64::from_le_bytes(buf);
+                let mut last = last_sp2.lock().unwrap();
+                if v != *last {
+                    let fnidx = addr_to_fn2.get(&addr).copied().unwrap_or(u32::MAX);
+                    sp_log2.lock().unwrap().push((fnidx as u64, v));
+                    *last = v;
+                }
+            }
+        }
+    })
+    .unwrap();
+
+    // Log which wasi import fires (each stub is a separate slot).
+    let wasi_log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
+    let wasi_log2 = wasi_log.clone();
+    let stub_end = STUB + (wasi_stubs.len() as u64) * 0x10;
+    uc.add_code_hook(STUB, stub_end, move |uc, addr, _size| {
+        wasi_log2.lock().unwrap().push(addr);
+        eprintln!("  wasi import called at stub {:#x}", addr);
+    })
+    .unwrap();
+
+    // Value watchpoint: any 8-byte write of 0x100000000 to the host stack.
+    let fired = std::sync::Arc::new(std::sync::Mutex::new(None::<(u64, u64)>));
+    let fired2 = fired.clone();
+    uc.add_mem_hook(
+        unicorn_engine::unicorn_const::HookType::MEM_WRITE,
+        HOST_STACK,
+        HOST_STACK + HOST_STACK_SIZE,
+        move |uc, _mem_type, _addr, _size, value| {
+            if value as u64 == 0x1000_0000_0000 {
+                let pc = uc.reg_read(RegisterARM64::PC).unwrap_or(0);
+                *fired2.lock().unwrap() = Some((pc, value as u64));
+                uc.emu_stop().unwrap();
+            }
+            true
+        },
+    )
+    .unwrap();
+
+    let ret = CODE + code_len;
+    uc.reg_write(RegisterARM64::LR, ret).unwrap();
+    let result = uc.emu_start(CODE + entry, ret, 0, 0);
+    let pc = uc.reg_read(RegisterARM64::PC).unwrap_or(0);
+    eprintln!("emu result: {:?} at native pc {:#x}", result, pc);
+    {
+        let slot = entries.partition_point(|e| *e <= pc);
+        let slot_addr = if slot > 0 { entries[slot - 1] } else { 0 };
+        eprintln!(
+            "  native pc {:#x} -> slot entry {:#x} (+{:#x} into fn)",
+            pc,
+            slot_addr,
+            pc - slot_addr
+        );
+        let mut insn = [0u8; 4];
+        if uc.mem_read(pc, &mut insn).is_ok() {
+            eprintln!("  instruction: {:#010x}", u32::from_le_bytes(insn));
+        }
+    }
+    // Last 30 function entries leading here.
+    let seq = entry_seq.lock().unwrap();
+    eprintln!("entry sequence ({} total; last 30):", seq.len());
+    for e in seq.iter().rev().take(30).rev() {
+        eprintln!("  {:#x}", e);
+    }
+
+    // Report which wasi imports fired.
+    let wlog = wasi_log.lock().unwrap();
+    eprintln!("wasi imports called ({}):", wlog.len());
+    for a in wlog.iter() {
+        let name = wasi_stubs
+            .iter()
+            .find(|(_, addr)| *a == *addr)
+            .map(|(n, _)| n.as_str())
+            .unwrap_or("?");
+        eprintln!("  {:#x} {}", a, name);
+    }
+
+    // Report SP evolution.
+    let log = sp_log.lock().unwrap();
+    eprintln!("SP-param transitions ({}):", log.len());
+    for (fnidx, v) in log.iter() {
+        eprintln!("  wasm_fn={} sp={:#x}", fnidx, v);
+    }
+    if let Some((pc, v)) = *fired.lock().unwrap() {
+        // Map native PC → megabinary slot: the greatest entry <= pc.
+        let slot = entries.partition_point(|e| *e <= pc);
+        let slot_addr = if slot > 0 { entries[slot - 1] } else { 0 };
+        eprintln!(
+            "WATCHPOINT FIRED: value {:#x} written at native pc {:#x} (slot entry {:#x}, +{:#x})",
+            v,
+            pc,
+            slot_addr,
+            pc - slot_addr
+        );
+        panic!("SP corruption detected at native pc {:#x}", pc);
+    }
 }
 
 #[test]
