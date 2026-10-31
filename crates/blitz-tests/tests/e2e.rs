@@ -11721,6 +11721,119 @@ fn test_unicorn_aarch64_allstack_sharded_call_small_helper_108() {
     }
 }
 
+/// The fault-meta megabinary shape: f0 (108/108) does an i64.load of a
+/// sentinel cell (regalloc caches the result in a register), then several
+/// ring-store mem0 writes (which use T0/T1/T2 scratch and flush regalloc),
+/// then threads the loaded value through a return_call_indirect dispatch to
+/// fT. If the cached load result goes stale across the ring stores or the
+/// dispatch, fT sees the wrong value.
+fn ring_load_dispatch_wasm() -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    let sig: Vec<ValType> = vec![ValType::I64; 108];
+    types.ty().function(sig.clone(), sig.clone()); // 0: f0/fT signature
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0); // f0
+    functions.function(0); // fT
+    module.section(&functions);
+    // Memory section (5) must precede Export (7) or parse_all silently drops
+    // the whole module (yielding zero bodies and an empty labels map).
+    let mut memories = MemorySection::new();
+    memories.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
+    module.section(&memories);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    let m = |align| MemArg {
+        offset: 0,
+        align,
+        memory_index: 0,
+    };
+    // f0: load sentinel into a local (regalloc-cached), ring stores, then
+    // return_call_indirect passing the loaded value as param[0].
+    let mut f0 = Function::new([(1, ValType::I64)]);
+    f0.instruction(&Instruction::I32Const(64)); // addr
+    f0.instruction(&Instruction::I64Load(m(3)));
+    f0.instruction(&Instruction::LocalSet(108)); // cache the loaded value
+    // ring stores interleaved (each flushes regalloc and uses scratch regs)
+    for i in 0..4u32 {
+        f0.instruction(&Instruction::I32Const((i * 8) as i32));
+        f0.instruction(&Instruction::LocalGet((i + 1) % 108));
+        f0.instruction(&Instruction::I64Store(m(3)));
+    }
+    // push params 0..107 with param[0] = the cached load result
+    f0.instruction(&Instruction::LocalGet(108));
+    for i in 1..108u32 {
+        f0.instruction(&Instruction::LocalGet(i));
+    }
+    f0.instruction(&Instruction::I32Const(0)); // table index
+    f0.instruction(&Instruction::ReturnCallIndirect {
+        type_index: 0,
+        table_index: 0,
+    });
+    f0.instruction(&Instruction::End);
+    code.function(&f0);
+    // fT: echo params; result[0] = param[0] = the sentinel.
+    let mut ft = Function::new([]);
+    for i in 0..108u32 {
+        ft.instruction(&Instruction::LocalGet(i));
+    }
+    ft.instruction(&Instruction::End);
+    code.function(&ft);
+    module.section(&code);
+    module.finish()
+}
+
+#[test]
+fn test_unicorn_aarch64_allstack_sharded_ring_load_dispatch() {
+    use unicorn_engine::{
+        RegisterARM64, Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
+    };
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x8000000;
+    const TABLE: u64 = 0x4000000;
+    const CELL: u64 = 0x5000000;
+    const GUEST_MEM: u64 = 0x5100000;
+    const SENTINEL: u64 = 0x51d2d0; // the value Lane A reads from the cell
+
+    let wasm = ring_load_dispatch_wasm();
+    let (code, entry, ft_off) = compile_aarch64_sharded_indirect(&wasm);
+    let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+    let code_len = ((code.len() + 0xFFF) & !0xFFF).max(0x40000) as u64;
+    uc.mem_map(CODE, code_len, Prot::ALL).unwrap();
+    uc.mem_map(STACK, 0x40000, Prot::ALL).unwrap();
+    uc.mem_map(TABLE, 0x1000, Prot::ALL).unwrap();
+    uc.mem_map(CELL & !0xFFF, 0x2000, Prot::ALL).unwrap();
+    uc.mem_map(GUEST_MEM, 0x10000, Prot::ALL).unwrap();
+    uc.mem_write(CODE, &code).unwrap();
+    uc.mem_write(CELL, &GUEST_MEM.to_le_bytes()).unwrap();
+    uc.mem_write(TABLE, &(CODE + ft_off).to_le_bytes()).unwrap();
+    // Preload the sentinel cell at guest_mem[64].
+    uc.mem_write(GUEST_MEM + 64, &SENTINEL.to_le_bytes()).unwrap();
+    let args: Vec<u64> = (0..108u64).map(|i| 0xCCCC_0000 + i).collect();
+    let frame = ((108u64 + 2) * 8 + 15) & !15;
+    let sp = (STACK + 0x40000 - frame - 16) & !15;
+    for (i, &a) in args.iter().enumerate() {
+        uc.mem_write(sp + (i as u64) * 8, &a.to_le_bytes()).unwrap();
+    }
+    uc.reg_write(RegisterARM64::SP, sp).unwrap();
+    uc.reg_write(RegisterARM64::X27, 0x500000).unwrap();
+    let ret = CODE + code_len;
+    uc.reg_write(RegisterARM64::LR, ret).unwrap();
+    uc.emu_start(CODE + entry, ret, 0, 5_000_000).unwrap();
+    // fT echoes param[0] which is the loaded sentinel.
+    assert_eq!(uc.reg_read(RegisterARM64::X0).unwrap(), SENTINEL);
+}
+
 #[test]
 fn test_unicorn_riscv64_allstack_multiresult_call_108() {
     for n in [2u32, 4, 108] {
