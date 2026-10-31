@@ -11972,9 +11972,11 @@ fn compile_megabinary_jit(
 ) -> (
     Vec<u8>,
     u64,
-    Vec<portal_solutions_asm_aarch64::out::bin::UnresolvedReloc<
-        portal_solutions_blitz_aarch64::AArch64Label,
-    >>,
+    Vec<
+        portal_solutions_asm_aarch64::out::bin::UnresolvedReloc<
+            portal_solutions_blitz_aarch64::AArch64Label,
+        >,
+    >,
     std::collections::BTreeMap<portal_solutions_blitz_aarch64::AArch64Label, usize>,
 ) {
     use portal_solutions_asm_aarch64::out::bin::AArch64Writer;
@@ -12069,6 +12071,108 @@ fn compile_megabinary_jit(
     (bytes, entry, relocs, labels)
 }
 
+/// Minimal wasm section walker for the megabinary harness: memory min page
+/// counts, global i32/i64 const init values, and data segments
+/// (flags, mem_idx, active offset, bytes).
+fn parse_megabinary_sections(
+    wasm: &[u8],
+) -> (
+    Vec<u32>,                            // memory min pages
+    Vec<u64>,                            // global init values
+    Vec<(u32, u32, u64, Vec<u8>)>,       // data segs: (flags, mem, off, bytes)
+) {
+    let mut mems = Vec::new();
+    let mut globals = Vec::new();
+    let mut segs = Vec::new();
+    let mut pos = 8usize;
+    let uleb = |p: &mut usize| -> u64 {
+        let mut r = 0u64;
+        let mut s = 0;
+        loop {
+            let b = wasm[*p];
+            *p += 1;
+            r |= ((b & 0x7f) as u64) << s;
+            if b & 0x80 == 0 {
+                break;
+            }
+            s += 7;
+        }
+        r
+    };
+    while pos < wasm.len() {
+        let sec = wasm[pos];
+        pos += 1;
+        let size = uleb(&mut pos) as usize;
+        let body = pos;
+        match sec {
+            5 => {
+                let cnt = uleb(&mut pos);
+                for _ in 0..cnt {
+                    let fl = wasm[pos];
+                    pos += 1;
+                    let mn = uleb(&mut pos) as u32;
+                    if fl & 1 != 0 {
+                        uleb(&mut pos);
+                    }
+                    mems.push(mn);
+                }
+            }
+            6 => {
+                let cnt = uleb(&mut pos);
+                for _ in 0..cnt {
+                    pos += 2; // valtype + mutability
+                    let op = wasm[pos];
+                    pos += 1;
+                    let v = match op {
+                        0x41 | 0x42 => uleb(&mut pos),
+                        _ => {
+                            // skip to `end`
+                            while wasm[pos] != 0x0b {
+                                pos += 1;
+                            }
+                            0
+                        }
+                    };
+                    pos += 1; // end
+                    globals.push(v);
+                }
+            }
+            11 => {
+                let cnt = uleb(&mut pos);
+                for _ in 0..cnt {
+                    let fl = uleb(&mut pos) as u32;
+                    let (mem, off) = match fl {
+                        0 => {
+                            let _op = wasm[pos];
+                            pos += 1;
+                            let v = uleb(&mut pos);
+                            pos += 1; // end
+                            (0, v)
+                        }
+                        1 => (0, 0),
+                        2 => {
+                            let mi = uleb(&mut pos) as u32;
+                            let _op = wasm[pos];
+                            pos += 1;
+                            let v = uleb(&mut pos);
+                            pos += 1; // end
+                            (mi, v)
+                        }
+                        _ => (0, 0),
+                    };
+                    let n = uleb(&mut pos) as usize;
+                    let bytes = wasm[pos..pos + n].to_vec();
+                    pos += n;
+                    segs.push((fl, mem, off, bytes));
+                }
+            }
+            _ => {}
+        }
+        pos = body + size;
+    }
+    (mems, globals, segs)
+}
+
 /// Run the megabinary under Unicorn with a value watchpoint for the corrupted
 /// SP (0x100000000) and per-function-entry SP-param logging. Returns when the
 /// watchpoint fires, when an import is hit, or on emu error. Prints the firing
@@ -12090,6 +12194,14 @@ fn megabinary_unicorn_watch_sp() {
             return;
         }
     };
+    // This is an interactive debugging harness: it compiles the 227k-function
+    // megabinary (~130s) and emulates billions of instructions (minutes). It
+    // only runs when MEGA_RUN is set; otherwise it skips so the e2e suite
+    // stays fast.
+    if std::env::var("MEGA_RUN").is_err() {
+        eprintln!("MEGA_RUN not set; skipping megabinary differential");
+        return;
+    }
     let mem0 = match std::fs::read("/tmp/bb_mem0.bin") {
         Ok(m) => m,
         Err(_) => {
@@ -12097,6 +12209,14 @@ fn megabinary_unicorn_watch_sp() {
             return;
         }
     };
+
+    let (mem_pages, global_inits, data_segs) = parse_megabinary_sections(&wasm);
+    eprintln!(
+        "memories: {:?} pages, globals: {:?}, data segs: {}",
+        mem_pages,
+        global_inits,
+        data_segs.len()
+    );
 
     let t = std::time::Instant::now();
     let (bytes, entry, relocs, labels) = compile_megabinary_jit(&wasm);
@@ -12113,8 +12233,12 @@ fn megabinary_unicorn_watch_sp() {
         cursor += (size + 0xFFF) & !0xFFF;
         a
     };
+    // mem0: map its full declared min plus generous grow room so
+    // __wasm_memory_grow can succeed without moving the base. The image is
+    // 84 pages; give it 4096 pages (256MB) of virtual space.
     let mem0_len = ((mem0.len() + 0xFFF) & !0xFFF) as u64;
-    let MEM0 = alloc(mem0_len);
+    let mem0_capacity = (4096u64 * 0x10000).max(mem0_len);
+    let MEM0 = alloc(mem0_capacity);
     const HOST_STACK_SIZE: u64 = 0x2000_000; // 32MB
     let HOST_STACK = alloc(HOST_STACK_SIZE);
     // table sized below; reserve generously then trim.
@@ -12150,12 +12274,19 @@ fn megabinary_unicorn_watch_sp() {
 
     // Assign every external symbol a host address. mem0 gets the real image;
     // other memories/globals/data-segs get scratch cells/pages (they aren't on
-    // the SP-corruption path, but their ADRP+ADD relocs must resolve).
+    // the SP-corruption path, but their ADRP+ADD relocs must resolve). The
+    // `__wasm_memory_*` symbols are CALLABLE runtime helpers, not data: they
+    // get stub slots intercepted by code hooks below.
     let mut sym_addrs: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     let mut next_sym = SYMS;
     let mut next_mem = SCRATCH_MEM;
     let mut mem_cells: Vec<(u64, u64)> = Vec::new(); // (cell_addr, mem_base)
+    let mut mem_bases: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
     let mut wasi_stubs: Vec<(String, u64)> = Vec::new(); // (name, stub_addr)
+    let mut helper_stubs: Vec<(String, u64)> = Vec::new(); // (name, stub_addr)
+    let mut data_seg_cells: Vec<(u64, u64)> = Vec::new(); // (sym_addr, seg_index)
+    let mut global_cells: Vec<(u64, u64)> = Vec::new(); // (sym_addr, global_index)
+    let mut pages_cell: Option<u64> = None;
     let mut next_wasi = STUB;
     for r in &relocs {
         if let AArch64Label::External { name } = &r.label {
@@ -12165,11 +12296,18 @@ fn megabinary_unicorn_watch_sp() {
             let addr = if name == "__wasm_mem" {
                 // cell holding the real mem0 base
                 mem_cells.push((next_sym, MEM0));
+                mem_bases.insert(0, MEM0);
                 next_sym += 0x1000;
                 *mem_cells.last().map(|(c, _)| c).unwrap()
+            } else if name == "__wasm_mem_pages" {
+                pages_cell = Some(next_sym);
+                let a = next_sym;
+                next_sym += 0x1000;
+                a
             } else if let Some(rest) = name.strip_prefix("__wasm_mem_") {
-                let _n: u32 = rest.parse().unwrap_or(0);
+                let n: u32 = rest.parse().unwrap_or(0);
                 mem_cells.push((next_sym, next_mem));
+                mem_bases.insert(n, next_mem);
                 next_sym += 0x1000;
                 next_mem += 0x100000; // 1MB scratch per extra memory
                 mem_cells.last().map(|(c, _)| *c).unwrap()
@@ -12180,16 +12318,42 @@ fn megabinary_unicorn_watch_sp() {
                 next_wasi += 0x10;
                 wasi_stubs.push((name.clone(), a));
                 a
+            } else if name == "__wasm_memory_grow"
+                || name.starts_with("__wasm_memory_init_copy")
+                || name.starts_with("__wasm_memory_copy")
+                || name.starts_with("__wasm_memory_fill")
+            {
+                // Runtime helpers: hook-intercepted stub slots.
+                let a = next_wasi;
+                next_wasi += 0x10;
+                helper_stubs.push((name.clone(), a));
+                a
             } else if name == "__wasm_table" {
                 TABLE
+            } else if let Some(rest) = name.strip_prefix("__wasm_global_") {
+                let idx: u64 = rest.parse().unwrap_or(0);
+                global_cells.push((next_sym, idx));
+                let a = next_sym;
+                next_sym += 0x1000;
+                a
+            } else if let Some(rest) = name.strip_prefix("__wasm_data_seg_") {
+                let idx: u64 = rest.parse().unwrap_or(0);
+                data_seg_cells.push((next_sym, idx));
+                let a = next_sym;
+                next_sym += 0x1000;
+                a
             } else {
-                // __wasm_global_N / __wasm_data_seg_N: a scratch cell.
+                // Unknown symbol: a scratch cell.
                 let a = next_sym;
                 next_sym += 0x1000;
                 a
             };
             sym_addrs.insert(name.clone(), addr);
         }
+    }
+    eprintln!("symbol map ({}):", sym_addrs.len());
+    for (n, a) in &sym_addrs {
+        eprintln!("  {:#x} {}", a, n);
     }
 
     // Patch every external reloc to its symbol's host address.
@@ -12205,22 +12369,24 @@ fn megabinary_unicorn_watch_sp() {
     let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
     uc.mem_map(CODE, code_len, Prot::ALL).unwrap();
     uc.mem_map(HOST_STACK, HOST_STACK_SIZE, Prot::ALL).unwrap();
-    uc.mem_map(MEM0, mem0_len, Prot::ALL).unwrap();
+    uc.mem_map(MEM0, mem0_capacity, Prot::ALL).unwrap();
     uc.mem_map(TABLE, ((table_len * 8 + 0xFFF) & !0xFFF) as u64, Prot::ALL)
         .unwrap();
     uc.mem_map(
         STUB,
-        ((wasi_stubs.len() * 0x10 + 0xFFF) & !0xFFF).max(0x1000) as u64,
+        (((wasi_stubs.len() + helper_stubs.len()) * 0x10 + 0xFFF) & !0xFFF).max(0x1000) as u64,
         Prot::ALL,
     )
     .unwrap();
     // Symbol cells region (one 4KB page per external symbol) + scratch
     // memories for non-mem0 `__wasm_mem_N`.
     let n_sym_pages = ((next_sym - SYMS) + 0xFFF) & !0xFFF;
-    uc.mem_map(SYMS, n_sym_pages.max(0x1000), Prot::ALL).unwrap();
+    uc.mem_map(SYMS, n_sym_pages.max(0x1000), Prot::ALL)
+        .unwrap();
     let n_scratch = ((next_mem - SCRATCH_MEM) + 0xFFF) & !0xFFF;
     if n_scratch > 0 {
-        uc.mem_map(SCRATCH_MEM, n_scratch.max(0x100000), Prot::ALL).unwrap();
+        uc.mem_map(SCRATCH_MEM, n_scratch.max(0x100000), Prot::ALL)
+            .unwrap();
     }
 
     uc.mem_write(CODE, &bytes).unwrap();
@@ -12228,6 +12394,22 @@ fn megabinary_unicorn_watch_sp() {
     // Populate each memory base cell: __wasm_mem → MEM0, __wasm_mem_N → scratch.
     for (cell, base) in &mem_cells {
         uc.mem_write(*cell, &base.to_le_bytes()).unwrap();
+    }
+    // __wasm_mem_pages cell: mem0's current page count (the image size).
+    if let Some(cell) = pages_cell {
+        let pages = (mem0.len() / 0x10000) as u32;
+        uc.mem_write(cell, &(pages as u64).to_le_bytes()).unwrap();
+    }
+    // __wasm_global_N cells: their init values.
+    for (cell, idx) in &global_cells {
+        let v = global_inits.get(*idx as usize).copied().unwrap_or(0);
+        uc.mem_write(*cell, &v.to_le_bytes()).unwrap();
+    }
+    // __wasm_data_seg_N: the segment BYTES live at the symbol address.
+    for (addr, idx) in &data_seg_cells {
+        if let Some((_, _, _, bytes)) = data_segs.get(*idx as usize) {
+            uc.mem_write(*addr, bytes).unwrap();
+        }
     }
     // Write the function-pointer table.
     let mut tbl_bytes = Vec::with_capacity(table_len * 8);
@@ -12239,14 +12421,18 @@ fn megabinary_unicorn_watch_sp() {
     // stub region logs which import fired.
     for (_, addr) in &wasi_stubs {
         uc.mem_write(*addr, &0xD280_0000u32.to_le_bytes()).unwrap(); // mov x0,#0
-        uc.mem_write(*addr + 4, &0xD65F_03C0u32.to_le_bytes()).unwrap(); // ret
+        uc.mem_write(*addr + 4, &0xD65F_03C0u32.to_le_bytes())
+            .unwrap(); // ret
     }
 
     // Register file: 108 params on the incoming stack, all 0 except
     // SP(105)=0x530000, text_base(106)=0x400000, host_mem_base(107)=0.
+    // Register file per speet's entry contract: ALL params zero except
+    // param 105 (guest SP) = 0x530000. (Params 106/107, the baked
+    // text_base/host_mem_base, stay 0 — the frontend bakes those as
+    // i64.consts in the dispatch lowering, it does not read them here.)
     let mut args = vec![0u64; 108];
     args[105] = 0x530000;
-    args[106] = 0x400000;
     let frame = ((108u64 + 2) * 8 + 15) & !15;
     let sp = (HOST_STACK + HOST_STACK_SIZE - frame - 16) & !15;
     for (i, &a) in args.iter().enumerate() {
@@ -12282,6 +12468,64 @@ fn megabinary_unicorn_watch_sp() {
     let entries = std::sync::Arc::new(entries);
     let entries2 = entries.clone();
 
+    // Track the last executed block address so a wild branch can be
+    // attributed to its source block.
+    let last_block = std::sync::Arc::new(std::sync::Mutex::new(0u64));
+    let last_block2 = last_block.clone();
+
+    // Catch wild branches: (a) fetches of unmapped memory, (b) invalid
+    // instructions (e.g. executing zeros in a mapped scratch region). Both
+    // dump registers + the last executed block so the branch source is
+    // attributable.
+    let last_block3 = last_block.clone();
+    let last_block4 = last_block.clone();
+    macro_rules! dump_fault {
+        ($uc:expr, $addr:expr, $kind:expr, $lb:expr) => {{
+            let uc: &mut Unicorn<'_, ()> = $uc;
+            eprintln!("{} at {:#x}", $kind, $addr);
+            let lb = *$lb.lock().unwrap();
+            eprintln!("  last block: {:#x}", lb);
+            let regs = [
+                RegisterARM64::X0, RegisterARM64::X1, RegisterARM64::X2,
+                RegisterARM64::X3, RegisterARM64::X4, RegisterARM64::X5,
+                RegisterARM64::X6, RegisterARM64::X7, RegisterARM64::X8,
+                RegisterARM64::X9, RegisterARM64::X10, RegisterARM64::X11,
+                RegisterARM64::X12, RegisterARM64::X13, RegisterARM64::X14,
+                RegisterARM64::X15, RegisterARM64::X16, RegisterARM64::X17,
+                RegisterARM64::X18, RegisterARM64::X19, RegisterARM64::X20,
+                RegisterARM64::X27, RegisterARM64::X28, RegisterARM64::FP,
+                RegisterARM64::LR, RegisterARM64::SP,
+            ];
+            for reg in regs.iter() {
+                let v = uc.reg_read(*reg).unwrap_or(0);
+                eprintln!("    {:?} = {:#018x}", reg, v);
+            }
+            if lb >= CODE {
+                let mut win = vec![0u8; 0x100];
+                if uc.mem_read(lb, &mut win).is_ok() {
+                    let _ = std::fs::write("/tmp/mega_last_block.bin", &win);
+                    eprintln!("  dumped last block to /tmp/mega_last_block.bin");
+                }
+            }
+        }};
+    }
+    uc.add_mem_hook(
+        unicorn_engine::unicorn_const::HookType::MEM_FETCH_UNMAPPED,
+        1,
+        0,
+        move |uc, _mem_type, addr, _size, _value| {
+            dump_fault!(uc, addr, "FETCH_UNMAPPED", last_block3);
+            false
+        },
+    )
+    .unwrap();
+    uc.add_insn_invalid_hook(move |uc| {
+        let pc = uc.reg_read(RegisterARM64::PC).unwrap_or(0);
+        dump_fault!(uc, pc, "INSN_INVALID", last_block4);
+        false
+    })
+    .unwrap();
+
     // Per-entry SP log + full entry sequence (to see the call chain to the
     // corruption). Record every function entry; log SP-param on change.
     let sp_log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(u64, u64)>::new()));
@@ -12291,7 +12535,16 @@ fn megabinary_unicorn_watch_sp() {
     let entry_seq = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
     let entry_seq2 = entry_seq.clone();
 
+    let block_count = std::sync::Arc::new(std::sync::Mutex::new(0u64));
+    let block_count2 = block_count.clone();
     uc.add_code_hook(CODE, CODE + code_len, move |uc, addr, _size| {
+        *last_block2.lock().unwrap() = addr;
+        let mut bc = block_count2.lock().unwrap();
+        *bc += 1;
+        if *bc % 20_000_000 == 0 {
+            eprintln!("  ... {}M blocks, pc={:#x}", *bc / 1_000_000, addr);
+        }
+        drop(bc);
         if entries2.binary_search(&addr).is_ok() {
             entry_seq2.lock().unwrap().push(addr);
             let cur_sp = uc.reg_read(RegisterARM64::SP).unwrap_or(0);
@@ -12309,39 +12562,382 @@ fn megabinary_unicorn_watch_sp() {
     })
     .unwrap();
 
-    // Log which wasi import fires (each stub is a separate slot).
-    let wasi_log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
-    let wasi_log2 = wasi_log.clone();
-    let stub_end = STUB + (wasi_stubs.len() as u64) * 0x10;
-    uc.add_code_hook(STUB, stub_end, move |uc, addr, _size| {
-        wasi_log2.lock().unwrap().push(addr);
-        eprintln!("  wasi import called at stub {:#x}", addr);
-    })
-    .unwrap();
+    // Emulate the blitz runtime helpers (memory.grow / memory.init /
+    // memory.copy / memory.fill). Each stub slot is hook-intercepted before
+    // its instruction executes: the hook performs the op, sets X0 (result),
+    // and returns by setting PC = LR.
+    if !helper_stubs.is_empty() {
+        let helper_map = std::sync::Arc::new(helper_stubs.clone());
+        let mem_bases = std::sync::Arc::new(mem_bases.clone());
+        let mem0_capacity_pages = mem0_capacity / 0x10000;
+        // One hook per helper stub (hooks are address-ranged).
+        for (name, addr) in helper_map.iter() {
+            let name = name.clone();
+            let mem_bases = mem_bases.clone();
+            let pages_cell = pages_cell;
+            uc.add_code_hook(*addr, *addr + 1, move |uc, _a, _sz| {
+                let lr = uc.reg_read(RegisterARM64::LR).unwrap_or(0);
+                match name.as_str() {
+                    "__wasm_memory_grow" => {
+                        let delta = uc.reg_read(RegisterARM64::X0).unwrap_or(0) as u32;
+                        let cell = pages_cell.unwrap();
+                        let mut buf = [0u8; 8];
+                        uc.mem_read(cell, &mut buf).unwrap();
+                        let old = u64::from_le_bytes(buf) as u32;
+                        let new = old.wrapping_add(delta);
+                        if (new as u64) > mem0_capacity_pages {
+                            uc.reg_write(RegisterARM64::X0, 0xFFFF_FFFF).unwrap();
+                        } else {
+                            uc.mem_write(cell, &(new as u64).to_le_bytes()).unwrap();
+                            uc.reg_write(RegisterARM64::X0, old as u64).unwrap();
+                        }
+                        eprintln!("  memory_grow(delta={}) old={} new={}", delta, old, new);
+                    }
+                    n if n.starts_with("__wasm_memory_init_copy") => {
+                        let mem_idx: u32 = n
+                            .strip_prefix("__wasm_memory_init_copy_")
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0);
+                        let dest = uc.reg_read(RegisterARM64::X0).unwrap_or(0) as u32;
+                        let seg_base = uc.reg_read(RegisterARM64::X1).unwrap_or(0);
+                        let src_off = uc.reg_read(RegisterARM64::X2).unwrap_or(0) as u32;
+                        let len = uc.reg_read(RegisterARM64::X3).unwrap_or(0) as u32;
+                        let base = mem_bases[&mem_idx];
+                        let mut buf = vec![0u8; len as usize];
+                        uc.mem_read(seg_base + src_off as u64, &mut buf).unwrap();
+                        uc.mem_write(base + dest as u64, &buf).unwrap();
+                        eprintln!(
+                            "  memory_init_copy(mem{}, dest={:#x}, src_off={:#x}, len={:#x})",
+                            mem_idx, dest, src_off, len
+                        );
+                    }
+                    n if n.starts_with("__wasm_memory_copy") => {
+                        let dest = uc.reg_read(RegisterARM64::X0).unwrap_or(0) as u32;
+                        let src = uc.reg_read(RegisterARM64::X1).unwrap_or(0) as u32;
+                        let len = uc.reg_read(RegisterARM64::X2).unwrap_or(0) as u32;
+                        let base = mem_bases[&0];
+                        let mut buf = vec![0u8; len as usize];
+                        uc.mem_read(base + src as u64, &mut buf).unwrap();
+                        uc.mem_write(base + dest as u64, &buf).unwrap();
+                        eprintln!("  memory_copy(dest={:#x}, src={:#x}, len={:#x})", dest, src, len);
+                    }
+                    n if n.starts_with("__wasm_memory_fill") => {
+                        let dest = uc.reg_read(RegisterARM64::X0).unwrap_or(0) as u32;
+                        let val = uc.reg_read(RegisterARM64::X1).unwrap_or(0) as u8;
+                        let len = uc.reg_read(RegisterARM64::X2).unwrap_or(0) as u32;
+                        let base = mem_bases[&0];
+                        uc.mem_write(base + dest as u64, &vec![val; len as usize]).unwrap();
+                        eprintln!("  memory_fill(dest={:#x}, val={:#x}, len={:#x})", dest, val, len);
+                    }
+                    other => {
+                        eprintln!("  UNIMPLEMENTED helper {}", other);
+                    }
+                }
+                uc.reg_write(RegisterARM64::PC, lr).unwrap();
+            })
+            .unwrap();
+        }
+    }
 
-    // Value watchpoint: any 8-byte write of 0x100000000 to the host stack.
-    let fired = std::sync::Arc::new(std::sync::Mutex::new(None::<(u64, u64)>));
-    let fired2 = fired.clone();
+    // Emulate the 13 wasi_snapshot_preview1 imports well enough for
+    // busybox `echo argv` to run to proc_exit: fd_write actually writes to
+    // host stdout/stderr (so correct output validates the whole pipeline),
+    // path_open hands out fake fds, fd_read returns EOF, proc_exit stops the
+    // emu with the guest exit code.
+    let wasi_counts = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::BTreeMap::<String, u64>::new(),
+    ));
+    let exit_code = std::sync::Arc::new(std::sync::Mutex::new(None::<u64>));
+    let next_fd = std::sync::Arc::new(std::sync::Mutex::new(3u32));
+    for (name, addr) in wasi_stubs.iter() {
+        let name = name.clone();
+        let counts = wasi_counts.clone();
+        let exit_code = exit_code.clone();
+        let next_fd = next_fd.clone();
+        uc.add_code_hook(*addr, *addr + 1, move |uc, _a, _sz| {
+            *counts.lock().unwrap().entry(name.clone()).or_insert(0) += 1;
+            let lr = uc.reg_read(RegisterARM64::LR).unwrap_or(0);
+            let sp = uc.reg_read(RegisterARM64::SP).unwrap_or(0);
+            let x = |i: u64| -> u64 {
+                uc.reg_read(match i {
+                    0 => RegisterARM64::X0,
+                    1 => RegisterARM64::X1,
+                    2 => RegisterARM64::X2,
+                    3 => RegisterARM64::X3,
+                    4 => RegisterARM64::X4,
+                    5 => RegisterARM64::X5,
+                    _ => RegisterARM64::X6,
+                })
+                .unwrap_or(0)
+            };
+            let short = name.strip_prefix("wasi_snapshot_preview1__").unwrap_or(&name);
+            let call_seq = counts.lock().unwrap().values().sum::<u64>();
+            if call_seq <= 30 {
+                eprintln!(
+                    "  wasi[{}] {}(x0={:#x} x1={:#x} x2={:#x} x3={:#x})",
+                    call_seq,
+                    short,
+                    x(0),
+                    x(1),
+                    x(2),
+                    x(3)
+                );
+            }
+            let guest_mem = |uc: &Unicorn<'_, ()>, ptr: u64, len: usize| -> Vec<u8> {
+                let mut buf = vec![0u8; len];
+                let _ = uc.mem_read(MEM0 + ptr, &mut buf);
+                buf
+            };
+            let mut ret: u64 = 0;
+            match short {
+                "fd_write" => {
+                    let fd = x(0) as u32;
+                    let iovs = x(1) as u32;
+                    let iovs_len = x(2) as u32;
+                    let nwritten = x(3) as u32;
+                    let mut total = 0u32;
+                    let mut out: Vec<u8> = Vec::new();
+                    for i in 0..iovs_len {
+                        let ent = guest_mem(uc, (iovs + i * 8) as u64, 8);
+                        let base = u32::from_le_bytes(ent[0..4].try_into().unwrap());
+                        let len = u32::from_le_bytes(ent[4..8].try_into().unwrap());
+                        out.extend_from_slice(&guest_mem(uc, base as u64, len as usize));
+                        total += len;
+                    }
+                    let callno = counts.lock().unwrap().get(&name).copied().unwrap_or(0);
+                    if callno <= 10 || callno % 20000 == 0 {
+                        let mut detail = String::new();
+                        for i in 0..iovs_len.min(4) {
+                            let ent = guest_mem(uc, (iovs + i * 8) as u64, 8);
+                            let base = u32::from_le_bytes(ent[0..4].try_into().unwrap());
+                            let len = u32::from_le_bytes(ent[4..8].try_into().unwrap());
+                            let content = guest_mem(uc, base as u64, len.min(24) as usize);
+                            detail.push_str(&format!(
+                                " [iov{} base={:#x} len={} content={:?}]",
+                                i,
+                                base,
+                                len,
+                                String::from_utf8_lossy(&content)
+                            ));
+                        }
+                        eprintln!(
+                            "  fd_write(fd={}, iovs={:#x}, iovs_len={}, out_len={}):{}",
+                            fd,
+                            iovs,
+                            iovs_len,
+                            out.len(),
+                            detail
+                        );
+                    }
+                    if !out.is_empty() {
+                        let host_fd = if fd == 2 { 2 } else { 1 };
+                        unsafe {
+                            libc::write(host_fd, out.as_ptr() as *const _, out.len());
+                        }
+                    }
+                    uc.mem_write(MEM0 + nwritten as u64, &total.to_le_bytes())
+                        .unwrap();
+                }
+                "fd_read" => {
+                    let nread = x(3) as u32;
+                    uc.mem_write(MEM0 + nread as u64, &0u32.to_le_bytes())
+                        .unwrap();
+                }
+                "path_open" => {
+                    // Log the path for the first few opens.
+                    let c = counts.lock().unwrap().get(&name).copied().unwrap_or(0);
+                    if c <= 20 {
+                        let path_ptr = x(2) as u32;
+                        let path_len = x(3) as u32;
+                        let p = guest_mem(uc, path_ptr as u64, path_len.min(256) as usize);
+                        eprintln!("  path_open({:?})", String::from_utf8_lossy(&p));
+                    }
+                    // 9th arg (opened_fd ptr) is on the stack.
+                    let mut buf = [0u8; 8];
+                    uc.mem_read(sp, &mut buf).unwrap();
+                    let opened = u64::from_le_bytes(buf) as u32;
+                    let fd = {
+                        let mut f = next_fd.lock().unwrap();
+                        let v = *f;
+                        *f += 1;
+                        v
+                    };
+                    uc.mem_write(MEM0 + opened as u64, &fd.to_le_bytes())
+                        .unwrap();
+                }
+                "proc_exit" => {
+                    let code = x(0);
+                    *exit_code.lock().unwrap() = Some(code);
+                    eprintln!("  proc_exit({})", code);
+                    uc.emu_stop().unwrap();
+                    return;
+                }
+                "clock_time_get" => {
+                    let time_ptr = x(2) as u32;
+                    uc.mem_write(MEM0 + time_ptr as u64, &0u64.to_le_bytes())
+                        .unwrap();
+                }
+                "fd_seek" => {
+                    let newoff = x(3) as u32;
+                    uc.mem_write(MEM0 + newoff as u64, &0u64.to_le_bytes())
+                        .unwrap();
+                }
+                "fd_fdstat_get" => {
+                    let stat = x(1) as u32;
+                    uc.mem_write(MEM0 + stat as u64, &[0u8; 24]).unwrap();
+                }
+                "fd_filestat_get" => {
+                    let stat = x(1) as u32;
+                    uc.mem_write(MEM0 + stat as u64, &[0u8; 64]).unwrap();
+                }
+                "fd_close" | "fd_fdstat_set_flags" => {}
+                "path_filestat_get" | "path_readlink" => {
+                    ret = 44; // ENOENT
+                }
+                "fd_readdir" => {
+                    ret = 8; // EBADF
+                }
+                other => {
+                    eprintln!("  UNIMPLEMENTED wasi import {}", other);
+                }
+            }
+            uc.reg_write(RegisterARM64::X0, ret).unwrap();
+            uc.reg_write(RegisterARM64::PC, lr).unwrap();
+        })
+        .unwrap();
+    }
+    // Watch the guest iov at mem0[0x200..0x210]: who writes it, with what.
+    // The stuck fd_write loop reads {base=0,len=0} from here, so the writer
+    // reveals whether the string pointer/len is miscomputed.
+    let iov_log = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+    let iov_log2 = iov_log.clone();
     uc.add_mem_hook(
         unicorn_engine::unicorn_const::HookType::MEM_WRITE,
-        HOST_STACK,
-        HOST_STACK + HOST_STACK_SIZE,
-        move |uc, _mem_type, _addr, _size, value| {
-            if value as u64 == 0x1000_0000_0000 {
+        MEM0 + 0x200,
+        MEM0 + 0x210,
+        move |uc, _t, addr, size, value| {
+            let mut n = iov_log2.lock().unwrap();
+            *n += 1;
+            if *n <= 40 {
                 let pc = uc.reg_read(RegisterARM64::PC).unwrap_or(0);
-                *fired2.lock().unwrap() = Some((pc, value as u64));
-                uc.emu_stop().unwrap();
+                eprintln!(
+                    "  iov write #{}: [{:#x}] size={} val={:#x} pc={:#x}",
+                    *n,
+                    addr - MEM0,
+                    size,
+                    value as u64,
+                    pc
+                );
             }
             true
         },
     )
     .unwrap();
 
+    // Value watchpoint: any 8-byte write of 0x100000000 (2^32) to the host
+    // stack. (Note: 2^32 = 0x1_0000_0000; an earlier draft watched for
+    // 0x1000_0000_0000 = 2^44 and so never fired.) The megabinary's frontend
+    // legitimately produces 2^32 as a transient via its `(a^b)<<32` i32
+    // compare idiom, so this hook is noisy AND slow (it fires on every one
+    // of the ~100 stack writes per call): it is gated behind MEGA_WATCH_232
+    // and normally disabled.
+    let fired = std::sync::Arc::new(std::sync::Mutex::new(None::<(u64, u64)>));
+    let fired_count = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+    if std::env::var("MEGA_WATCH_232").is_ok() {
+    let fired2 = fired.clone();
+    let fired_count2 = fired_count.clone();
+    let entries3 = entries.clone();
+    let addr_to_fn3 = addr_to_fn.clone();
+    uc.add_mem_hook(
+        unicorn_engine::unicorn_const::HookType::MEM_WRITE,
+        HOST_STACK,
+        HOST_STACK + HOST_STACK_SIZE,
+        move |uc, _mem_type, addr, _size, value| {
+            if value as u64 == 0x1_0000_0000 {
+                let pc = uc.reg_read(RegisterARM64::PC).unwrap_or(0);
+                let slot = entries3.partition_point(|e| *e <= pc);
+                let slot_addr = if slot > 0 { entries3[slot - 1] } else { pc };
+                let fnidx = addr_to_fn3.get(&slot_addr).copied().unwrap_or(u32::MAX);
+                let mut n = fired_count2.lock().unwrap();
+                *n += 1;
+                eprintln!(
+                    "  2^32 write #{}: pc={:#x} wasm_fn={} +{:#x} -> [{:#x}]",
+                    *n, pc, fnidx, pc - slot_addr, addr
+                );
+                if *n == 1 {
+                    // Dump the whole first-firing function (plus trailing
+                    // bytes) so the consumer of the 2^32 can be traced.
+                    let mut win = vec![0u8; (pc + 0x80 - slot_addr) as usize];
+                    if uc.mem_read(slot_addr, &mut win).is_ok() {
+                        let _ = std::fs::write("/tmp/mega_fault_window.bin", &win);
+                        eprintln!("  dumped fn window to /tmp/mega_fault_window.bin");
+                    }
+                }
+                if *n >= 500 {
+                    *fired2.lock().unwrap() = Some((pc, value as u64));
+                    uc.emu_stop().unwrap();
+                }
+            }
+            true
+        },
+    )
+        .unwrap();
+    }
+
     let ret = CODE + code_len;
     uc.reg_write(RegisterARM64::LR, ret).unwrap();
-    let result = uc.emu_start(CODE + entry, ret, 0, 0);
+    eprintln!(
+        "layout: CODE={:#x}..{:#x} MEM0={:#x} HOST_STACK={:#x} TABLE={:#x}({} entries) STUB={:#x} SYMS={:#x} SCRATCH={:#x}",
+        CODE,
+        CODE + code_len,
+        MEM0,
+        HOST_STACK,
+        TABLE,
+        table_len,
+        STUB,
+        SYMS,
+        SCRATCH_MEM
+    );
+    // Optionally dump the compiled code for offline disassembly.
+    if std::env::var("MEGA_DUMP_CODE").is_ok() {
+        let _ = std::fs::write("/tmp/bb_megacode.bin", &bytes);
+        eprintln!("dumped {} bytes of code to /tmp/bb_megacode.bin", bytes.len());
+    }
+    let result = uc.emu_start(
+        CODE + entry,
+        ret,
+        0,
+        std::env::var("MEGA_COUNT")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(3_000_000_000),
+    );
     let pc = uc.reg_read(RegisterARM64::PC).unwrap_or(0);
     eprintln!("emu result: {:?} at native pc {:#x}", result, pc);
+    if result.is_err() {
+        let lb = *last_block.lock().unwrap();
+        eprintln!("last executed block: {:#x}", lb);
+        // Dump a window around the last block so the wild branch's source
+        // instruction can be disassembled offline.
+        let start = lb.saturating_sub(0);
+        let mut win = vec![0u8; 0x100];
+        if uc.mem_read(start, &mut win).is_ok() {
+            let _ = std::fs::write("/tmp/mega_last_block.bin", &win);
+            eprintln!("dumped last block [{:#x}..] to /tmp/mega_last_block.bin", start);
+        }
+        let regs = [
+            RegisterARM64::X0, RegisterARM64::X1, RegisterARM64::X2,
+            RegisterARM64::X9, RegisterARM64::X10, RegisterARM64::X11,
+            RegisterARM64::X12, RegisterARM64::X13, RegisterARM64::X14,
+            RegisterARM64::X15, RegisterARM64::X16, RegisterARM64::X17,
+            RegisterARM64::X18, RegisterARM64::X19, RegisterARM64::X27,
+            RegisterARM64::FP, RegisterARM64::LR, RegisterARM64::SP,
+        ];
+        for reg in regs.iter() {
+            let v = uc.reg_read(*reg).unwrap_or(0);
+            eprintln!("    {:?} = {:#018x}", reg, v);
+        }
+    }
     {
         let slot = entries.partition_point(|e| *e <= pc);
         let slot_addr = if slot > 0 { entries[slot - 1] } else { 0 };
@@ -12363,16 +12959,15 @@ fn megabinary_unicorn_watch_sp() {
         eprintln!("  {:#x}", e);
     }
 
-    // Report which wasi imports fired.
-    let wlog = wasi_log.lock().unwrap();
-    eprintln!("wasi imports called ({}):", wlog.len());
-    for a in wlog.iter() {
-        let name = wasi_stubs
-            .iter()
-            .find(|(_, addr)| *a == *addr)
-            .map(|(n, _)| n.as_str())
-            .unwrap_or("?");
-        eprintln!("  {:#x} {}", a, name);
+    // Report which wasi imports fired (counts), and the exit code if the
+    // guest called proc_exit.
+    let wcounts = wasi_counts.lock().unwrap();
+    eprintln!("wasi import call counts ({}):", wcounts.len());
+    for (name, count) in wcounts.iter() {
+        eprintln!("  {} x {}", name, count);
+    }
+    if let Some(code) = *exit_code.lock().unwrap() {
+        eprintln!("GUEST EXITED via proc_exit with code {}", code);
     }
 
     // Report SP evolution.
@@ -12381,18 +12976,18 @@ fn megabinary_unicorn_watch_sp() {
     for (fnidx, v) in log.iter() {
         eprintln!("  wasm_fn={} sp={:#x}", fnidx, v);
     }
+    let total_fires = *fired_count.lock().unwrap();
+    eprintln!("total 2^32 stack writes: {}", total_fires);
     if let Some((pc, v)) = *fired.lock().unwrap() {
-        // Map native PC → megabinary slot: the greatest entry <= pc.
         let slot = entries.partition_point(|e| *e <= pc);
         let slot_addr = if slot > 0 { entries[slot - 1] } else { 0 };
         eprintln!(
-            "WATCHPOINT FIRED: value {:#x} written at native pc {:#x} (slot entry {:#x}, +{:#x})",
+            "WATCHPOINT CAP: value {:#x} written at native pc {:#x} (slot entry {:#x}, +{:#x})",
             v,
             pc,
             slot_addr,
             pc - slot_addr
         );
-        panic!("SP corruption detected at native pc {:#x}", pc);
     }
 }
 
