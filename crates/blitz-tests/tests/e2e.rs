@@ -11969,6 +11969,7 @@ fn test_unicorn_aarch64_allstack_sharded_mixed_regfile_far_dispatch() {
 /// __wasm_mem, __wasm_table) surface as relocs.
 fn compile_megabinary_jit(
     wasm: &[u8],
+    object_mode: bool,
 ) -> (
     Vec<u8>,
     u64,
@@ -12022,6 +12023,9 @@ fn compile_megabinary_jit(
     let mut reencoder = RoundtripReencoder;
     let mut ctx = ();
     let mut out = AArch64Writer::<AArch64Label>::new();
+    if object_mode {
+        out.set_object_mode(true);
+    }
     let second_ctx = SecondCtxConfig::for_shard(ShardConfig {
         imports_len: n_imports,
         total_fns: fsigs.len() as u32,
@@ -12077,9 +12081,9 @@ fn compile_megabinary_jit(
 fn parse_megabinary_sections(
     wasm: &[u8],
 ) -> (
-    Vec<u32>,                            // memory min pages
-    Vec<u64>,                            // global init values
-    Vec<(u32, u32, u64, Vec<u8>)>,       // data segs: (flags, mem, off, bytes)
+    Vec<u32>,                      // memory min pages
+    Vec<u64>,                      // global init values
+    Vec<(u32, u32, u64, Vec<u8>)>, // data segs: (flags, mem, off, bytes)
 ) {
     let mut mems = Vec::new();
     let mut globals = Vec::new();
@@ -12218,16 +12222,34 @@ fn megabinary_unicorn_watch_sp() {
         data_segs.len()
     );
 
+    // Object mode (MEGA_OBJECT): compile with set_object_mode(true) so
+    // internal-label ADRP/ADD surface as relocs, then resolve them MYSELF
+    // against a NON-page-aligned runtime base (CODE+0x690, mimicking the
+    // linked megabinary's __text at 0x100000690) — exactly what lld does. This
+    // exercises the object-mode internal-label reloc path that the page-aligned
+    // JIT run does not.
+    let object_mode = std::env::var("MEGA_OBJECT").is_ok();
     let t = std::time::Instant::now();
-    let (bytes, entry, relocs, labels) = compile_megabinary_jit(&wasm);
-    eprintln!("compiled in {:?}, code_len={}", t.elapsed(), bytes.len());
+    let (bytes, entry, relocs, labels) = compile_megabinary_jit(&wasm, object_mode);
+    eprintln!(
+        "compiled in {:?}, code_len={}, object_mode={}",
+        t.elapsed(),
+        bytes.len(),
+        object_mode
+    );
 
     // Layout: ADRP has ±4GB range, and the code is ~1.5GB, so every data region
     // must sit within 4GB of every ADRP site. Pack everything right after the
     // code so the farthest ADRP (code start) is < 1.5GB + data spread away.
     const CODE: u64 = 0x100000;
+    // Runtime base of the loaded code: page-aligned in JIT, CODE+0x690 in
+    // object mode (non-page-aligned, like the linked __text).
+    let code_rt: u64 = if object_mode { CODE + 0x690 } else { CODE };
     let code_len = ((bytes.len() + 0xFFF) & !0xFFF) as u64;
-    let mut cursor = CODE + code_len;
+    // Page-rounded span actually mapped for the code (covers the non-aligned
+    // code_rt offset in object mode); data regions start after it.
+    let code_span = ((code_len + (code_rt - CODE)) + 0xFFF) & !0xFFF;
+    let mut cursor = CODE + code_span;
     let mut alloc = |size: u64| {
         let a = cursor;
         cursor += (size + 0xFFF) & !0xFFF;
@@ -12267,7 +12289,7 @@ fn megabinary_unicorn_watch_sp() {
             if *idx >= 0x8000_0000 {
                 let internal = (idx - 0x8000_0000) as u32;
                 let wasm_idx = (n_imports + internal) as usize;
-                table[wasm_idx] = CODE + *off as u64;
+                table[wasm_idx] = code_rt + *off as u64;
             }
         }
     }
@@ -12356,18 +12378,22 @@ fn megabinary_unicorn_watch_sp() {
         eprintln!("  {:#x} {}", a, n);
     }
 
-    // Patch every external reloc to its symbol's host address.
+    // Patch every reloc to its target's runtime address. In JIT mode only
+    // External relocs are present (internal labels are baked in-buffer). In
+    // object mode internal Indexed/Func labels ALSO surface as ADRP/ADD relocs;
+    // resolve those against code_rt + their buffer offset, as lld resolves them
+    // against the final (possibly non-page-aligned) vaddr.
     let mut bytes = bytes;
     for r in &relocs {
         let sym_addr = match &r.label {
             AArch64Label::External { name } => sym_addrs[name],
-            other => panic!("unexpected non-external reloc label {other:?}"),
+            other => code_rt + labels[other] as u64,
         };
-        bytes = patch_aarch64_relocs_single(bytes, r, CODE, sym_addr);
+        bytes = patch_aarch64_relocs_single(bytes, r, code_rt, sym_addr);
     }
 
     let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
-    uc.mem_map(CODE, code_len, Prot::ALL).unwrap();
+    uc.mem_map(CODE, code_span, Prot::ALL).unwrap();
     uc.mem_map(HOST_STACK, HOST_STACK_SIZE, Prot::ALL).unwrap();
     uc.mem_map(MEM0, mem0_capacity, Prot::ALL).unwrap();
     uc.mem_map(TABLE, ((table_len * 8 + 0xFFF) & !0xFFF) as u64, Prot::ALL)
@@ -12389,7 +12415,7 @@ fn megabinary_unicorn_watch_sp() {
             .unwrap();
     }
 
-    uc.mem_write(CODE, &bytes).unwrap();
+    uc.mem_write(code_rt, &bytes).unwrap();
     uc.mem_write(MEM0, &mem0).unwrap();
     // Populate each memory base cell: __wasm_mem → MEM0, __wasm_mem_N → scratch.
     for (cell, base) in &mem_cells {
@@ -12447,7 +12473,7 @@ fn megabinary_unicorn_watch_sp() {
         if let AArch64Label::Indexed { idx } = l {
             if *idx >= 0x8000_0000 {
                 let internal = (idx - 0x8000_0000) as u32;
-                addr_to_fnidx.insert(CODE + *off as u64, n_imports + internal);
+                addr_to_fnidx.insert(code_rt + *off as u64, n_imports + internal);
             }
         }
     }
@@ -12460,7 +12486,7 @@ fn megabinary_unicorn_watch_sp() {
     let mut entries: Vec<u64> = labels
         .iter()
         .filter_map(|(l, off)| match l {
-            AArch64Label::Indexed { idx } if *idx >= 0x8000_0000 => Some(CODE + *off as u64),
+            AArch64Label::Indexed { idx } if *idx >= 0x8000_0000 => Some(code_rt + *off as u64),
             _ => None,
         })
         .collect();
@@ -12486,15 +12512,32 @@ fn megabinary_unicorn_watch_sp() {
             let lb = *$lb.lock().unwrap();
             eprintln!("  last block: {:#x}", lb);
             let regs = [
-                RegisterARM64::X0, RegisterARM64::X1, RegisterARM64::X2,
-                RegisterARM64::X3, RegisterARM64::X4, RegisterARM64::X5,
-                RegisterARM64::X6, RegisterARM64::X7, RegisterARM64::X8,
-                RegisterARM64::X9, RegisterARM64::X10, RegisterARM64::X11,
-                RegisterARM64::X12, RegisterARM64::X13, RegisterARM64::X14,
-                RegisterARM64::X15, RegisterARM64::X16, RegisterARM64::X17,
-                RegisterARM64::X18, RegisterARM64::X19, RegisterARM64::X20,
-                RegisterARM64::X27, RegisterARM64::X28, RegisterARM64::FP,
-                RegisterARM64::LR, RegisterARM64::SP,
+                RegisterARM64::X0,
+                RegisterARM64::X1,
+                RegisterARM64::X2,
+                RegisterARM64::X3,
+                RegisterARM64::X4,
+                RegisterARM64::X5,
+                RegisterARM64::X6,
+                RegisterARM64::X7,
+                RegisterARM64::X8,
+                RegisterARM64::X9,
+                RegisterARM64::X10,
+                RegisterARM64::X11,
+                RegisterARM64::X12,
+                RegisterARM64::X13,
+                RegisterARM64::X14,
+                RegisterARM64::X15,
+                RegisterARM64::X16,
+                RegisterARM64::X17,
+                RegisterARM64::X18,
+                RegisterARM64::X19,
+                RegisterARM64::X20,
+                RegisterARM64::X27,
+                RegisterARM64::X28,
+                RegisterARM64::FP,
+                RegisterARM64::LR,
+                RegisterARM64::SP,
             ];
             for reg in regs.iter() {
                 let v = uc.reg_read(*reg).unwrap_or(0);
@@ -12535,15 +12578,21 @@ fn megabinary_unicorn_watch_sp() {
     let entry_seq = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
     let entry_seq2 = entry_seq.clone();
     // Register-file trace: (fnidx, x0, x1, x2, x4, x20, pc) per entry.
-    let reg_trace = std::sync::Arc::new(
-        std::sync::Mutex::new(Vec::<(u64, u64, u64, u64, u64, u64, u64)>::new()),
-    );
+    let reg_trace = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+    )>::new()));
     let reg_trace2 = reg_trace.clone();
     let fulldump_done2 = std::sync::Arc::new(std::sync::Mutex::new(0u32));
 
     let block_count = std::sync::Arc::new(std::sync::Mutex::new(0u64));
     let block_count2 = block_count.clone();
-    uc.add_code_hook(CODE, CODE + code_len, move |uc, addr, _size| {
+    uc.add_code_hook(code_rt, code_rt + code_len, move |uc, addr, _size| {
         *last_block2.lock().unwrap() = addr;
         let mut bc = block_count2.lock().unwrap();
         *bc += 1;
@@ -12684,15 +12733,22 @@ fn megabinary_unicorn_watch_sp() {
                         let mut buf = vec![0u8; len as usize];
                         uc.mem_read(base + src as u64, &mut buf).unwrap();
                         uc.mem_write(base + dest as u64, &buf).unwrap();
-                        eprintln!("  memory_copy(dest={:#x}, src={:#x}, len={:#x})", dest, src, len);
+                        eprintln!(
+                            "  memory_copy(dest={:#x}, src={:#x}, len={:#x})",
+                            dest, src, len
+                        );
                     }
                     n if n.starts_with("__wasm_memory_fill") => {
                         let dest = uc.reg_read(RegisterARM64::X0).unwrap_or(0) as u32;
                         let val = uc.reg_read(RegisterARM64::X1).unwrap_or(0) as u8;
                         let len = uc.reg_read(RegisterARM64::X2).unwrap_or(0) as u32;
                         let base = mem_bases[&0];
-                        uc.mem_write(base + dest as u64, &vec![val; len as usize]).unwrap();
-                        eprintln!("  memory_fill(dest={:#x}, val={:#x}, len={:#x})", dest, val, len);
+                        uc.mem_write(base + dest as u64, &vec![val; len as usize])
+                            .unwrap();
+                        eprintln!(
+                            "  memory_fill(dest={:#x}, val={:#x}, len={:#x})",
+                            dest, val, len
+                        );
                     }
                     other => {
                         eprintln!("  UNIMPLEMENTED helper {}", other);
@@ -12709,9 +12765,10 @@ fn megabinary_unicorn_watch_sp() {
     // host stdout/stderr (so correct output validates the whole pipeline),
     // path_open hands out fake fds, fd_read returns EOF, proc_exit stops the
     // emu with the guest exit code.
-    let wasi_counts = std::sync::Arc::new(std::sync::Mutex::new(
-        std::collections::BTreeMap::<String, u64>::new(),
-    ));
+    let wasi_counts = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<
+        String,
+        u64,
+    >::new()));
     let exit_code = std::sync::Arc::new(std::sync::Mutex::new(None::<u64>));
     let next_fd = std::sync::Arc::new(std::sync::Mutex::new(3u32));
     // The os-emulation layer stages wasi iovec/buffers in its OWN memory
@@ -12741,7 +12798,9 @@ fn megabinary_unicorn_watch_sp() {
                 })
                 .unwrap_or(0)
             };
-            let short = name.strip_prefix("wasi_snapshot_preview1__").unwrap_or(&name);
+            let short = name
+                .strip_prefix("wasi_snapshot_preview1__")
+                .unwrap_or(&name);
             let call_seq = counts.lock().unwrap().values().sum::<u64>();
             if call_seq <= 30 {
                 eprintln!(
@@ -13103,52 +13162,56 @@ fn megabinary_unicorn_watch_sp() {
     let fired = std::sync::Arc::new(std::sync::Mutex::new(None::<(u64, u64)>));
     let fired_count = std::sync::Arc::new(std::sync::Mutex::new(0u32));
     if std::env::var("MEGA_WATCH_232").is_ok() {
-    let fired2 = fired.clone();
-    let fired_count2 = fired_count.clone();
-    let entries3 = entries.clone();
-    let addr_to_fn3 = addr_to_fn.clone();
-    uc.add_mem_hook(
-        unicorn_engine::unicorn_const::HookType::MEM_WRITE,
-        HOST_STACK,
-        HOST_STACK + HOST_STACK_SIZE,
-        move |uc, _mem_type, addr, _size, value| {
-            if value as u64 == 0x1_0000_0000 {
-                let pc = uc.reg_read(RegisterARM64::PC).unwrap_or(0);
-                let slot = entries3.partition_point(|e| *e <= pc);
-                let slot_addr = if slot > 0 { entries3[slot - 1] } else { pc };
-                let fnidx = addr_to_fn3.get(&slot_addr).copied().unwrap_or(u32::MAX);
-                let mut n = fired_count2.lock().unwrap();
-                *n += 1;
-                eprintln!(
-                    "  2^32 write #{}: pc={:#x} wasm_fn={} +{:#x} -> [{:#x}]",
-                    *n, pc, fnidx, pc - slot_addr, addr
-                );
-                if *n == 1 {
-                    // Dump the whole first-firing function (plus trailing
-                    // bytes) so the consumer of the 2^32 can be traced.
-                    let mut win = vec![0u8; (pc + 0x80 - slot_addr) as usize];
-                    if uc.mem_read(slot_addr, &mut win).is_ok() {
-                        let _ = std::fs::write("/tmp/mega_fault_window.bin", &win);
-                        eprintln!("  dumped fn window to /tmp/mega_fault_window.bin");
+        let fired2 = fired.clone();
+        let fired_count2 = fired_count.clone();
+        let entries3 = entries.clone();
+        let addr_to_fn3 = addr_to_fn.clone();
+        uc.add_mem_hook(
+            unicorn_engine::unicorn_const::HookType::MEM_WRITE,
+            HOST_STACK,
+            HOST_STACK + HOST_STACK_SIZE,
+            move |uc, _mem_type, addr, _size, value| {
+                if value as u64 == 0x1_0000_0000 {
+                    let pc = uc.reg_read(RegisterARM64::PC).unwrap_or(0);
+                    let slot = entries3.partition_point(|e| *e <= pc);
+                    let slot_addr = if slot > 0 { entries3[slot - 1] } else { pc };
+                    let fnidx = addr_to_fn3.get(&slot_addr).copied().unwrap_or(u32::MAX);
+                    let mut n = fired_count2.lock().unwrap();
+                    *n += 1;
+                    eprintln!(
+                        "  2^32 write #{}: pc={:#x} wasm_fn={} +{:#x} -> [{:#x}]",
+                        *n,
+                        pc,
+                        fnidx,
+                        pc - slot_addr,
+                        addr
+                    );
+                    if *n == 1 {
+                        // Dump the whole first-firing function (plus trailing
+                        // bytes) so the consumer of the 2^32 can be traced.
+                        let mut win = vec![0u8; (pc + 0x80 - slot_addr) as usize];
+                        if uc.mem_read(slot_addr, &mut win).is_ok() {
+                            let _ = std::fs::write("/tmp/mega_fault_window.bin", &win);
+                            eprintln!("  dumped fn window to /tmp/mega_fault_window.bin");
+                        }
+                    }
+                    if *n >= 500 {
+                        *fired2.lock().unwrap() = Some((pc, value as u64));
+                        uc.emu_stop().unwrap();
                     }
                 }
-                if *n >= 500 {
-                    *fired2.lock().unwrap() = Some((pc, value as u64));
-                    uc.emu_stop().unwrap();
-                }
-            }
-            true
-        },
-    )
+                true
+            },
+        )
         .unwrap();
     }
 
-    let ret = CODE + code_len;
+    let ret = code_rt + code_len;
     uc.reg_write(RegisterARM64::LR, ret).unwrap();
     eprintln!(
         "layout: CODE={:#x}..{:#x} MEM0={:#x} HOST_STACK={:#x} TABLE={:#x}({} entries) STUB={:#x} SYMS={:#x} SCRATCH={:#x}",
-        CODE,
-        CODE + code_len,
+        code_rt,
+        code_rt + code_len,
         MEM0,
         HOST_STACK,
         TABLE,
@@ -13160,10 +13223,13 @@ fn megabinary_unicorn_watch_sp() {
     // Optionally dump the compiled code for offline disassembly.
     if std::env::var("MEGA_DUMP_CODE").is_ok() {
         let _ = std::fs::write("/tmp/bb_megacode.bin", &bytes);
-        eprintln!("dumped {} bytes of code to /tmp/bb_megacode.bin", bytes.len());
+        eprintln!(
+            "dumped {} bytes of code to /tmp/bb_megacode.bin",
+            bytes.len()
+        );
     }
     let result = uc.emu_start(
-        CODE + entry,
+        code_rt + entry,
         ret,
         0,
         std::env::var("MEGA_COUNT")
@@ -13182,15 +13248,30 @@ fn megabinary_unicorn_watch_sp() {
         let mut win = vec![0u8; 0x100];
         if uc.mem_read(start, &mut win).is_ok() {
             let _ = std::fs::write("/tmp/mega_last_block.bin", &win);
-            eprintln!("dumped last block [{:#x}..] to /tmp/mega_last_block.bin", start);
+            eprintln!(
+                "dumped last block [{:#x}..] to /tmp/mega_last_block.bin",
+                start
+            );
         }
         let regs = [
-            RegisterARM64::X0, RegisterARM64::X1, RegisterARM64::X2,
-            RegisterARM64::X9, RegisterARM64::X10, RegisterARM64::X11,
-            RegisterARM64::X12, RegisterARM64::X13, RegisterARM64::X14,
-            RegisterARM64::X15, RegisterARM64::X16, RegisterARM64::X17,
-            RegisterARM64::X18, RegisterARM64::X19, RegisterARM64::X27,
-            RegisterARM64::FP, RegisterARM64::LR, RegisterARM64::SP,
+            RegisterARM64::X0,
+            RegisterARM64::X1,
+            RegisterARM64::X2,
+            RegisterARM64::X9,
+            RegisterARM64::X10,
+            RegisterARM64::X11,
+            RegisterARM64::X12,
+            RegisterARM64::X13,
+            RegisterARM64::X14,
+            RegisterARM64::X15,
+            RegisterARM64::X16,
+            RegisterARM64::X17,
+            RegisterARM64::X18,
+            RegisterARM64::X19,
+            RegisterARM64::X27,
+            RegisterARM64::FP,
+            RegisterARM64::LR,
+            RegisterARM64::SP,
         ];
         for reg in regs.iter() {
             let v = uc.reg_read(*reg).unwrap_or(0);
@@ -13239,7 +13320,10 @@ fn megabinary_unicorn_watch_sp() {
             ));
         }
         let _ = std::fs::write("/tmp/mega_regtrace.txt", s);
-        eprintln!("dumped {} reg-trace rows to /tmp/mega_regtrace.txt", rt.len());
+        eprintln!(
+            "dumped {} reg-trace rows to /tmp/mega_regtrace.txt",
+            rt.len()
+        );
     }
 
     // Report which wasi imports fired (counts), and the exit code if the
