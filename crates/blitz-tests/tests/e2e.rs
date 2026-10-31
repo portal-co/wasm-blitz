@@ -11818,7 +11818,8 @@ fn test_unicorn_aarch64_allstack_sharded_ring_load_dispatch() {
     uc.mem_write(CELL, &GUEST_MEM.to_le_bytes()).unwrap();
     uc.mem_write(TABLE, &(CODE + ft_off).to_le_bytes()).unwrap();
     // Preload the sentinel cell at guest_mem[64].
-    uc.mem_write(GUEST_MEM + 64, &SENTINEL.to_le_bytes()).unwrap();
+    uc.mem_write(GUEST_MEM + 64, &SENTINEL.to_le_bytes())
+        .unwrap();
     let args: Vec<u64> = (0..108u64).map(|i| 0xCCCC_0000 + i).collect();
     let frame = ((108u64 + 2) * 8 + 15) & !15;
     let sp = (STACK + 0x40000 - frame - 16) & !15;
@@ -11832,6 +11833,116 @@ fn test_unicorn_aarch64_allstack_sharded_ring_load_dispatch() {
     uc.emu_start(CODE + entry, ret, 0, 5_000_000).unwrap();
     // fT echoes param[0] which is the loaded sentinel.
     assert_eq!(uc.reg_read(RegisterARM64::X0).unwrap(), SENTINEL);
+}
+
+/// The EXACT megabinary register-file signature: 108 params of mixed type
+/// (i64 x0..x30, i64 PC, i32 NZCV x4, i64 scratch x3, f64 V0..V31, i64 V-high,
+/// i64 RA/TPIDR/SP/text_base/host_mem_base), results mirror params. fT puts
+/// param[105] (SP) into result[0] so the harness reads it via X0. If the i32/
+/// f64 params shift the frame layout, param 105 arrives corrupted.
+fn megabinary_regfile_wasm(npads: u32, pairs: u32) -> Vec<u8> {
+    // The exact mixed-type signature from speet's link.rs (AArch64 arm).
+    let mut sig: Vec<ValType> = Vec::new();
+    for _ in 0..31 { sig.push(ValType::I64); } // x0..x30
+    sig.push(ValType::I64); // PC (31)
+    for _ in 0..4 { sig.push(ValType::I32); } // NZCV (32..35)
+    for _ in 0..3 { sig.push(ValType::I64); } // scratch (36..38)
+    for _ in 0..32 { sig.push(ValType::F64); } // V0..V31 low (39..70)
+    for _ in 0..32 { sig.push(ValType::I64); } // V high (71..102)
+    for _ in 0..5 { sig.push(ValType::I64); } // RA,TPIDR,SP(105),text_base,host_mem_base (103..107)
+    assert_eq!(sig.len(), 108);
+
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function(sig.clone(), sig.clone()); // 0: f0/fT signature
+    types.ty().function([], [ValType::I64]); // 1: pad signature
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0); // f0
+    for _ in 0..npads {
+        functions.function(1); // padding
+    }
+    functions.function(0); // fT
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("f", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    // f0: thread all 108 params through a return_call_indirect to fT.
+    let mut f0 = Function::new([]);
+    for i in 0..108u32 {
+        f0.instruction(&Instruction::LocalGet(i));
+    }
+    f0.instruction(&Instruction::I32Const(0)); // table index
+    f0.instruction(&Instruction::ReturnCallIndirect {
+        type_index: 0,
+        table_index: 0,
+    });
+    f0.instruction(&Instruction::End);
+    code.function(&f0);
+    for _ in 0..npads {
+        let mut f = Function::new([]);
+        for i in 0..pairs {
+            f.instruction(&Instruction::I64Const(i as i64));
+            f.instruction(&Instruction::Drop);
+        }
+        f.instruction(&Instruction::End);
+        code.function(&f);
+    }
+    // fT: result[0] = param[105] (SP slot), then fill the rest.
+    let mut ft = Function::new([]);
+    ft.instruction(&Instruction::LocalGet(105)); // result[0] = param[105]
+    for i in 0..107u32 {
+        ft.instruction(&Instruction::LocalGet(i));
+    }
+    ft.instruction(&Instruction::End);
+    code.function(&ft);
+    module.section(&code);
+    module.finish()
+}
+
+#[test]
+fn test_unicorn_aarch64_allstack_sharded_mixed_regfile_far_dispatch() {
+    use unicorn_engine::{
+        RegisterARM64, Unicorn,
+        unicorn_const::{Arch, Mode, Prot},
+    };
+    const CODE: u64 = 0x100000;
+    const STACK: u64 = 0x8000000;
+    const TABLE: u64 = 0x4000000;
+    const CELL: u64 = 0x5000000;
+    const GUEST_MEM: u64 = 0x5100000;
+    const SP_SENTINEL: u64 = 0x52fef0; // Lane A's correct guest SP
+
+    let wasm = megabinary_regfile_wasm(4096, 128);
+    let (code, entry, ft_off) = compile_aarch64_sharded_indirect(&wasm);
+    assert!(ft_off > 1 << 20, "fT must be >1MB in: {ft_off:#x}");
+    let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+    let code_len = ((code.len() + 0xFFF) & !0xFFF).max(0x40000) as u64;
+    uc.mem_map(CODE, code_len, Prot::ALL).unwrap();
+    uc.mem_map(STACK, 0x40000, Prot::ALL).unwrap();
+    uc.mem_map(TABLE, 0x1000, Prot::ALL).unwrap();
+    uc.mem_map(CELL & !0xFFF, 0x2000, Prot::ALL).unwrap();
+    uc.mem_map(GUEST_MEM, 0x10000, Prot::ALL).unwrap();
+    uc.mem_write(CODE, &code).unwrap();
+    uc.mem_write(CELL, &GUEST_MEM.to_le_bytes()).unwrap();
+    uc.mem_write(TABLE, &(CODE + ft_off).to_le_bytes()).unwrap();
+    // Distinct value per param; param[105] (SP) = the Lane-A guest SP.
+    let mut args: Vec<u64> = (0..108u64).map(|i| 0x1000_0000 + i).collect();
+    args[105] = SP_SENTINEL;
+    let frame = ((108u64 + 2) * 8 + 15) & !15;
+    let sp = (STACK + 0x40000 - frame - 16) & !15;
+    for (i, &a) in args.iter().enumerate() {
+        uc.mem_write(sp + (i as u64) * 8, &a.to_le_bytes()).unwrap();
+    }
+    uc.reg_write(RegisterARM64::SP, sp).unwrap();
+    uc.reg_write(RegisterARM64::X27, 0x500000).unwrap();
+    let ret = CODE + code_len;
+    uc.reg_write(RegisterARM64::LR, ret).unwrap();
+    uc.emu_start(CODE + entry, ret, 0, 5_000_000).unwrap();
+    // X0 = result[0] = param[105] (SP slot). If the i32/f64 params shift the
+    // frame, this picks up neighbor bits instead of the sentinel.
+    assert_eq!(uc.reg_read(RegisterARM64::X0).unwrap(), SP_SENTINEL);
 }
 
 #[test]
