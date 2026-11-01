@@ -308,7 +308,12 @@ where
         // scratch whenever an ldr/str displacement falls outside simm9 (locals at
         // [FP - disp] with disp > 256, i.e. local index >= 32) — invisible to the
         // allocator, so they must never hold a WASM operand.
-        for reg in [9u8, 10, 11, 16, 17, 27] {
+        // x18 = the platform register on Apple AArch64: the Darwin kernel ZEROES it
+        // across exception/syscall entry (including the page faults a fresh stack
+        // page triggers mid-marshalling), so any WASM operand carried in it is
+        // silently destroyed on real hardware (the cause of the BusyBox B-native
+        // SP=0 corruption; Unicorn preserves x18 so it never reproduced there).
+        for reg in [9u8, 10, 11, 16, 17, 18, 27] {
             frames.0[0][reg as usize] = portal_solutions_asm_regalloc::RegAllocFrame::Reserved;
         }
         portal_solutions_asm_regalloc::RegAlloc { frames, tos: r.tos }
