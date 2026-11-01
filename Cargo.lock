@@ -607,6 +607,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "portal-solutions-blitz-symmap"
+version = "0.1.0"
+dependencies = [
+ "wasmparser",
+]
+
+[[package]]
 name = "portal-solutions-blitz-tests"
 version = "0.1.0"
 dependencies = [
@@ -628,6 +635,7 @@ dependencies = [
  "portal-solutions-blitz-js",
  "portal-solutions-blitz-riscv32",
  "portal-solutions-blitz-riscv64",
+ "portal-solutions-blitz-symmap",
  "portal-solutions-blitz-x86-64",
  "unicorn-engine",
 ]
