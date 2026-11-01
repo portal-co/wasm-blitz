@@ -22,6 +22,8 @@ the (32-bit-wrapped) guest address.
 - `__wasm_mem_{k}` — `*mut u8` cell: base of memory `k`.
 - `__wasm_mem_pages` — `u32` cell: memory 0's current page count (64KiB pages).
   Read by `memory.size`; updated by `__wasm_memory_grow`.
+- `__wasm_mem_pages_{k}` — `u32` cell: memory `k`'s current page count. Read by
+  `memory.size k`; updated by the memory-`k` grow helper.
 
 Multi-memory routing is per-access by `memory_index`, so each memory must be a
 distinct region. (In the megabinary: mem0 = guest-private, mem1 = the
@@ -57,13 +59,22 @@ These are *callable*, not data. Give each a real implementation:
 - `u32 __wasm_memory_grow(u32 delta, u8** mem_cell, u32* pages_cell)` —
   `memory.grow` on memory 0. On success: make `*pages_cell += delta` bytes of
   the region usable, update `*mem_cell` if the base moved, return the OLD page
-  count. On failure return `u32::MAX` (`-1`). (The blitz lowering marshals
-  X0=delta, X1=&`__wasm_mem`, X2=&`__wasm_mem_pages`.)
+  count. On failure return `u32::MAX` (`-1`).
+  - **aarch64** marshals X0=delta, X1=&`__wasm_mem[_k]`, X2=&`__wasm_mem_pages[_k]`
+    and always calls the one `__wasm_memory_grow` symbol — the cells, not the
+    symbol, select the memory.
+  - **x86-64 / riscv64 / riscv32** call the helper with the WASM-internal
+    calling convention (delta on the WASM stack, no cell arguments), so the
+    memory index selects the *symbol*: memory 0 calls `__wasm_memory_grow`,
+    memory `k` calls `__wasm_memory_grow_{k}`.
 - `void __wasm_memory_init_copy[_k](u32 dest_off, u8* seg_base, u32 src_off, u32 len)` —
   `memory.init` on memory `k` (memory 0 keeps the unprefixed name). Copies
   `len` bytes from `seg_base + src_off` to `mem_k_base + dest_off`.
-- `void __wasm_memory_copy(u32 dest, u32 src, u32 len)` — `memory.copy` (mem0).
-- `void __wasm_memory_fill(u32 dest, u32 val, u32 len)` — `memory.fill` (mem0).
+- `void __wasm_memory_copy[_dst][_src](u32 dest, u32 src, u32 len)` —
+  `memory.copy` from memory `src` to memory `dst`; the 0→0 case keeps the
+  unprefixed name (e.g. `__wasm_memory_copy_2_1` copies mem1 → mem2).
+- `void __wasm_memory_fill[_k](u32 dest, u32 val, u32 len)` — `memory.fill` on
+  memory `k` (memory 0 keeps the unprefixed name).
 
 ## Imports
 

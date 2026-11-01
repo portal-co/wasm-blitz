@@ -1094,19 +1094,36 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
             // ---- memory.size ------------------------------------------------
             // Load the 32-bit `__wasm_mem_pages` global and push as i64.
             // The concrete writer must resolve RiscvLabel::External symbols.
-            Instruction::MemorySize(_) => {
+            Instruction::MemorySize(mem_idx) => {
                 if let Some(ralloc) = state.regalloc.as_mut() {
                     let it = ralloc.flush();
                     emit_cmds(self, ctx, arch, it)?;
                 }
                 let dest = Reg(10);
-                // Load the *address* of __wasm_mem_pages into dest using the
+                // Multi-memory: honor the memory index — memory N's page
+                // count lives in `__wasm_mem_pages_N` (index 0 keeps the bare
+                // symbol, matching `apply_mem_base`'s `__wasm_mem_N` naming).
+                let mi = *mem_idx;
+                let pages_sym = if mi == 0 {
+                    "__wasm_mem_pages".into()
+                } else {
+                    alloc::format!("__wasm_mem_pages_{mi}")
+                };
+                // Load the *address* of __wasm_mem_pages[_N] into dest using the
                 // `la` pseudo-instruction.  Using `jal` here would jump to the
                 // data symbol and execute its bytes as instructions.
-                self.la_label(ctx, arch, &dest, RiscvLabel::External { name: "__wasm_mem_pages".into() })?;
+                self.la_label(
+                    ctx,
+                    arch,
+                    &dest,
+                    RiscvLabel::External { name: pages_sym },
+                )?;
                 // Dereference: load 32-bit page count, zero-extend to 64 bits.
                 let mem = MemArgKind::Mem {
-                    base: ArgKind::Reg { reg: dest, size: MemorySize::_64 },
+                    base: ArgKind::Reg {
+                        reg: dest,
+                        size: MemorySize::_64,
+                    },
                     offset: None,
                     disp: 0,
                     size: MemorySize::_32,
@@ -1121,39 +1138,77 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
             // using the same WASM calling convention as regular function calls:
             // the callee pops the return address, accesses delta via its frame
             // pointer, and pushes old_pages before returning.
-            Instruction::MemoryGrow(_) => {
+            Instruction::MemoryGrow(mem_idx) => {
                 if let Some(ralloc) = state.regalloc.as_mut() {
                     let it = ralloc.flush();
                     emit_cmds(self, ctx, arch, it)?;
                 }
-                // `jal ra, __wasm_memory_grow` is the canonical RISC-V direct
+                // Multi-memory: this helper uses the WASM-internal calling
+                // convention and receives no cell arguments, so the memory
+                // index selects the helper symbol — mem0 keeps the unprefixed
+                // name, memN calls `__wasm_memory_grow_N` (same convention as
+                // `__wasm_memory_init_copy_N`).
+                let mi = *mem_idx;
+                let grow_sym = if mi == 0 {
+                    "__wasm_memory_grow".into()
+                } else {
+                    alloc::format!("__wasm_memory_grow_{mi}")
+                };
+                // `jal ra, <helper>` is the canonical RISC-V direct
                 // call: it transfers control to the function and stores PC+4
                 // in `ra` for the callee to return through.  Previously this
                 // emitted `jal a0, sym; call a0`, which jumped to the function
                 // and then re-called the now-corrupted a0 (an infinite loop).
                 let ra = Reg(1);
-                self.jal_label(ctx, arch, &ra, RiscvLabel::External { name: "__wasm_memory_grow".into() })?;
+                self.jal_label(
+                    ctx,
+                    arch,
+                    &ra,
+                    RiscvLabel::External { name: grow_sym },
+                )?;
             }
             // `__wasm_memory_init_copy(dest_offset, seg_base, src_offset, len)`
             // uses the normal RISC-V psABI, unlike the internal WASM grow helper.
-            Instruction::MemoryInit { data_index, .. } => {
+            Instruction::MemoryInit { data_index, mem } => {
                 if let Some(ralloc) = state.regalloc.as_mut() {
                     let it = ralloc.flush();
                     emit_cmds(self, ctx, arch, it)?;
                 }
+                // One helper per target memory: mem0 keeps the unprefixed
+                // name, memN gets `__wasm_memory_init_copy_N`.
+                let init_sym = if *mem == 0 {
+                    "__wasm_memory_init_copy".into()
+                } else {
+                    alloc::format!("__wasm_memory_init_copy_{mem}")
+                };
                 pop(self, ctx, arch, &Reg(13))?; // a3 = len
                 pop(self, ctx, arch, &Reg(12))?; // a2 = source offset
                 pop(self, ctx, arch, &Reg(10))?; // a0 = destination offset
-                self.la_label(ctx, arch, &Reg(11), RiscvLabel::External {
-                    name: alloc::format!("__wasm_data_seg_{data_index}"),
-                })?;
-                self.la_label(ctx, arch, &Reg(5), RiscvLabel::External {
-                    name: "__wasm_memory_init_copy".into(),
-                })?;
+                self.la_label(
+                    ctx,
+                    arch,
+                    &Reg(11),
+                    RiscvLabel::External {
+                        name: alloc::format!("__wasm_data_seg_{data_index}"),
+                    },
+                )?;
+                self.la_label(
+                    ctx,
+                    arch,
+                    &Reg(5),
+                    RiscvLabel::External { name: init_sym },
+                )?;
                 self.jalr(ctx, arch, &Reg(1), &Reg(5), 0)?;
             }
             // memory.copy: (dest, src, len) → `__wasm_memory_copy`.
-            Instruction::MemoryCopy { .. } => {
+            // Multi-memory: `__wasm_memory_copy_{dst}_{src}`; 0→0 keeps the
+            // unprefixed name.
+            Instruction::MemoryCopy { src_mem, dst_mem } => {
+                let copy_sym = if *src_mem == 0 && *dst_mem == 0 {
+                    "__wasm_memory_copy".into()
+                } else {
+                    alloc::format!("__wasm_memory_copy_{dst_mem}_{src_mem}")
+                };
                 if let Some(ralloc) = state.regalloc.as_mut() {
                     let it = ralloc.flush();
                     emit_cmds(self, ctx, arch, it)?;
@@ -1161,13 +1216,21 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 pop(self, ctx, arch, &Reg(12))?; // a2 = len
                 pop(self, ctx, arch, &Reg(11))?; // a1 = src_offset
                 pop(self, ctx, arch, &Reg(10))?; // a0 = dest_offset
-                self.la_label(ctx, arch, &Reg(5), RiscvLabel::External {
-                    name: "__wasm_memory_copy".into(),
-                })?;
+                self.la_label(
+                    ctx,
+                    arch,
+                    &Reg(5),
+                    RiscvLabel::External { name: copy_sym },
+                )?;
                 self.jalr(ctx, arch, &Reg(1), &Reg(5), 0)?;
             }
-            // memory.fill: (dest, val, len) → `__wasm_memory_fill`.
-            Instruction::MemoryFill(_) => {
+            // memory.fill: (dest, val, len) → `__wasm_memory_fill[_N]`.
+            Instruction::MemoryFill(mem) => {
+                let fill_sym = if *mem == 0 {
+                    "__wasm_memory_fill".into()
+                } else {
+                    alloc::format!("__wasm_memory_fill_{mem}")
+                };
                 if let Some(ralloc) = state.regalloc.as_mut() {
                     let it = ralloc.flush();
                     emit_cmds(self, ctx, arch, it)?;
@@ -1175,9 +1238,12 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 pop(self, ctx, arch, &Reg(12))?; // a2 = len
                 pop(self, ctx, arch, &Reg(11))?; // a1 = val
                 pop(self, ctx, arch, &Reg(10))?; // a0 = dest_offset
-                self.la_label(ctx, arch, &Reg(5), RiscvLabel::External {
-                    name: "__wasm_memory_fill".into(),
-                })?;
+                self.la_label(
+                    ctx,
+                    arch,
+                    &Reg(5),
+                    RiscvLabel::External { name: fill_sym },
+                )?;
                 self.jalr(ctx, arch, &Reg(1), &Reg(5), 0)?;
             }
             // AOT data segments are immutable symbols; dropping their runtime
@@ -1993,9 +2059,113 @@ mod naive_sharing_tests {
         let mut sharing: NaiveSharing<SharingBlob> = NaiveSharing::default();
         for op in test_ops().iter() {
             w.naive_handle_op_sharing::<core::convert::Infallible, TestErr, SharingBlob>(
-                &mut ctx, RiscV64Arch::default(), &mut state, &mut sharing, &[], &[], &[], op, &mut RoundtripReencoder, 0,
-            ).unwrap();
+                &mut ctx,
+                RiscV64Arch::default(),
+                &mut state,
+                &mut sharing,
+                &[],
+                &[],
+                &[],
+                op,
+                &mut RoundtripReencoder,
+                0,
+            )
+            .unwrap();
         }
         assert_eq!(w.into_bytes(), compile_plain());
+    }
+}
+
+#[cfg(test)]
+mod memidx_tests {
+    //! Multi-memory routing guards: every memory-management instruction must
+    //! reference the per-index runtime symbol (`__wasm_mem_pages_N`,
+    //! `__wasm_memory_grow_N`, ...), not mem0's.
+    use super::*;
+    use crate::{RiscV64Arch, RiscvLabel};
+    use alloc::string::String;
+    use alloc::vec::Vec;
+    use portal_solutions_asm_riscv64::out::rv_asm_backend::RvAsmWriter;
+    use portal_solutions_blitz_common::wasm_encoder::reencode::RoundtripReencoder;
+
+    fn op_externals(op: &Instruction<'_>) -> Vec<String> {
+        let mut w = RvAsmWriter::<RiscvLabel>::new();
+        let mut ctx = ();
+        let mut state = State::default();
+        w.handle_op_::<core::convert::Infallible>(
+            &mut ctx,
+            RiscV64Arch::default(),
+            &mut state,
+            &[],
+            &[],
+            &[],
+            op,
+            &mut RoundtripReencoder,
+            0,
+        )
+        .unwrap();
+        let (_bytes, _labels, relocs) = w.into_parts_with_relocs();
+        relocs
+            .into_iter()
+            .filter_map(|r| match r.label {
+                RiscvLabel::External { name } => Some(name),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn memory_size_honors_index() {
+        assert!(
+            op_externals(&Instruction::MemorySize(0))
+                .iter()
+                .any(|n| n == "__wasm_mem_pages")
+        );
+        let e = op_externals(&Instruction::MemorySize(2));
+        assert!(e.iter().any(|n| n == "__wasm_mem_pages_2"), "{e:?}");
+        assert!(!e.iter().any(|n| n == "__wasm_mem_pages"));
+    }
+
+    #[test]
+    fn memory_grow_honors_index() {
+        // WASM-convention helper: the memory index selects the helper symbol.
+        assert!(
+            op_externals(&Instruction::MemoryGrow(0))
+                .iter()
+                .any(|n| n == "__wasm_memory_grow")
+        );
+        let e = op_externals(&Instruction::MemoryGrow(1));
+        assert!(e.iter().any(|n| n == "__wasm_memory_grow_1"), "{e:?}");
+        assert!(!e.iter().any(|n| n == "__wasm_memory_grow"));
+    }
+
+    #[test]
+    fn memory_init_honors_mem_index() {
+        let e = op_externals(&Instruction::MemoryInit {
+            mem: 2,
+            data_index: 0,
+        });
+        assert!(e.iter().any(|n| n == "__wasm_memory_init_copy_2"), "{e:?}");
+        assert!(e.iter().any(|n| n == "__wasm_data_seg_0"), "{e:?}");
+    }
+
+    #[test]
+    fn memory_fill_honors_index() {
+        let e = op_externals(&Instruction::MemoryFill(3));
+        assert!(e.iter().any(|n| n == "__wasm_memory_fill_3"), "{e:?}");
+    }
+
+    #[test]
+    fn memory_copy_honors_both_indices() {
+        let e = op_externals(&Instruction::MemoryCopy {
+            dst_mem: 2,
+            src_mem: 1,
+        });
+        assert!(e.iter().any(|n| n == "__wasm_memory_copy_2_1"), "{e:?}");
+        let e0 = op_externals(&Instruction::MemoryCopy {
+            dst_mem: 0,
+            src_mem: 0,
+        });
+        assert!(e0.iter().any(|n| n == "__wasm_memory_copy"), "{e0:?}");
     }
 }

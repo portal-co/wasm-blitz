@@ -1655,7 +1655,14 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 self.bl(ctx, arch, &reg(T0))
             }
             // memory.copy: (dest, src, len) → `__wasm_memory_copy`.
-            Instruction::MemoryCopy { .. } => {
+            // Multi-memory: `__wasm_memory_copy_{dst}_{src}`; 0→0 keeps the
+            // unprefixed name.
+            Instruction::MemoryCopy { src_mem, dst_mem } => {
+                let copy_sym = if *src_mem == 0 && *dst_mem == 0 {
+                    "__wasm_memory_copy".into()
+                } else {
+                    alloc::format!("__wasm_memory_copy_{dst_mem}_{src_mem}")
+                };
                 self.wasm_pop(ctx, arch, Reg(2))?; // X2 ← len
                 self.wasm_pop(ctx, arch, Reg(1))?; // X1 ← src_offset
                 self.wasm_pop(ctx, arch, Reg(0))?; // X0 ← dest_offset
@@ -1664,14 +1671,17 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                     ctx,
                     arch,
                     &reg(T0),
-                    AArch64Label::External {
-                        name: "__wasm_memory_copy".into(),
-                    },
+                    AArch64Label::External { name: copy_sym },
                 )?;
                 self.bl(ctx, arch, &reg(T0))
             }
-            // memory.fill: (dest, val, len) → `__wasm_memory_fill`.
-            Instruction::MemoryFill(_) => {
+            // memory.fill: (dest, val, len) → `__wasm_memory_fill[_N]`.
+            Instruction::MemoryFill(mem) => {
+                let fill_sym = if *mem == 0 {
+                    "__wasm_memory_fill".into()
+                } else {
+                    alloc::format!("__wasm_memory_fill_{mem}")
+                };
                 self.wasm_pop(ctx, arch, Reg(2))?; // X2 ← len
                 self.wasm_pop(ctx, arch, Reg(1))?; // X1 ← val
                 self.wasm_pop(ctx, arch, Reg(0))?; // X0 ← dest_offset
@@ -1680,9 +1690,7 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                     ctx,
                     arch,
                     &reg(T0),
-                    AArch64Label::External {
-                        name: "__wasm_memory_fill".into(),
-                    },
+                    AArch64Label::External { name: fill_sym },
                 )?;
                 self.bl(ctx, arch, &reg(T0))
             }
@@ -2702,6 +2710,90 @@ mod membase_tests {
             externs.iter().any(|n| n == "__wasm_mem_1"),
             "expected __wasm_mem_1 reloc, got {externs:?}"
         );
+    }
+
+    /// Emit a single memory-management instruction and return the external
+    /// symbol names referenced. Guards the multi-memory fix: every memory op
+    /// must route to the per-index runtime symbol, not mem0's.
+    fn op_externals(op: &Instruction<'_>) -> Vec<String> {
+        let mut out = AArch64Writer::<AArch64Label>::new();
+        let mut ctx = ();
+        let mut state = State::default();
+        WriterExt::handle_insn(
+            &mut out,
+            &mut ctx,
+            AArch64Arch::default(),
+            &mut state,
+            &[],
+            &[],
+            &[],
+            op,
+            0,
+        )
+        .unwrap();
+        let (_bytes, _labels, relocs) = out.into_parts_with_relocs();
+        relocs
+            .into_iter()
+            .filter_map(|r| match r.label {
+                AArch64Label::External { name } => Some(name),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn memory_size_honors_index() {
+        assert!(
+            op_externals(&Instruction::MemorySize(0))
+                .iter()
+                .any(|n| n == "__wasm_mem_pages")
+        );
+        let e = op_externals(&Instruction::MemorySize(2));
+        assert!(e.iter().any(|n| n == "__wasm_mem_pages_2"), "{e:?}");
+        assert!(!e.iter().any(|n| n == "__wasm_mem_pages"));
+    }
+
+    #[test]
+    fn memory_grow_honors_index() {
+        let e = op_externals(&Instruction::MemoryGrow(1));
+        // AAPCS64 grow: one helper, per-memory cells passed as arguments.
+        assert!(e.iter().any(|n| n == "__wasm_memory_grow"), "{e:?}");
+        assert!(e.iter().any(|n| n == "__wasm_mem_1"), "{e:?}");
+        assert!(e.iter().any(|n| n == "__wasm_mem_pages_1"), "{e:?}");
+        assert!(!e.iter().any(|n| n == "__wasm_mem_pages"));
+    }
+
+    #[test]
+    fn memory_init_honors_mem_index() {
+        let e = op_externals(&Instruction::MemoryInit {
+            mem: 2,
+            data_index: 0,
+        });
+        assert!(
+            e.iter().any(|n| n == "__wasm_memory_init_copy_2"),
+            "{e:?}"
+        );
+        assert!(e.iter().any(|n| n == "__wasm_data_seg_0"), "{e:?}");
+    }
+
+    #[test]
+    fn memory_fill_honors_index() {
+        let e = op_externals(&Instruction::MemoryFill(3));
+        assert!(e.iter().any(|n| n == "__wasm_memory_fill_3"), "{e:?}");
+    }
+
+    #[test]
+    fn memory_copy_honors_both_indices() {
+        let e = op_externals(&Instruction::MemoryCopy {
+            dst_mem: 2,
+            src_mem: 1,
+        });
+        assert!(e.iter().any(|n| n == "__wasm_memory_copy_2_1"), "{e:?}");
+        let e0 = op_externals(&Instruction::MemoryCopy {
+            dst_mem: 0,
+            src_mem: 0,
+        });
+        assert!(e0.iter().any(|n| n == "__wasm_memory_copy"), "{e0:?}");
     }
 
     fn load_externals_indexed(mem_base: MemBase, memory_index: u32) -> Vec<String> {
