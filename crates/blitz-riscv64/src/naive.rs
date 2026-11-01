@@ -75,7 +75,12 @@ impl<'a> NaiveShardState<'a> {
         imports_len: u32,
         map: &'a (dyn portal_solutions_blitz_common::shard::ShardMap + 'a),
     ) -> Self {
-        Self { config, current_shard, imports_len, map }
+        Self {
+            config,
+            current_shard,
+            imports_len,
+            map,
+        }
     }
 
     pub fn call_target(&self, callee_fn: u32) -> CallTarget {
@@ -86,7 +91,9 @@ impl<'a> NaiveShardState<'a> {
         if callee_shard == self.current_shard {
             CallTarget::Local
         } else {
-            CallTarget::CrossShard { table_slot: callee_fn }
+            CallTarget::CrossShard {
+                table_slot: callee_fn,
+            }
         }
     }
 }
@@ -100,7 +107,9 @@ pub struct State<'a> {
     pub num_returns: usize,
     pub control_depth: usize,
     pub if_stack: Vec<Endable>,
-    pub regalloc: Option<regalloc::RegAlloc<riscv_regalloc::RegKind, 32, Frames<riscv_regalloc::RegKind, 32>>>,
+    pub regalloc: Option<
+        regalloc::RegAlloc<riscv_regalloc::RegKind, 32, Frames<riscv_regalloc::RegKind, 32>>,
+    >,
     pub body: u32,
     pub body_labels: alloc::collections::BTreeMap<u32, usize>,
     /// Carried from `StartFn` to `StartBody` for RISC-V NaiveAbi — not actually
@@ -177,8 +186,12 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
     /// Flushes regalloc first so the operand stack is materialised at the site
     /// (matching the generic-entry layout the specialization tail-jump expects).
     /// Uses t0 (Reg 5) as scratch, t1 (Reg 6) as the `inc_mem64` scratch.
-    fn emit_control_flow_probe(&mut self, ctx: &mut Context, arch: RiscV64Arch, state: &mut State<'_>)
-        -> Result<(), Self::Error>
+    fn emit_control_flow_probe(
+        &mut self,
+        ctx: &mut Context,
+        arch: RiscV64Arch,
+        state: &mut State<'_>,
+    ) -> Result<(), Self::Error>
     where
         Self: Sized,
     {
@@ -191,9 +204,18 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
             let probe_id = state.next_probe_id;
             state.next_probe_id += 1;
             let probe_base = state.probe_base;
-            let mut bw = crate::codegen::BlitzW { writer: self, ctx, arch, scratch2: 6, probe_base };
+            let mut bw = crate::codegen::BlitzW {
+                writer: self,
+                ctx,
+                arch,
+                scratch2: 6,
+                probe_base,
+            };
             portal_solutions_blitz_codegen::emit_probe_site(
-                &mut bw, cfg.table_base_off, probe_id, 5,
+                &mut bw,
+                cfg.table_base_off,
+                probe_id,
+                5,
                 portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
                 &mut state.label_index,
             )?;
@@ -230,10 +252,21 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
             alloc::format!("__wasm_mem_{memory_index}")
         };
         self.la_label(ctx, arch, &scratch, RiscvLabel::External { name: sym })?;
-        self.ld(ctx, arch, &scratch, &MemArgKind::Mem {
-            base: ArgKind::Reg { reg: scratch, size: MemorySize::_64 },
-            offset: None, disp: 0, size: MemorySize::_64, reg_class: RegisterClass::Gpr,
-        })?;
+        self.ld(
+            ctx,
+            arch,
+            &scratch,
+            &MemArgKind::Mem {
+                base: ArgKind::Reg {
+                    reg: scratch,
+                    size: MemorySize::_64,
+                },
+                offset: None,
+                disp: 0,
+                size: MemorySize::_64,
+                reg_class: RegisterClass::Gpr,
+            },
+        )?;
         self.add(ctx, arch, &addr, &addr, &scratch)
     }
 
@@ -365,32 +398,58 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
         match op {
             Instruction::I32Const(v) => {
                 let v = *v as u64;
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::push_const(
-                    &mut rw, riscv_regalloc::RegKind::Int,
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
                     |rw, reg| rw.writer.li(rw.ctx, rw.arch, &Reg(reg), v),
                 )?;
             }
             Instruction::I64Const(v) => {
                 let v = *v as u64;
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::push_const(
-                    &mut rw, riscv_regalloc::RegKind::Int,
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
                     |rw, reg| rw.writer.li(rw.ctx, rw.arch, &Reg(reg), v),
                 )?;
             }
             Instruction::LocalGet(local_index) => {
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::push_local(
-                    &mut rw, riscv_regalloc::RegKind::Int, *local_index,
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
+                    *local_index,
                 )?;
             }
             Instruction::LocalSet(local_index) => {
                 // pop_to_local transitions TOS from Stack → Local(N), marking the register as
                 // holding local N's value. No memory write yet; flush() or eviction emits SetLocal.
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::pop_to_local(
-                    &mut rw, riscv_regalloc::RegKind::Int, *local_index,
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
+                    *local_index,
                 )?;
             }
             Instruction::LocalTee(local_index) => {
@@ -436,15 +495,40 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
             }
             Instruction::I64Load(memarg) | Instruction::F64Load(memarg) => {
                 let base = state.mem_base_for(memarg.memory_index);
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::load(
-                    &mut rw, riscv_regalloc::RegKind::Int,
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
                     |rw, dest, addr| {
-                        rw.writer.apply_mem_base(rw.ctx, rw.arch, base, Reg(addr), Reg(dest), memarg.memory_index)?;
-                        let disp = rw.writer.mem_add_offset(rw.ctx, rw.arch, Reg(addr), Reg(dest), memarg.offset)?;
+                        rw.writer.apply_mem_base(
+                            rw.ctx,
+                            rw.arch,
+                            base,
+                            Reg(addr),
+                            Reg(dest),
+                            memarg.memory_index,
+                        )?;
+                        let disp = rw.writer.mem_add_offset(
+                            rw.ctx,
+                            rw.arch,
+                            Reg(addr),
+                            Reg(dest),
+                            memarg.offset,
+                        )?;
                         let mem = MemArgKind::Mem {
-                            base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 },
-                            offset: None, disp, size: MemorySize::_64, reg_class: RegisterClass::Gpr,
+                            base: ArgKind::Reg {
+                                reg: Reg(addr),
+                                size: MemorySize::_64,
+                            },
+                            offset: None,
+                            disp,
+                            size: MemorySize::_64,
+                            reg_class: RegisterClass::Gpr,
                         };
                         rw.writer.ld(rw.ctx, rw.arch, &Reg(dest), &mem)
                     },
@@ -452,31 +536,83 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
             }
             Instruction::I32Load(memarg) | Instruction::F32Load(memarg) => {
                 let base = state.mem_base_for(memarg.memory_index);
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::load(
-                    &mut rw, riscv_regalloc::RegKind::Int,
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
                     |rw, dest, addr| {
-                        rw.writer.apply_mem_base(rw.ctx, rw.arch, base, Reg(addr), Reg(dest), memarg.memory_index)?;
-                        let disp = rw.writer.mem_add_offset(rw.ctx, rw.arch, Reg(addr), Reg(dest), memarg.offset)?;
+                        rw.writer.apply_mem_base(
+                            rw.ctx,
+                            rw.arch,
+                            base,
+                            Reg(addr),
+                            Reg(dest),
+                            memarg.memory_index,
+                        )?;
+                        let disp = rw.writer.mem_add_offset(
+                            rw.ctx,
+                            rw.arch,
+                            Reg(addr),
+                            Reg(dest),
+                            memarg.offset,
+                        )?;
                         let mem = MemArgKind::Mem {
-                            base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 },
-                            offset: None, disp, size: MemorySize::_32, reg_class: RegisterClass::Gpr,
+                            base: ArgKind::Reg {
+                                reg: Reg(addr),
+                                size: MemorySize::_64,
+                            },
+                            offset: None,
+                            disp,
+                            size: MemorySize::_32,
+                            reg_class: RegisterClass::Gpr,
                         };
                         rw.writer.lw(rw.ctx, rw.arch, &Reg(dest), &mem)
                     },
                 )?;
             }
-            Instruction::I32Store(memarg) | Instruction::I64Store32(memarg) | Instruction::F32Store(memarg) => {
+            Instruction::I32Store(memarg)
+            | Instruction::I64Store32(memarg)
+            | Instruction::F32Store(memarg) => {
                 let base = state.mem_base_for(memarg.memory_index);
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::store(
-                    &mut rw, riscv_regalloc::RegKind::Int,
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
                     |rw, val, addr| {
-                        rw.writer.apply_mem_base(rw.ctx, rw.arch, base, Reg(addr), Reg(5), memarg.memory_index)?;
-                        let disp = rw.writer.mem_add_offset(rw.ctx, rw.arch, Reg(addr), Reg(5), memarg.offset)?;
+                        rw.writer.apply_mem_base(
+                            rw.ctx,
+                            rw.arch,
+                            base,
+                            Reg(addr),
+                            Reg(5),
+                            memarg.memory_index,
+                        )?;
+                        let disp = rw.writer.mem_add_offset(
+                            rw.ctx,
+                            rw.arch,
+                            Reg(addr),
+                            Reg(5),
+                            memarg.offset,
+                        )?;
                         let mem = MemArgKind::Mem {
-                            base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 },
-                            offset: None, disp, size: MemorySize::_32, reg_class: RegisterClass::Gpr,
+                            base: ArgKind::Reg {
+                                reg: Reg(addr),
+                                size: MemorySize::_64,
+                            },
+                            offset: None,
+                            disp,
+                            size: MemorySize::_32,
+                            reg_class: RegisterClass::Gpr,
                         };
                         rw.writer.sw(rw.ctx, rw.arch, &Reg(val), &mem)
                     },
@@ -484,15 +620,40 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
             }
             Instruction::I64Store(memarg) | Instruction::F64Store(memarg) => {
                 let base = state.mem_base_for(memarg.memory_index);
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::store(
-                    &mut rw, riscv_regalloc::RegKind::Int,
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
                     |rw, val, addr| {
-                        rw.writer.apply_mem_base(rw.ctx, rw.arch, base, Reg(addr), Reg(5), memarg.memory_index)?;
-                        let disp = rw.writer.mem_add_offset(rw.ctx, rw.arch, Reg(addr), Reg(5), memarg.offset)?;
+                        rw.writer.apply_mem_base(
+                            rw.ctx,
+                            rw.arch,
+                            base,
+                            Reg(addr),
+                            Reg(5),
+                            memarg.memory_index,
+                        )?;
+                        let disp = rw.writer.mem_add_offset(
+                            rw.ctx,
+                            rw.arch,
+                            Reg(addr),
+                            Reg(5),
+                            memarg.offset,
+                        )?;
                         let mem = MemArgKind::Mem {
-                            base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 },
-                            offset: None, disp, size: MemorySize::_64, reg_class: RegisterClass::Gpr,
+                            base: ArgKind::Reg {
+                                reg: Reg(addr),
+                                size: MemorySize::_64,
+                            },
+                            offset: None,
+                            disp,
+                            size: MemorySize::_64,
+                            reg_class: RegisterClass::Gpr,
                         };
                         rw.writer.sd(rw.ctx, rw.arch, &Reg(val), &mem)
                     },
@@ -500,142 +661,411 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
             }
             Instruction::I32Load8S(m) | Instruction::I64Load8S(m) => {
                 let base = state.mem_base_for(m.memory_index);
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
-                portal_solutions_blitz_codegen::regalloc_frontend::load(&mut rw, riscv_regalloc::RegKind::Int, |rw, dst, addr| {
-                    rw.writer.apply_mem_base(rw.ctx, rw.arch, base, Reg(addr), Reg(dst), m.memory_index)?;
-                    let disp = rw.writer.mem_add_offset(rw.ctx, rw.arch, Reg(addr), Reg(dst), m.offset)?;
-                    rw.writer.lb(rw.ctx, rw.arch, &Reg(dst), &MemArgKind::Mem { base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 }, offset: None, disp, size: MemorySize::_8, reg_class: RegisterClass::Gpr })
-                })?;
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
+                portal_solutions_blitz_codegen::regalloc_frontend::load(
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
+                    |rw, dst, addr| {
+                        rw.writer.apply_mem_base(
+                            rw.ctx,
+                            rw.arch,
+                            base,
+                            Reg(addr),
+                            Reg(dst),
+                            m.memory_index,
+                        )?;
+                        let disp = rw.writer.mem_add_offset(
+                            rw.ctx,
+                            rw.arch,
+                            Reg(addr),
+                            Reg(dst),
+                            m.offset,
+                        )?;
+                        rw.writer.lb(
+                            rw.ctx,
+                            rw.arch,
+                            &Reg(dst),
+                            &MemArgKind::Mem {
+                                base: ArgKind::Reg {
+                                    reg: Reg(addr),
+                                    size: MemorySize::_64,
+                                },
+                                offset: None,
+                                disp,
+                                size: MemorySize::_8,
+                                reg_class: RegisterClass::Gpr,
+                            },
+                        )
+                    },
+                )?;
             }
             Instruction::I32Load16S(m) | Instruction::I64Load16S(m) => {
                 let base = state.mem_base_for(m.memory_index);
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
-                portal_solutions_blitz_codegen::regalloc_frontend::load(&mut rw, riscv_regalloc::RegKind::Int, |rw, dst, addr| {
-                    rw.writer.apply_mem_base(rw.ctx, rw.arch, base, Reg(addr), Reg(dst), m.memory_index)?;
-                    let disp = rw.writer.mem_add_offset(rw.ctx, rw.arch, Reg(addr), Reg(dst), m.offset)?;
-                    rw.writer.lh(rw.ctx, rw.arch, &Reg(dst), &MemArgKind::Mem { base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 }, offset: None, disp, size: MemorySize::_16, reg_class: RegisterClass::Gpr })
-                })?;
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
+                portal_solutions_blitz_codegen::regalloc_frontend::load(
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
+                    |rw, dst, addr| {
+                        rw.writer.apply_mem_base(
+                            rw.ctx,
+                            rw.arch,
+                            base,
+                            Reg(addr),
+                            Reg(dst),
+                            m.memory_index,
+                        )?;
+                        let disp = rw.writer.mem_add_offset(
+                            rw.ctx,
+                            rw.arch,
+                            Reg(addr),
+                            Reg(dst),
+                            m.offset,
+                        )?;
+                        rw.writer.lh(
+                            rw.ctx,
+                            rw.arch,
+                            &Reg(dst),
+                            &MemArgKind::Mem {
+                                base: ArgKind::Reg {
+                                    reg: Reg(addr),
+                                    size: MemorySize::_64,
+                                },
+                                offset: None,
+                                disp,
+                                size: MemorySize::_16,
+                                reg_class: RegisterClass::Gpr,
+                            },
+                        )
+                    },
+                )?;
             }
-            Instruction::I32Load8U(m) | Instruction::I64Load8U(m) | Instruction::I32Load16U(m) | Instruction::I64Load16U(m) | Instruction::I64Load32U(m) => {
+            Instruction::I32Load8U(m)
+            | Instruction::I64Load8U(m)
+            | Instruction::I32Load16U(m)
+            | Instruction::I64Load16U(m)
+            | Instruction::I64Load32U(m) => {
                 let (width, shift) = match op {
                     Instruction::I32Load8U(_) | Instruction::I64Load8U(_) => (MemorySize::_8, 56),
-                    Instruction::I32Load16U(_) | Instruction::I64Load16U(_) => (MemorySize::_16, 48),
+                    Instruction::I32Load16U(_) | Instruction::I64Load16U(_) => {
+                        (MemorySize::_16, 48)
+                    }
                     _ => (MemorySize::_32, 32),
                 };
                 let base = state.mem_base_for(m.memory_index);
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
-                portal_solutions_blitz_codegen::regalloc_frontend::load(&mut rw, riscv_regalloc::RegKind::Int, |rw, dst, addr| {
-                    rw.writer.apply_mem_base(rw.ctx, rw.arch, base, Reg(addr), Reg(dst), m.memory_index)?;
-                    let disp = rw.writer.mem_add_offset(rw.ctx, rw.arch, Reg(addr), Reg(dst), m.offset)?;
-                    let mem = MemArgKind::Mem { base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 }, offset: None, disp, size: width, reg_class: RegisterClass::Gpr };
-                    if width == MemorySize::_8 { rw.writer.lb(rw.ctx, rw.arch, &Reg(dst), &mem)?; }
-                    else if width == MemorySize::_16 { rw.writer.lh(rw.ctx, rw.arch, &Reg(dst), &mem)?; }
-                    else { rw.writer.lw(rw.ctx, rw.arch, &Reg(dst), &mem)?; }
-                    rw.writer.li(rw.ctx, rw.arch, &Reg(5), shift)?;
-                    rw.writer.sll(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(5))?;
-                    rw.writer.srl(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(5))
-                })?;
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
+                portal_solutions_blitz_codegen::regalloc_frontend::load(
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
+                    |rw, dst, addr| {
+                        rw.writer.apply_mem_base(
+                            rw.ctx,
+                            rw.arch,
+                            base,
+                            Reg(addr),
+                            Reg(dst),
+                            m.memory_index,
+                        )?;
+                        let disp = rw.writer.mem_add_offset(
+                            rw.ctx,
+                            rw.arch,
+                            Reg(addr),
+                            Reg(dst),
+                            m.offset,
+                        )?;
+                        let mem = MemArgKind::Mem {
+                            base: ArgKind::Reg {
+                                reg: Reg(addr),
+                                size: MemorySize::_64,
+                            },
+                            offset: None,
+                            disp,
+                            size: width,
+                            reg_class: RegisterClass::Gpr,
+                        };
+                        if width == MemorySize::_8 {
+                            rw.writer.lb(rw.ctx, rw.arch, &Reg(dst), &mem)?;
+                        } else if width == MemorySize::_16 {
+                            rw.writer.lh(rw.ctx, rw.arch, &Reg(dst), &mem)?;
+                        } else {
+                            rw.writer.lw(rw.ctx, rw.arch, &Reg(dst), &mem)?;
+                        }
+                        rw.writer.li(rw.ctx, rw.arch, &Reg(5), shift)?;
+                        rw.writer
+                            .sll(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(5))?;
+                        rw.writer
+                            .srl(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(5))
+                    },
+                )?;
             }
             Instruction::I64Load32S(m) => {
                 let base = state.mem_base_for(m.memory_index);
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
-                portal_solutions_blitz_codegen::regalloc_frontend::load(&mut rw, riscv_regalloc::RegKind::Int, |rw, dst, addr| {
-                    rw.writer.apply_mem_base(rw.ctx, rw.arch, base, Reg(addr), Reg(dst), m.memory_index)?;
-                    let disp = rw.writer.mem_add_offset(rw.ctx, rw.arch, Reg(addr), Reg(dst), m.offset)?;
-                    rw.writer.lw(rw.ctx, rw.arch, &Reg(dst), &MemArgKind::Mem { base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 }, offset: None, disp, size: MemorySize::_32, reg_class: RegisterClass::Gpr })
-                })?;
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
+                portal_solutions_blitz_codegen::regalloc_frontend::load(
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
+                    |rw, dst, addr| {
+                        rw.writer.apply_mem_base(
+                            rw.ctx,
+                            rw.arch,
+                            base,
+                            Reg(addr),
+                            Reg(dst),
+                            m.memory_index,
+                        )?;
+                        let disp = rw.writer.mem_add_offset(
+                            rw.ctx,
+                            rw.arch,
+                            Reg(addr),
+                            Reg(dst),
+                            m.offset,
+                        )?;
+                        rw.writer.lw(
+                            rw.ctx,
+                            rw.arch,
+                            &Reg(dst),
+                            &MemArgKind::Mem {
+                                base: ArgKind::Reg {
+                                    reg: Reg(addr),
+                                    size: MemorySize::_64,
+                                },
+                                offset: None,
+                                disp,
+                                size: MemorySize::_32,
+                                reg_class: RegisterClass::Gpr,
+                            },
+                        )
+                    },
+                )?;
             }
-            Instruction::I32Store8(m) | Instruction::I64Store8(m) | Instruction::I32Store16(m) | Instruction::I64Store16(m) => {
-                let width = match op { Instruction::I32Store8(_) | Instruction::I64Store8(_) => MemorySize::_8, _ => MemorySize::_16 };
+            Instruction::I32Store8(m)
+            | Instruction::I64Store8(m)
+            | Instruction::I32Store16(m)
+            | Instruction::I64Store16(m) => {
+                let width = match op {
+                    Instruction::I32Store8(_) | Instruction::I64Store8(_) => MemorySize::_8,
+                    _ => MemorySize::_16,
+                };
                 let base = state.mem_base_for(m.memory_index);
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
-                portal_solutions_blitz_codegen::regalloc_frontend::store(&mut rw, riscv_regalloc::RegKind::Int, |rw, val, addr| {
-                    rw.writer.apply_mem_base(rw.ctx, rw.arch, base, Reg(addr), Reg(5), m.memory_index)?;
-                    let disp = rw.writer.mem_add_offset(rw.ctx, rw.arch, Reg(addr), Reg(5), m.offset)?;
-                    let mem = MemArgKind::Mem { base: ArgKind::Reg { reg: Reg(addr), size: MemorySize::_64 }, offset: None, disp, size: width, reg_class: RegisterClass::Gpr };
-                    if width == MemorySize::_8 { rw.writer.sb(rw.ctx, rw.arch, &Reg(val), &mem) } else { rw.writer.sh(rw.ctx, rw.arch, &Reg(val), &mem) }
-                })?;
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
+                portal_solutions_blitz_codegen::regalloc_frontend::store(
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
+                    |rw, val, addr| {
+                        rw.writer.apply_mem_base(
+                            rw.ctx,
+                            rw.arch,
+                            base,
+                            Reg(addr),
+                            Reg(5),
+                            m.memory_index,
+                        )?;
+                        let disp = rw.writer.mem_add_offset(
+                            rw.ctx,
+                            rw.arch,
+                            Reg(addr),
+                            Reg(5),
+                            m.offset,
+                        )?;
+                        let mem = MemArgKind::Mem {
+                            base: ArgKind::Reg {
+                                reg: Reg(addr),
+                                size: MemorySize::_64,
+                            },
+                            offset: None,
+                            disp,
+                            size: width,
+                            reg_class: RegisterClass::Gpr,
+                        };
+                        if width == MemorySize::_8 {
+                            rw.writer.sb(rw.ctx, rw.arch, &Reg(val), &mem)
+                        } else {
+                            rw.writer.sh(rw.ctx, rw.arch, &Reg(val), &mem)
+                        }
+                    },
+                )?;
             }
             // I32Add is the same as I64Add at the regalloc/register level — RISC-V add
             // operates on 64-bit registers; the lower 32 bits give the correct i32 result.
-            Instruction::I32Add |
-            Instruction::I64Add => {
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+            Instruction::I32Add | Instruction::I64Add => {
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::binop(
-                    &mut rw, riscv_regalloc::RegKind::Int,
-                    |rw, dst, rhs| rw.writer.add(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer
+                            .add(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs))
+                    },
                 )?;
             }
-            Instruction::I32Sub |
-            Instruction::I64Sub => {
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+            Instruction::I32Sub | Instruction::I64Sub => {
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::binop(
-                    &mut rw, riscv_regalloc::RegKind::Int,
-                    |rw, dst, rhs| rw.writer.sub(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer
+                            .sub(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs))
+                    },
                 )?;
             }
-            Instruction::I32Mul |
-            Instruction::I64Mul => {
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+            Instruction::I32Mul | Instruction::I64Mul => {
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::binop(
-                    &mut rw, riscv_regalloc::RegKind::Int,
-                    |rw, dst, rhs| rw.writer.mul(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer
+                            .mul(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs))
+                    },
                 )?;
             }
-            Instruction::I32And |
-            Instruction::I64And => {
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+            Instruction::I32And | Instruction::I64And => {
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::binop(
-                    &mut rw, riscv_regalloc::RegKind::Int,
-                    |rw, dst, rhs| rw.writer.and(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer
+                            .and(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs))
+                    },
                 )?;
             }
-            Instruction::I32Or |
-            Instruction::I64Or => {
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+            Instruction::I32Or | Instruction::I64Or => {
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::binop(
-                    &mut rw, riscv_regalloc::RegKind::Int,
-                    |rw, dst, rhs| rw.writer.or(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer
+                            .or(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs))
+                    },
                 )?;
             }
-            Instruction::I32Xor |
-            Instruction::I64Xor => {
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+            Instruction::I32Xor | Instruction::I64Xor => {
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::binop(
-                    &mut rw, riscv_regalloc::RegKind::Int,
-                    |rw, dst, rhs| rw.writer.xor(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer
+                            .xor(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs))
+                    },
                 )?;
             }
-            Instruction::I32Shl |
-            Instruction::I64Shl => {
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+            Instruction::I32Shl | Instruction::I64Shl => {
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::binop(
-                    &mut rw, riscv_regalloc::RegKind::Int,
-                    |rw, dst, rhs| rw.writer.sll(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer
+                            .sll(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs))
+                    },
                 )?;
             }
-            Instruction::I32ShrS |
-            Instruction::I64ShrS => {
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+            Instruction::I32ShrS | Instruction::I64ShrS => {
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::binop(
-                    &mut rw, riscv_regalloc::RegKind::Int,
-                    |rw, dst, rhs| rw.writer.sra(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer
+                            .sra(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs))
+                    },
                 )?;
             }
-            Instruction::I32ShrU |
-            Instruction::I64ShrU => {
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+            Instruction::I32ShrU | Instruction::I64ShrU => {
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::binop(
-                    &mut rw, riscv_regalloc::RegKind::Int,
-                    |rw, dst, rhs| rw.writer.srl(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer
+                            .srl(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs))
+                    },
                 )?;
             }
-            Instruction::I32Eq |
-            Instruction::I64Eq => {
+            Instruction::I32Eq | Instruction::I64Eq => {
                 let label_index = &mut state.label_index;
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::compare(
-                    &mut rw, riscv_regalloc::RegKind::Int,
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
                     move |rw, dest, ta, tb| {
                         let (ra, rb) = (Reg(ta), Reg(tb));
                         let dest = Reg(dest);
@@ -643,9 +1073,21 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         *label_index += 2;
                         let lbl_true = RiscvLabel::Indexed { idx: i };
                         let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                        rw.writer.bcond_label(rw.ctx, rw.arch, ConditionCode::EQ, &ra, &rb, lbl_true.clone())?;
+                        rw.writer.bcond_label(
+                            rw.ctx,
+                            rw.arch,
+                            ConditionCode::EQ,
+                            &ra,
+                            &rb,
+                            lbl_true.clone(),
+                        )?;
                         rw.writer.li(rw.ctx, rw.arch, &dest, 0)?;
-                        rw.writer.jal_label(rw.ctx, rw.arch, &portal_solutions_blitz_common::asm::Reg(0), lbl_end.clone())?;
+                        rw.writer.jal_label(
+                            rw.ctx,
+                            rw.arch,
+                            &portal_solutions_blitz_common::asm::Reg(0),
+                            lbl_end.clone(),
+                        )?;
                         rw.writer.set_label(rw.ctx, rw.arch, lbl_true)?;
                         rw.writer.li(rw.ctx, rw.arch, &dest, 1)?;
                         rw.writer.set_label(rw.ctx, rw.arch, lbl_end)?;
@@ -653,12 +1095,17 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     },
                 )?;
             }
-            Instruction::I32Ne |
-            Instruction::I64Ne => {
+            Instruction::I32Ne | Instruction::I64Ne => {
                 let label_index = &mut state.label_index;
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::compare(
-                    &mut rw, riscv_regalloc::RegKind::Int,
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
                     move |rw, dest, ta, tb| {
                         let (ra, rb) = (Reg(ta), Reg(tb));
                         let dest = Reg(dest);
@@ -666,9 +1113,21 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         *label_index += 2;
                         let lbl_true = RiscvLabel::Indexed { idx: i };
                         let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                        rw.writer.bcond_label(rw.ctx, rw.arch, ConditionCode::NE, &ra, &rb, lbl_true.clone())?;
+                        rw.writer.bcond_label(
+                            rw.ctx,
+                            rw.arch,
+                            ConditionCode::NE,
+                            &ra,
+                            &rb,
+                            lbl_true.clone(),
+                        )?;
                         rw.writer.li(rw.ctx, rw.arch, &dest, 0)?;
-                        rw.writer.jal_label(rw.ctx, rw.arch, &portal_solutions_blitz_common::asm::Reg(0), lbl_end.clone())?;
+                        rw.writer.jal_label(
+                            rw.ctx,
+                            rw.arch,
+                            &portal_solutions_blitz_common::asm::Reg(0),
+                            lbl_end.clone(),
+                        )?;
                         rw.writer.set_label(rw.ctx, rw.arch, lbl_true)?;
                         rw.writer.li(rw.ctx, rw.arch, &dest, 1)?;
                         rw.writer.set_label(rw.ctx, rw.arch, lbl_end)?;
@@ -676,12 +1135,17 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     },
                 )?;
             }
-            Instruction::I32LtS |
-            Instruction::I64LtS => {
+            Instruction::I32LtS | Instruction::I64LtS => {
                 let label_index = &mut state.label_index;
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::compare(
-                    &mut rw, riscv_regalloc::RegKind::Int,
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
                     move |rw, dest, ta, tb| {
                         let (ra, rb) = (Reg(ta), Reg(tb));
                         let dest = Reg(dest);
@@ -689,9 +1153,21 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         *label_index += 2;
                         let lbl_true = RiscvLabel::Indexed { idx: i };
                         let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                        rw.writer.bcond_label(rw.ctx, rw.arch, ConditionCode::LT, &ra, &rb, lbl_true.clone())?;
+                        rw.writer.bcond_label(
+                            rw.ctx,
+                            rw.arch,
+                            ConditionCode::LT,
+                            &ra,
+                            &rb,
+                            lbl_true.clone(),
+                        )?;
                         rw.writer.li(rw.ctx, rw.arch, &dest, 0)?;
-                        rw.writer.jal_label(rw.ctx, rw.arch, &portal_solutions_blitz_common::asm::Reg(0), lbl_end.clone())?;
+                        rw.writer.jal_label(
+                            rw.ctx,
+                            rw.arch,
+                            &portal_solutions_blitz_common::asm::Reg(0),
+                            lbl_end.clone(),
+                        )?;
                         rw.writer.set_label(rw.ctx, rw.arch, lbl_true)?;
                         rw.writer.li(rw.ctx, rw.arch, &dest, 1)?;
                         rw.writer.set_label(rw.ctx, rw.arch, lbl_end)?;
@@ -699,12 +1175,17 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     },
                 )?;
             }
-            Instruction::I32LtU |
-            Instruction::I64LtU => {
+            Instruction::I32LtU | Instruction::I64LtU => {
                 let label_index = &mut state.label_index;
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::compare(
-                    &mut rw, riscv_regalloc::RegKind::Int,
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
                     move |rw, dest, ta, tb| {
                         let (ra, rb) = (Reg(ta), Reg(tb));
                         let dest = Reg(dest);
@@ -712,9 +1193,21 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         *label_index += 2;
                         let lbl_true = RiscvLabel::Indexed { idx: i };
                         let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                        rw.writer.bcond_label(rw.ctx, rw.arch, ConditionCode::LTU, &ra, &rb, lbl_true.clone())?;
+                        rw.writer.bcond_label(
+                            rw.ctx,
+                            rw.arch,
+                            ConditionCode::LTU,
+                            &ra,
+                            &rb,
+                            lbl_true.clone(),
+                        )?;
                         rw.writer.li(rw.ctx, rw.arch, &dest, 0)?;
-                        rw.writer.jal_label(rw.ctx, rw.arch, &portal_solutions_blitz_common::asm::Reg(0), lbl_end.clone())?;
+                        rw.writer.jal_label(
+                            rw.ctx,
+                            rw.arch,
+                            &portal_solutions_blitz_common::asm::Reg(0),
+                            lbl_end.clone(),
+                        )?;
                         rw.writer.set_label(rw.ctx, rw.arch, lbl_true)?;
                         rw.writer.li(rw.ctx, rw.arch, &dest, 1)?;
                         rw.writer.set_label(rw.ctx, rw.arch, lbl_end)?;
@@ -722,12 +1215,17 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     },
                 )?;
             }
-            Instruction::I32GtS |
-            Instruction::I64GtS => {
+            Instruction::I32GtS | Instruction::I64GtS => {
                 let label_index = &mut state.label_index;
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::compare(
-                    &mut rw, riscv_regalloc::RegKind::Int,
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
                     move |rw, dest, ta, tb| {
                         let (ra, rb) = (Reg(ta), Reg(tb));
                         let dest = Reg(dest);
@@ -735,9 +1233,21 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         *label_index += 2;
                         let lbl_true = RiscvLabel::Indexed { idx: i };
                         let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                        rw.writer.bcond_label(rw.ctx, rw.arch, ConditionCode::LT, &rb, &ra, lbl_true.clone())?;
+                        rw.writer.bcond_label(
+                            rw.ctx,
+                            rw.arch,
+                            ConditionCode::LT,
+                            &rb,
+                            &ra,
+                            lbl_true.clone(),
+                        )?;
                         rw.writer.li(rw.ctx, rw.arch, &dest, 0)?;
-                        rw.writer.jal_label(rw.ctx, rw.arch, &portal_solutions_blitz_common::asm::Reg(0), lbl_end.clone())?;
+                        rw.writer.jal_label(
+                            rw.ctx,
+                            rw.arch,
+                            &portal_solutions_blitz_common::asm::Reg(0),
+                            lbl_end.clone(),
+                        )?;
                         rw.writer.set_label(rw.ctx, rw.arch, lbl_true)?;
                         rw.writer.li(rw.ctx, rw.arch, &dest, 1)?;
                         rw.writer.set_label(rw.ctx, rw.arch, lbl_end)?;
@@ -745,12 +1255,17 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     },
                 )?;
             }
-            Instruction::I32GtU |
-            Instruction::I64GtU => {
+            Instruction::I32GtU | Instruction::I64GtU => {
                 let label_index = &mut state.label_index;
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::compare(
-                    &mut rw, riscv_regalloc::RegKind::Int,
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
                     move |rw, dest, ta, tb| {
                         let (ra, rb) = (Reg(ta), Reg(tb));
                         let dest = Reg(dest);
@@ -758,9 +1273,21 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         *label_index += 2;
                         let lbl_true = RiscvLabel::Indexed { idx: i };
                         let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                        rw.writer.bcond_label(rw.ctx, rw.arch, ConditionCode::LTU, &rb, &ra, lbl_true.clone())?;
+                        rw.writer.bcond_label(
+                            rw.ctx,
+                            rw.arch,
+                            ConditionCode::LTU,
+                            &rb,
+                            &ra,
+                            lbl_true.clone(),
+                        )?;
                         rw.writer.li(rw.ctx, rw.arch, &dest, 0)?;
-                        rw.writer.jal_label(rw.ctx, rw.arch, &portal_solutions_blitz_common::asm::Reg(0), lbl_end.clone())?;
+                        rw.writer.jal_label(
+                            rw.ctx,
+                            rw.arch,
+                            &portal_solutions_blitz_common::asm::Reg(0),
+                            lbl_end.clone(),
+                        )?;
                         rw.writer.set_label(rw.ctx, rw.arch, lbl_true)?;
                         rw.writer.li(rw.ctx, rw.arch, &dest, 1)?;
                         rw.writer.set_label(rw.ctx, rw.arch, lbl_end)?;
@@ -768,12 +1295,17 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     },
                 )?;
             }
-            Instruction::I32LeS |
-            Instruction::I64LeS => {
+            Instruction::I32LeS | Instruction::I64LeS => {
                 let label_index = &mut state.label_index;
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::compare(
-                    &mut rw, riscv_regalloc::RegKind::Int,
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
                     move |rw, dest, ta, tb| {
                         let (ra, rb) = (Reg(ta), Reg(tb));
                         let dest = Reg(dest);
@@ -781,9 +1313,21 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         *label_index += 2;
                         let lbl_true = RiscvLabel::Indexed { idx: i };
                         let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                        rw.writer.bcond_label(rw.ctx, rw.arch, ConditionCode::GT, &ra, &rb, lbl_true.clone())?;
+                        rw.writer.bcond_label(
+                            rw.ctx,
+                            rw.arch,
+                            ConditionCode::GT,
+                            &ra,
+                            &rb,
+                            lbl_true.clone(),
+                        )?;
                         rw.writer.li(rw.ctx, rw.arch, &dest, 0)?;
-                        rw.writer.jal_label(rw.ctx, rw.arch, &portal_solutions_blitz_common::asm::Reg(0), lbl_end.clone())?;
+                        rw.writer.jal_label(
+                            rw.ctx,
+                            rw.arch,
+                            &portal_solutions_blitz_common::asm::Reg(0),
+                            lbl_end.clone(),
+                        )?;
                         rw.writer.set_label(rw.ctx, rw.arch, lbl_true)?;
                         rw.writer.li(rw.ctx, rw.arch, &dest, 1)?;
                         rw.writer.set_label(rw.ctx, rw.arch, lbl_end)?;
@@ -791,12 +1335,17 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     },
                 )?;
             }
-            Instruction::I32LeU |
-            Instruction::I64LeU => {
+            Instruction::I32LeU | Instruction::I64LeU => {
                 let label_index = &mut state.label_index;
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::compare(
-                    &mut rw, riscv_regalloc::RegKind::Int,
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
                     move |rw, dest, ta, tb| {
                         let (ra, rb) = (Reg(ta), Reg(tb));
                         let dest = Reg(dest);
@@ -804,9 +1353,21 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         *label_index += 2;
                         let lbl_true = RiscvLabel::Indexed { idx: i };
                         let lbl_end = RiscvLabel::Indexed { idx: i + 1 };
-                        rw.writer.bcond_label(rw.ctx, rw.arch, ConditionCode::GTU, &ra, &rb, lbl_true.clone())?;
+                        rw.writer.bcond_label(
+                            rw.ctx,
+                            rw.arch,
+                            ConditionCode::GTU,
+                            &ra,
+                            &rb,
+                            lbl_true.clone(),
+                        )?;
                         rw.writer.li(rw.ctx, rw.arch, &dest, 0)?;
-                        rw.writer.jal_label(rw.ctx, rw.arch, &portal_solutions_blitz_common::asm::Reg(0), lbl_end.clone())?;
+                        rw.writer.jal_label(
+                            rw.ctx,
+                            rw.arch,
+                            &portal_solutions_blitz_common::asm::Reg(0),
+                            lbl_end.clone(),
+                        )?;
                         rw.writer.set_label(rw.ctx, rw.arch, lbl_true)?;
                         rw.writer.li(rw.ctx, rw.arch, &dest, 1)?;
                         rw.writer.set_label(rw.ctx, rw.arch, lbl_end)?;
@@ -815,18 +1376,34 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 )?;
             }
             Instruction::I32DivU | Instruction::I64DivU => {
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::regalloc_frontend::binop(
-                    &mut rw, riscv_regalloc::RegKind::Int,
-                    |rw, dst, rhs| rw.writer.divu(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs)),
+                    &mut rw,
+                    riscv_regalloc::RegKind::Int,
+                    |rw, dst, rhs| {
+                        rw.writer
+                            .divu(rw.ctx, rw.arch, &Reg(dst), &Reg(dst), &Reg(rhs))
+                    },
                 )?;
             }
             Instruction::I32Eqz | Instruction::I64Eqz => {
                 if state.regalloc.is_none() {
                     let r = riscv_regalloc::init_regalloc::<32>(arch);
-                    state.regalloc = Some(regalloc::RegAlloc { frames: Frames(r.frames), tos: r.tos });
+                    state.regalloc = Some(regalloc::RegAlloc {
+                        frames: Frames(r.frames),
+                        tos: r.tos,
+                    });
                 }
-                let (ta, cmds_a) = state.regalloc.as_mut().unwrap().pop(riscv_regalloc::RegKind::Int);
+                let (ta, cmds_a) = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .pop(riscv_regalloc::RegKind::Int);
                 emit_cmds(self, ctx, arch, cmds_a)?;
                 let ra = Reg(ta.reg);
                 // `seqz` is the RISC-V pseudo-op `sltiu rd, rs, 1`; WriterCore
@@ -842,8 +1419,14 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 self.set_label(ctx, arch, yes)?;
                 self.li(ctx, arch, &ra, 1)?;
                 self.set_label(ctx, arch, done)?;
-                let it = state.regalloc.as_mut().unwrap()
-                    .push_existing(regalloc::Target { reg: ta.reg, kind: ta.kind });
+                let it = state
+                    .regalloc
+                    .as_mut()
+                    .unwrap()
+                    .push_existing(regalloc::Target {
+                        reg: ta.reg,
+                        kind: ta.kind,
+                    });
                 emit_cmds(self, ctx, arch, it)?;
             }
             Instruction::I32WrapI64 => {
@@ -917,20 +1500,31 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     *default,
                     &mut state.label_index,
                     |w, relative_depth| {
-                        w.writer.br_after_flush(w.ctx, w.arch, &state.if_stack, relative_depth)
+                        w.writer
+                            .br_after_flush(w.ctx, w.arch, &state.if_stack, relative_depth)
                     },
                 )?;
             }
             Instruction::Block(_blockty) => {
                 // Do NOT emit the label here: Br(N) to a Block is a forward branch to
                 // the block's End, so the label must only be placed at End time.
-                let frame = portal_solutions_blitz_codegen::control_flow::open_block(&mut state.label_index);
+                let frame = portal_solutions_blitz_codegen::control_flow::open_block(
+                    &mut state.label_index,
+                );
                 state.if_stack.push(Endable::Std(frame));
                 self.emit_control_flow_probe(ctx, arch, state)?;
             }
             Instruction::If(_blockty) => {
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
-                let frame = portal_solutions_blitz_codegen::control_flow::open_if(&mut rw, &mut state.label_index)?;
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
+                let frame = portal_solutions_blitz_codegen::control_flow::open_if(
+                    &mut rw,
+                    &mut state.label_index,
+                )?;
                 state.if_stack.push(Endable::Std(frame));
             }
             Instruction::Else => {
@@ -938,12 +1532,25 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     Some(Endable::Std(frame)) => *frame,
                     _ => panic!("Else without If"),
                 };
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
                 portal_solutions_blitz_codegen::control_flow::emit_else(&mut rw, &frame)?;
             }
             Instruction::Loop(_blockty) => {
-                let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
-                let frame = portal_solutions_blitz_codegen::control_flow::open_loop(&mut rw, &mut state.label_index)?;
+                let mut rw = crate::codegen::RegAllocW {
+                    writer: self,
+                    ctx,
+                    arch,
+                    regalloc: &mut state.regalloc,
+                };
+                let frame = portal_solutions_blitz_codegen::control_flow::open_loop(
+                    &mut rw,
+                    &mut state.label_index,
+                )?;
                 state.if_stack.push(Endable::Std(frame));
                 self.emit_control_flow_probe(ctx, arch, state)?;
             }
@@ -953,10 +1560,22 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 if let Some(top) = state.if_stack.pop() {
                     match top {
                         Endable::Std(frame) => {
-                            let mut rw = crate::codegen::RegAllocW { writer: self, ctx, arch, regalloc: &mut state.regalloc };
-                            portal_solutions_blitz_codegen::control_flow::close_frame(&mut rw, frame)?;
+                            let mut rw = crate::codegen::RegAllocW {
+                                writer: self,
+                                ctx,
+                                arch,
+                                regalloc: &mut state.regalloc,
+                            };
+                            portal_solutions_blitz_codegen::control_flow::close_frame(
+                                &mut rw, frame,
+                            )?;
                         }
-                        Endable::TryTable { exit_idx, dispatch_idx, after_dispatch_idx, catches } => {
+                        Endable::TryTable {
+                            exit_idx,
+                            dispatch_idx,
+                            after_dispatch_idx,
+                            catches,
+                        } => {
                             if let Some(ralloc) = state.regalloc.as_mut() {
                                 let it = ralloc.flush();
                                 emit_cmds(self, ctx, arch, it)?;
@@ -967,11 +1586,25 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                             // frame right before jumping into a dispatch
                             // stub, so this is the only path that needs to
                             // pop here.
-                            self.la_label(ctx, arch, &Reg(5), RiscvLabel::External { name: "__wasm_eh_pop".into() })?;
+                            self.la_label(
+                                ctx,
+                                arch,
+                                &Reg(5),
+                                RiscvLabel::External {
+                                    name: "__wasm_eh_pop".into(),
+                                },
+                            )?;
                             self.jalr(ctx, arch, &Reg(1), &Reg(5), 0)?;
                             let ra = portal_solutions_blitz_common::asm::Reg(0);
                             // Normal path: jump over dispatch stub.
-                            self.jal_label(ctx, arch, &ra, RiscvLabel::Indexed { idx: after_dispatch_idx })?;
+                            self.jal_label(
+                                ctx,
+                                arch,
+                                &ra,
+                                RiscvLabel::Indexed {
+                                    idx: after_dispatch_idx,
+                                },
+                            )?;
                             // Dispatch stub.
                             self.set_label(ctx, arch, RiscvLabel::Indexed { idx: dispatch_idx })?;
                             for catch in catches.iter() {
@@ -980,20 +1613,31 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                                     Catch::One { tag, label } => {
                                         let arity = if (*tag as usize) < tags.len() {
                                             sigs[tags[*tag as usize] as usize].params().len()
-                                        } else { 0 };
+                                        } else {
+                                            0
+                                        };
                                         let skip_idx = state.label_index;
                                         state.label_index += 1;
                                         // T0 = thrown tag (set by Throw), compare with this tag
                                         self.addi(ctx, arch, &Reg(11), &Reg(0), *tag as i32)?; // a1 = tag
                                         // branch-not-equal to skip label
                                         // Use bne: bne T0, a1, skip
-                                        self.jal_label(ctx, arch, &ra, RiscvLabel::Indexed { idx: skip_idx })?; // placeholder: need bne
+                                        self.jal_label(
+                                            ctx,
+                                            arch,
+                                            &ra,
+                                            RiscvLabel::Indexed { idx: skip_idx },
+                                        )?; // placeholder: need bne
                                         // Push exception values (a2..a(1+arity))
                                         for i in (0..arity.min(3)).rev() {
                                             push(self, ctx, arch, Reg(12 + i as u8))?;
                                         }
                                         self.br(ctx, arch, state, *label)?;
-                                        self.set_label(ctx, arch, RiscvLabel::Indexed { idx: skip_idx })?;
+                                        self.set_label(
+                                            ctx,
+                                            arch,
+                                            RiscvLabel::Indexed { idx: skip_idx },
+                                        )?;
                                     }
                                     Catch::All { label } => {
                                         self.br(ctx, arch, state, *label)?;
@@ -1009,8 +1653,21 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                             // jump: `__wasm_exn_propagate` never returns,
                             // and this dispatch stub can itself be reached
                             // via a bare jump rather than a call.
-                            self.jal_label(ctx, arch, &Reg(0), RiscvLabel::External { name: "__wasm_exn_propagate".into() })?;
-                            self.set_label(ctx, arch, RiscvLabel::Indexed { idx: after_dispatch_idx })?;
+                            self.jal_label(
+                                ctx,
+                                arch,
+                                &Reg(0),
+                                RiscvLabel::External {
+                                    name: "__wasm_exn_propagate".into(),
+                                },
+                            )?;
+                            self.set_label(
+                                ctx,
+                                arch,
+                                RiscvLabel::Indexed {
+                                    idx: after_dispatch_idx,
+                                },
+                            )?;
                             self.set_label(ctx, arch, RiscvLabel::Indexed { idx: exit_idx })?;
                         }
                     }
@@ -1021,7 +1678,10 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 }
             }
             Instruction::Call(function_index) => {
-                trace!("handle_op_: Call({function_index}) flush start, regalloc={}", state.regalloc.is_some());
+                trace!(
+                    "handle_op_: Call({function_index}) flush start, regalloc={}",
+                    state.regalloc.is_some()
+                );
                 if let Some(ralloc) = state.regalloc.as_mut() {
                     let mut n = 0usize;
                     for cmd in ralloc.flush() {
@@ -1041,7 +1701,10 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         // Cross-shard: load fn ptr from [SCR + table_slot * 8] into t0.
                         let t0 = Reg(5);
                         let mem = MemArgKind::Mem {
-                            base: ArgKind::Reg { reg: SCR, size: MemorySize::_64 },
+                            base: ArgKind::Reg {
+                                reg: SCR,
+                                size: MemorySize::_64,
+                            },
                             offset: None,
                             disp: table_slot as i32 * 8,
                             size: MemorySize::_64,
@@ -1050,18 +1713,16 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         self.ld(ctx, arch, &t0, &mem)?;
                         self.jalr(ctx, arch, &ra, &t0, 0)?;
                     }
-                    _ => {
-                        match func_imports.get(*function_index as usize) {
-                            Some((module, name)) => {
-                                let sym = alloc::format!("{module}__{name}");
-                                self.jal_label(ctx, arch, &ra, RiscvLabel::External { name: sym })?;
-                            }
-                            None => {
-                                let idx = *function_index - func_imports.len() as u32;
-                                self.jal_label(ctx, arch, &ra, RiscvLabel::Func { r#fn: idx })?;
-                            }
+                    _ => match func_imports.get(*function_index as usize) {
+                        Some((module, name)) => {
+                            let sym = alloc::format!("{module}__{name}");
+                            self.jal_label(ctx, arch, &ra, RiscvLabel::External { name: sym })?;
                         }
-                    }
+                        None => {
+                            let idx = *function_index - func_imports.len() as u32;
+                            self.jal_label(ctx, arch, &ra, RiscvLabel::Func { r#fn: idx })?;
+                        }
+                    },
                 }
             }
             Instruction::Return => {
@@ -1112,12 +1773,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 // Load the *address* of __wasm_mem_pages[_N] into dest using the
                 // `la` pseudo-instruction.  Using `jal` here would jump to the
                 // data symbol and execute its bytes as instructions.
-                self.la_label(
-                    ctx,
-                    arch,
-                    &dest,
-                    RiscvLabel::External { name: pages_sym },
-                )?;
+                self.la_label(ctx, arch, &dest, RiscvLabel::External { name: pages_sym })?;
                 // Dereference: load 32-bit page count, zero-extend to 64 bits.
                 let mem = MemArgKind::Mem {
                     base: ArgKind::Reg {
@@ -1160,12 +1816,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 // emitted `jal a0, sym; call a0`, which jumped to the function
                 // and then re-called the now-corrupted a0 (an infinite loop).
                 let ra = Reg(1);
-                self.jal_label(
-                    ctx,
-                    arch,
-                    &ra,
-                    RiscvLabel::External { name: grow_sym },
-                )?;
+                self.jal_label(ctx, arch, &ra, RiscvLabel::External { name: grow_sym })?;
             }
             // `__wasm_memory_init_copy(dest_offset, seg_base, src_offset, len)`
             // uses the normal RISC-V psABI, unlike the internal WASM grow helper.
@@ -1192,12 +1843,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                         name: alloc::format!("__wasm_data_seg_{data_index}"),
                     },
                 )?;
-                self.la_label(
-                    ctx,
-                    arch,
-                    &Reg(5),
-                    RiscvLabel::External { name: init_sym },
-                )?;
+                self.la_label(ctx, arch, &Reg(5), RiscvLabel::External { name: init_sym })?;
                 self.jalr(ctx, arch, &Reg(1), &Reg(5), 0)?;
             }
             // memory.copy: (dest, src, len) → `__wasm_memory_copy`.
@@ -1216,12 +1862,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 pop(self, ctx, arch, &Reg(12))?; // a2 = len
                 pop(self, ctx, arch, &Reg(11))?; // a1 = src_offset
                 pop(self, ctx, arch, &Reg(10))?; // a0 = dest_offset
-                self.la_label(
-                    ctx,
-                    arch,
-                    &Reg(5),
-                    RiscvLabel::External { name: copy_sym },
-                )?;
+                self.la_label(ctx, arch, &Reg(5), RiscvLabel::External { name: copy_sym })?;
                 self.jalr(ctx, arch, &Reg(1), &Reg(5), 0)?;
             }
             // memory.fill: (dest, val, len) → `__wasm_memory_fill[_N]`.
@@ -1238,12 +1879,7 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 pop(self, ctx, arch, &Reg(12))?; // a2 = len
                 pop(self, ctx, arch, &Reg(11))?; // a1 = val
                 pop(self, ctx, arch, &Reg(10))?; // a0 = dest_offset
-                self.la_label(
-                    ctx,
-                    arch,
-                    &Reg(5),
-                    RiscvLabel::External { name: fill_sym },
-                )?;
+                self.la_label(ctx, arch, &Reg(5), RiscvLabel::External { name: fill_sym })?;
                 self.jalr(ctx, arch, &Reg(1), &Reg(5), 0)?;
             }
             // AOT data segments are immutable symbols; dropping their runtime
@@ -1253,7 +1889,9 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
             Instruction::Throw(tag_index) => {
                 let arity = if (*tag_index as usize) < tags.len() {
                     sigs[tags[*tag_index as usize] as usize].params().len()
-                } else { 0 };
+                } else {
+                    0
+                };
                 // Static dispatch: does the innermost TryTable's if_stack
                 // entry (a purely compile-time, same-function lookup) have a
                 // dispatch stub for us? Resolved before marshalling
@@ -1272,7 +1910,14 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     // throw locally (bypassing __wasm_exn_propagate
                     // entirely), so pop its frame ourselves — propagate
                     // only pops when *it* dispatches (see TryTable::End).
-                    self.la_label(ctx, arch, &Reg(5), RiscvLabel::External { name: "__wasm_eh_pop".into() })?;
+                    self.la_label(
+                        ctx,
+                        arch,
+                        &Reg(5),
+                        RiscvLabel::External {
+                            name: "__wasm_eh_pop".into(),
+                        },
+                    )?;
                     self.jalr(ctx, arch, &Reg(1), &Reg(5), 0)?;
                 }
                 // T0 (a0/x10) = tag index, T2..T(1+arity) = exception values
@@ -1281,13 +1926,25 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     pop(self, ctx, arch, &Reg(12 + i as u8))?; // a2, a3, a4
                 }
                 if let Some(dispatch_idx) = local_dispatch {
-                    self.jal_label(ctx, arch, &Reg(0), RiscvLabel::Indexed { idx: dispatch_idx })?;
+                    self.jal_label(
+                        ctx,
+                        arch,
+                        &Reg(0),
+                        RiscvLabel::Indexed { idx: dispatch_idx },
+                    )?;
                 } else {
                     // No intra-function handler: propagate via the software
                     // EH stack. Target x0 (discard link): a plain tail jump,
                     // matching x86/AArch64's `jmp`/`br` — see TryTable::End's
                     // doc for why `__wasm_exn_propagate` never returns.
-                    self.jal_label(ctx, arch, &Reg(0), RiscvLabel::External { name: "__wasm_exn_propagate".into() })?;
+                    self.jal_label(
+                        ctx,
+                        arch,
+                        &Reg(0),
+                        RiscvLabel::External {
+                            name: "__wasm_exn_propagate".into(),
+                        },
+                    )?;
                 }
             }
             Instruction::ThrowRef => { /* exnref deferred */ }
@@ -1302,7 +1959,11 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     exit_idx,
                     dispatch_idx,
                     after_dispatch_idx,
-                    catches: catches.iter().cloned().collect::<alloc::vec::Vec<_>>().into_boxed_slice(),
+                    catches: catches
+                        .iter()
+                        .cloned()
+                        .collect::<alloc::vec::Vec<_>>()
+                        .into_boxed_slice(),
                 });
                 // Software EH stack: __wasm_eh_push(dispatch_addr, current
                 // sp) — a real RISC-V psABI call (like `MemoryInit`),
@@ -1315,9 +1976,21 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     let it = ralloc.flush();
                     emit_cmds(self, ctx, arch, it)?;
                 }
-                self.la_label(ctx, arch, &Reg(10), RiscvLabel::Indexed { idx: dispatch_idx })?; // a0 = dispatch addr
+                self.la_label(
+                    ctx,
+                    arch,
+                    &Reg(10),
+                    RiscvLabel::Indexed { idx: dispatch_idx },
+                )?; // a0 = dispatch addr
                 self.mv(ctx, arch, &Reg(11), &Reg(2))?; // a1 = sp
-                self.la_label(ctx, arch, &Reg(5), RiscvLabel::External { name: "__wasm_eh_push".into() })?;
+                self.la_label(
+                    ctx,
+                    arch,
+                    &Reg(5),
+                    RiscvLabel::External {
+                        name: "__wasm_eh_push".into(),
+                    },
+                )?;
                 self.jalr(ctx, arch, &Reg(1), &Reg(5), 0)?;
                 self.set_label(ctx, arch, RiscvLabel::Indexed { idx: exit_idx })?;
             }
@@ -1358,10 +2031,12 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                             state.label_index - 1
                         }),
                     },
-                ).map_err(Err::from)?;
+                )
+                .map_err(Err::from)?;
                 state.body = target;
                 if let Some(idx) = state.body_labels.remove(&state.body) {
-                    self.set_label(ctx, arch, RiscvLabel::Indexed { idx }).map_err(Err::from)?;
+                    self.set_label(ctx, arch, RiscvLabel::Indexed { idx })
+                        .map_err(Err::from)?;
                 }
             }
         }
@@ -1374,17 +2049,22 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 state.probes = data.probes;
                 state.next_probe_id = 1;
 
-                self.set_label(ctx, arch, RiscvLabel::Func { r#fn: *id }).map_err(Err::from)?;
+                self.set_label(ctx, arch, RiscvLabel::Func { r#fn: *id })
+                    .map_err(Err::from)?;
 
                 // Function-entry probe: after label, before frame setup.
                 // Scratch: t0 (Reg(5)) + t1 (Reg(6)) — caller-saved, not NaiveAbi arg regs.
                 if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW::new(self, ctx, arch, 6);
                     portal_solutions_blitz_codegen::emit_probe_site(
-                        &mut bw, cfg.table_base_off, 0, 5,
+                        &mut bw,
+                        cfg.table_base_off,
+                        0,
+                        5,
                         portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
                         &mut state.label_index,
-                    ).map_err(Err::from)?;
+                    )
+                    .map_err(Err::from)?;
                 }
 
                 let sp = Reg(2);
@@ -1410,7 +2090,8 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                     + 4;
                 let alloc_bytes = locals_slots * 8;
                 if alloc_bytes > 0 {
-                    self.addi(ctx, arch, &sp, &sp, -alloc_bytes).map_err(Err::from)?;
+                    self.addi(ctx, arch, &sp, &sp, -alloc_bytes)
+                        .map_err(Err::from)?;
                 }
 
                 if state.regalloc.is_none() {
@@ -1460,26 +2141,37 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
             MachOperator::EndBody => Ok(()),
 
             MachOperator::StartBody => Ok(()),
-            MachOperator::Instruction { op, .. } => {
-                self.handle_op_(ctx, arch, state, func_imports, sigs, tags, op, rewriter, target)
-                    .map_err(Err::from)
-            }
+            MachOperator::Instruction { op, .. } => self
+                .handle_op_(
+                    ctx,
+                    arch,
+                    state,
+                    func_imports,
+                    sigs,
+                    tags,
+                    op,
+                    rewriter,
+                    target,
+                )
+                .map_err(Err::from),
             MachOperator::Operator { op, .. } => {
                 if let Some(op) = op {
                     trace!("handle_op: Operator dispatch start rewriting op");
                     let insn = rewriter.instruction(op.clone())?;
                     trace!("handle_op: Operator rewritten, calling handle_op_");
-                    let r = self.handle_op_(
-                        ctx,
-                        arch,
-                        state,
-                        func_imports,
-                        sigs,
-                        tags,
-                        &insn,
-                        rewriter,
-                        target,
-                    ).map_err(Into::into);
+                    let r = self
+                        .handle_op_(
+                            ctx,
+                            arch,
+                            state,
+                            func_imports,
+                            sigs,
+                            tags,
+                            &insn,
+                            rewriter,
+                            target,
+                        )
+                        .map_err(Into::into);
                     trace!("handle_op: Operator handle_op_ returned");
                     r
                 } else {
@@ -1501,7 +2193,7 @@ pub(crate) fn emit_cmds<
     writer: &mut W,
     ctx: &mut Context,
     arch: asm_riscv::RiscV64Arch,
-    mut it: impl Iterator<Item = regalloc::Cmd<riscv_regalloc::RegKind>>,
+    it: impl Iterator<Item = regalloc::Cmd<riscv_regalloc::RegKind>>,
 ) -> Result<(), E> {
     for cmd in it {
         riscv_regalloc::process_cmd(writer, ctx, arch, &cmd)?;
@@ -1536,12 +2228,15 @@ pub(crate) fn regalloc_occupied(
     [riscv_regalloc::RegKind::Int, riscv_regalloc::RegKind::Float]
         .into_iter()
         .flat_map(|kind| {
-            ralloc.frames[kind].iter().enumerate().filter_map(move |(i, f)| match f {
-                regalloc::RegAllocFrame::Stack { .. } | regalloc::RegAllocFrame::Local(_) => {
-                    Some(regalloc::Target { reg: i as u8, kind })
-                }
-                regalloc::RegAllocFrame::Reserved | regalloc::RegAllocFrame::Empty => None,
-            })
+            ralloc.frames[kind]
+                .iter()
+                .enumerate()
+                .filter_map(move |(i, f)| match f {
+                    regalloc::RegAllocFrame::Stack { .. } | regalloc::RegAllocFrame::Local(_) => {
+                        Some(regalloc::Target { reg: i as u8, kind })
+                    }
+                    regalloc::RegAllocFrame::Reserved | regalloc::RegAllocFrame::Empty => None,
+                })
         })
         .collect()
 }
@@ -1568,20 +2263,43 @@ pub fn emit_passive_call_probe<W: Writer<RiscvLabel, Context>, Context>(
     let Some(cfg) = state.probes.as_ref().copied().filter(|c| c.enabled) else {
         return Ok(());
     };
-    let occupied = state.regalloc.as_ref().map(regalloc_occupied).unwrap_or_default();
-    emit_cmds(w, ctx, arch, occupied.iter().cloned().map(regalloc::Cmd::Push))?;
+    let occupied = state
+        .regalloc
+        .as_ref()
+        .map(regalloc_occupied)
+        .unwrap_or_default();
+    emit_cmds(
+        w,
+        ctx,
+        arch,
+        occupied.iter().cloned().map(regalloc::Cmd::Push),
+    )?;
 
     let probe_id = state.next_probe_id;
     state.next_probe_id += 1;
     let probe_base = state.probe_base;
-    let mut bw = crate::codegen::BlitzW { writer: w, ctx, arch, scratch2: 6, probe_base };
+    let mut bw = crate::codegen::BlitzW {
+        writer: w,
+        ctx,
+        arch,
+        scratch2: 6,
+        probe_base,
+    };
     portal_solutions_blitz_codegen::emit_probe_site(
-        &mut bw, cfg.table_base_off, probe_id, 5,
+        &mut bw,
+        cfg.table_base_off,
+        probe_id,
+        5,
         portal_solutions_blitz_codegen::ProbeBinding::Call,
         &mut state.label_index,
     )?;
 
-    emit_cmds(w, ctx, arch, occupied.iter().rev().cloned().map(regalloc::Cmd::Pop))?;
+    emit_cmds(
+        w,
+        ctx,
+        arch,
+        occupied.iter().rev().cloned().map(regalloc::Cmd::Pop),
+    )?;
     Ok(())
 }
 
@@ -1708,10 +2426,20 @@ where
     W: Writer<RiscvLabel, Ctx>,
 {
     for (id, name) in exports {
-        w.set_label(ctx, arch, RiscvLabel::External { name: (*name).into() })?;
+        w.set_label(
+            ctx,
+            arch,
+            RiscvLabel::External {
+                name: (*name).into(),
+            },
+        )?;
         // jal x0, target = unconditional jump (no link)
-        w.jal_label(ctx, arch, &portal_solutions_blitz_common::asm::Reg(0),
-            RiscvLabel::Func { r#fn: *id })?;
+        w.jal_label(
+            ctx,
+            arch,
+            &portal_solutions_blitz_common::asm::Reg(0),
+            RiscvLabel::Func { r#fn: *id },
+        )?;
     }
     Ok(())
 }
@@ -1749,11 +2477,24 @@ fn naive_share_region_delta(insn: &Instruction<'_>) -> Option<i32> {
     match insn {
         I::I32Const(_) | I::I64Const(_) | I::LocalGet(_) => Some(1),
         I::LocalSet(_) => Some(-1),
-        I::I32Add | I::I64Add | I::I32Sub | I::I64Sub
-        | I::I32And | I::I64And | I::I32Or | I::I64Or
-        | I::I32Xor | I::I64Xor | I::I32Mul | I::I64Mul
-        | I::I32Shl | I::I64Shl | I::I32ShrU | I::I64ShrU
-        | I::I32ShrS | I::I64ShrS => Some(-1),
+        I::I32Add
+        | I::I64Add
+        | I::I32Sub
+        | I::I64Sub
+        | I::I32And
+        | I::I64And
+        | I::I32Or
+        | I::I64Or
+        | I::I32Xor
+        | I::I64Xor
+        | I::I32Mul
+        | I::I64Mul
+        | I::I32Shl
+        | I::I64Shl
+        | I::I32ShrU
+        | I::I64ShrU
+        | I::I32ShrS
+        | I::I64ShrS => Some(-1),
         _ => None,
     }
 }
@@ -1807,7 +2548,10 @@ impl<B> NaiveSharing<B> {
     }
     /// Enabled v1 configuration with the default size thresholds.
     pub fn enabled() -> Self {
-        Self::new(CodeSharingConfig { enabled: true, ..CodeSharingConfig::default() })
+        Self::new(CodeSharingConfig {
+            enabled: true,
+            ..CodeSharingConfig::default()
+        })
     }
 }
 
@@ -1843,8 +2587,6 @@ pub trait NaiveSharingWriterExt<Context>: WriterExt<Context> {
             + From<<Self as RewindableCodeWriter<RiscvLabel>>::Error>,
         Self: Sized + RewindableCodeWriter<RiscvLabel, Blob = B>,
     {
-        use portal_solutions_blitz_codegen::code_sharing::SharingLayout as _;
-
         if matches!(op, MachOperator::StartFn { .. }) {
             sharing.depth = Some(0);
             sharing.open_anchor = None;
@@ -1863,12 +2605,28 @@ pub trait NaiveSharingWriterExt<Context>: WriterExt<Context> {
                 sharing.next_helper = sw.next_helper;
             }
             return self.handle_op::<E, Err>(
-                ctx, arch, state, func_imports, sigs, tags, op, rewriter, target,
+                ctx,
+                arch,
+                state,
+                func_imports,
+                sigs,
+                tags,
+                op,
+                rewriter,
+                target,
             );
         }
         if !sharing.config.enabled {
             return self.handle_op::<E, Err>(
-                ctx, arch, state, func_imports, sigs, tags, op, rewriter, target,
+                ctx,
+                arch,
+                state,
+                func_imports,
+                sigs,
+                tags,
+                op,
+                rewriter,
+                target,
             );
         }
 
@@ -1881,8 +2639,8 @@ pub trait NaiveSharingWriterExt<Context>: WriterExt<Context> {
             }
             _ => None,
         };
-        let probes_active = state.probes.as_ref().is_some_and(|c| c.enabled)
-            || state.probe_plan.is_some();
+        let probes_active =
+            state.probes.as_ref().is_some_and(|c| c.enabled) || state.probe_plan.is_some();
         let region_delta = if probes_active {
             None
         } else {
@@ -1890,23 +2648,23 @@ pub trait NaiveSharingWriterExt<Context>: WriterExt<Context> {
         };
         let is_body_end = matches!(op, MachOperator::EndBody);
 
-        if region_delta.is_none() && !is_body_end {
-            if let Some(anchor) = sharing.open_anchor.take() {
-                if sharing.depth == Some(0) {
-                    flush_regalloc(self, ctx, arch, state).map_err(Err::from)?;
-                    sharing
-                        .staging
-                        .stage_candidate(
-                            &mut *self,
-                            RiscvLabel::Indexed { idx: anchor },
-                            crate::codegen::RV64_NAIVE_SHARE_CONTRACT,
-                        )
-                        .map_err(Err::from)?;
-                    // Canonical register state: flush + reset so identical WASM
-                    // yields byte-identical code at each occurrence.
-                    state.regalloc = None;
-                }
-            }
+        if region_delta.is_none()
+            && !is_body_end
+            && let Some(anchor) = sharing.open_anchor.take()
+            && sharing.depth == Some(0)
+        {
+            flush_regalloc(self, ctx, arch, state).map_err(Err::from)?;
+            sharing
+                .staging
+                .stage_candidate(
+                    &mut *self,
+                    RiscvLabel::Indexed { idx: anchor },
+                    crate::codegen::RV64_NAIVE_SHARE_CONTRACT,
+                )
+                .map_err(Err::from)?;
+            // Canonical register state: flush + reset so identical WASM
+            // yields byte-identical code at each occurrence.
+            state.regalloc = None;
         }
 
         if sharing.open_anchor.is_none()
@@ -1918,11 +2676,22 @@ pub trait NaiveSharingWriterExt<Context>: WriterExt<Context> {
             state.regalloc = None;
             let anchor = state.label_index;
             state.label_index += 1;
-            self.set_label(ctx, arch, RiscvLabel::Indexed { idx: anchor }).map_err(Err::from)?;
+            self.set_label(ctx, arch, RiscvLabel::Indexed { idx: anchor })
+                .map_err(Err::from)?;
             sharing.open_anchor = Some(anchor);
         }
 
-        self.handle_op::<E, Err>(ctx, arch, state, func_imports, sigs, tags, op, rewriter, target)?;
+        self.handle_op::<E, Err>(
+            ctx,
+            arch,
+            state,
+            func_imports,
+            sigs,
+            tags,
+            op,
+            rewriter,
+            target,
+        )?;
 
         if let Some(insn) = insn_opt {
             sharing.depth = match (sharing.depth, naive_share_track_delta(insn)) {
@@ -1932,19 +2701,19 @@ pub trait NaiveSharingWriterExt<Context>: WriterExt<Context> {
         }
 
         if is_body_end {
-            if let Some(anchor) = sharing.open_anchor.take() {
-                if sharing.depth == Some(0) {
-                    flush_regalloc(self, ctx, arch, state).map_err(Err::from)?;
-                    sharing
-                        .staging
-                        .stage_candidate(
-                            &mut *self,
-                            RiscvLabel::Indexed { idx: anchor },
-                            crate::codegen::RV64_NAIVE_SHARE_CONTRACT,
-                        )
-                        .map_err(Err::from)?;
-                    state.regalloc = None;
-                }
+            if let Some(anchor) = sharing.open_anchor.take()
+                && sharing.depth == Some(0)
+            {
+                flush_regalloc(self, ctx, arch, state).map_err(Err::from)?;
+                sharing
+                    .staging
+                    .stage_candidate(
+                        &mut *self,
+                        RiscvLabel::Indexed { idx: anchor },
+                        crate::codegen::RV64_NAIVE_SHARE_CONTRACT,
+                    )
+                    .map_err(Err::from)?;
+                state.regalloc = None;
             }
             let staging = core::mem::replace(
                 &mut sharing.staging,
@@ -1971,8 +2740,8 @@ mod naive_sharing_tests {
     use portal_solutions_asm_riscv64::out::rv_asm_backend::RvAsmWriter;
     use portal_solutions_blitz_common::ops::FnData;
     use portal_solutions_blitz_common::wasm_encoder::Instruction;
-    use portal_solutions_blitz_common::wasmparser::ValType;
     use portal_solutions_blitz_common::wasm_encoder::reencode::RoundtripReencoder;
+    use portal_solutions_blitz_common::wasmparser::ValType;
 
     #[derive(Debug)]
     enum TestErr {
@@ -1981,13 +2750,19 @@ mod naive_sharing_tests {
         Rewind,
     }
     impl From<core::convert::Infallible> for TestErr {
-        fn from(x: core::convert::Infallible) -> Self { match x {} }
+        fn from(x: core::convert::Infallible) -> Self {
+            match x {}
+        }
     }
     impl From<reencode::Error<core::convert::Infallible>> for TestErr {
-        fn from(_: reencode::Error<core::convert::Infallible>) -> Self { TestErr::Reencode }
+        fn from(_: reencode::Error<core::convert::Infallible>) -> Self {
+            TestErr::Reencode
+        }
     }
     impl From<portal_solutions_asm_riscv64::out::rv_asm_backend::RvRewindError> for TestErr {
-        fn from(_: portal_solutions_asm_riscv64::out::rv_asm_backend::RvRewindError) -> Self { TestErr::Rewind }
+        fn from(_: portal_solutions_asm_riscv64::out::rv_asm_backend::RvRewindError) -> Self {
+            TestErr::Rewind
+        }
     }
 
     fn test_ops() -> [MachOperator<'static>; 15] {
@@ -1996,19 +2771,55 @@ mod naive_sharing_tests {
         data.num_returns = 0;
         [
             MachOperator::StartFn { id: 0, data },
-            MachOperator::Local { count: 1, ty: ValType::I64 },
+            MachOperator::Local {
+                count: 1,
+                ty: ValType::I64,
+            },
             MachOperator::StartBody,
-            MachOperator::Instruction { op: Instruction::I64Const(40), annot: () },
-            MachOperator::Instruction { op: Instruction::I64Const(2), annot: () },
-            MachOperator::Instruction { op: Instruction::I64Add, annot: () },
-            MachOperator::Instruction { op: Instruction::LocalSet(0), annot: () },
-            MachOperator::Instruction { op: Instruction::MemorySize(0), annot: () },
-            MachOperator::Instruction { op: Instruction::Drop, annot: () },
-            MachOperator::Instruction { op: Instruction::I64Const(40), annot: () },
-            MachOperator::Instruction { op: Instruction::I64Const(2), annot: () },
-            MachOperator::Instruction { op: Instruction::I64Add, annot: () },
-            MachOperator::Instruction { op: Instruction::LocalSet(0), annot: () },
-            MachOperator::Instruction { op: Instruction::Return, annot: () },
+            MachOperator::Instruction {
+                op: Instruction::I64Const(40),
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::I64Const(2),
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::I64Add,
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::LocalSet(0),
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::MemorySize(0),
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::Drop,
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::I64Const(40),
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::I64Const(2),
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::I64Add,
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::LocalSet(0),
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::Return,
+                annot: (),
+            },
             MachOperator::EndBody,
         ]
     }
@@ -2019,8 +2830,17 @@ mod naive_sharing_tests {
         let mut state = State::default();
         for op in test_ops().iter() {
             w.handle_op::<core::convert::Infallible, TestErr>(
-                &mut ctx, RiscV64Arch::default(), &mut state, &[], &[], &[], op, &mut RoundtripReencoder, 0,
-            ).unwrap();
+                &mut ctx,
+                RiscV64Arch::default(),
+                &mut state,
+                &[],
+                &[],
+                &[],
+                op,
+                &mut RoundtripReencoder,
+                0,
+            )
+            .unwrap();
         }
         w.into_bytes()
     }
@@ -2034,8 +2854,18 @@ mod naive_sharing_tests {
         let mut sharing: NaiveSharing<SharingBlob> = NaiveSharing::enabled();
         for op in test_ops().iter() {
             w.naive_handle_op_sharing::<core::convert::Infallible, TestErr, SharingBlob>(
-                &mut ctx, RiscV64Arch::default(), &mut state, &mut sharing, &[], &[], &[], op, &mut RoundtripReencoder, 0,
-            ).unwrap();
+                &mut ctx,
+                RiscV64Arch::default(),
+                &mut state,
+                &mut sharing,
+                &[],
+                &[],
+                &[],
+                op,
+                &mut RoundtripReencoder,
+                0,
+            )
+            .unwrap();
         }
         w.into_parts()
     }
@@ -2044,7 +2874,12 @@ mod naive_sharing_tests {
     fn repeated_region_is_outlined_and_smaller() {
         let plain = compile_plain();
         let (shared, labels) = compile_sharing();
-        assert!(shared.len() < plain.len(), "shared {} must be smaller than plain {}", shared.len(), plain.len());
+        assert!(
+            shared.len() < plain.len(),
+            "shared {} must be smaller than plain {}",
+            shared.len(),
+            plain.len()
+        );
         let helper_idx = crate::codegen::RV64_HELPER_LABEL_BASE;
         assert!(labels.contains_key(&RiscvLabel::Indexed { idx: helper_idx }));
         // The helper body ends in `ret` = `jalr x0, ra, 0` (0x00008067 LE).

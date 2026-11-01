@@ -284,7 +284,7 @@ where
 
 use portal_solutions_asm_writer::RewindableCodeWriter;
 use portal_solutions_blitz_common::ops::FnData;
-use portal_solutions_blitz_codegen::code_sharing::{CodeSharingConfig, SharingLayout as _};
+use portal_solutions_blitz_codegen::code_sharing::CodeSharingConfig;
 use crate::sysv::SysVSharingWriterExt;
 
 /// Error type for the RV64 sharing sink: joins the writer's `Infallible` core

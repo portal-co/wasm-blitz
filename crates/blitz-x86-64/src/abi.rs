@@ -6,6 +6,7 @@
 
 extern crate alloc;
 
+use portal_solutions_asm_x86_64::out::arg::ArgKind;
 use portal_solutions_asm_x86_64::{RegisterClass, X64Arch, out::arg::MemArgKind};
 use portal_solutions_blitz_common::{
     abi::BackendAbi,
@@ -14,11 +15,10 @@ use portal_solutions_blitz_common::{
     ops::FnData,
     wasm_encoder::{Catch, FuncType},
 };
-use portal_solutions_asm_x86_64::out::arg::ArgKind;
 
-use crate::{X64Label, RSP};
 use crate::naive::WriterExt as NaiveWriterExt;
-use crate::sysv::{SysVWriterExt, SysVState};
+use crate::sysv::{SysVState, SysVWriterExt};
+use crate::{RSP, X64Label};
 
 // SysV AMD64 argument registers: rdi, rsi, rdx, rcx, r8, r9
 const ARG_REGS: [Reg; 6] = [
@@ -51,7 +51,10 @@ where
     W: NaiveWriterExt<Context>,
 {
     type Error = W::Error;
-    type State<'s> = crate::naive::State<'s> where Self: 's;
+    type State<'s>
+        = crate::naive::State<'s>
+    where
+        Self: 's;
     type Arch = X64Arch;
 
     fn emit_prologue(
@@ -109,7 +112,10 @@ where
         if let Some(cfg) = state.probes.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW::new(w, ctx, arch);
             portal_solutions_blitz_codegen::emit_probe_site(
-                &mut bw, cfg.table_base_off, 0, 2,
+                &mut bw,
+                cfg.table_base_off,
+                0,
+                2,
                 portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
                 &mut state.label_index,
             )?;
@@ -363,7 +369,10 @@ where
     W: SysVWriterExt<Context>,
 {
     type Error = W::Error;
-    type State<'s> = SysVState<'s> where Self: 's;
+    type State<'s>
+        = SysVState<'s>
+    where
+        Self: 's;
     type Arch = X64Arch;
 
     fn emit_prologue(
@@ -379,9 +388,13 @@ where
         state.local_count = data.num_params;
 
         // Emit SysV function label (offset avoids collision with naive Func labels)
-        w.set_label(ctx, arch, X64Label::Indexed {
-            idx: id as usize | (1 << 28),
-        })?;
+        w.set_label(
+            ctx,
+            arch,
+            X64Label::Indexed {
+                idx: id as usize | (1 << 28),
+            },
+        )?;
 
         // Function-entry probe: after label, before frame setup so the
         // tail-jump delivers SysV arg registers (RDI/RSI/…) intact to the
@@ -389,7 +402,10 @@ where
         if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
             let mut bw = crate::codegen::BlitzW::new(w, ctx, arch);
             portal_solutions_blitz_codegen::emit_probe_site(
-                &mut bw, cfg.table_base_off, 0, 0,
+                &mut bw,
+                cfg.table_base_off,
+                0,
+                0,
                 portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
                 &mut state.label_index,
             )?;
@@ -497,9 +513,14 @@ where
             w.call(ctx, arch, &RAX)?;
         } else {
             let local_id = fn_idx - func_imports.len() as u32;
-            w.lea_label(ctx, arch, &RAX, X64Label::Indexed {
-                idx: local_id as usize | (1 << 28),
-            })?;
+            w.lea_label(
+                ctx,
+                arch,
+                &RAX,
+                X64Label::Indexed {
+                    idx: local_id as usize | (1 << 28),
+                },
+            )?;
             w.call(ctx, arch, &RAX)?;
         }
 

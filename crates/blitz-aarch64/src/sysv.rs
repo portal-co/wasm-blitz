@@ -987,7 +987,10 @@ mod sysv_manyarg_tests {
         // Two relocation slots — the ADRP and ADD of the target address load
         // — both pointing at the requested target.
         assert_eq!(rel.len(), 2);
-        assert!(rel.iter().all(|l| matches!(l, AArch64Label::Indexed { idx } if *idx == 0x8000_0000)));
+        assert!(
+            rel.iter()
+                .all(|l| matches!(l, AArch64Label::Indexed { idx } if *idx == 0x8000_0000))
+        );
         // AllStack internals put every arg on the stack — more arity → more code.
         assert!(big.len() > small.len());
     }

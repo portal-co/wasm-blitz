@@ -4,10 +4,9 @@
 //! during compilation. The `MachOperator` type represents individual operations
 //! that can be either WASM operators or encoded instructions.
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use wasm_encoder::{reencode, Instruction};
+use wasm_encoder::{Instruction, reencode};
 
 use crate::*;
 
@@ -101,9 +100,7 @@ pub trait FromWasmInfo {
     fn from_wasm_info(info: WasmInfo) -> Self;
 }
 impl FromWasmInfo for () {
-    fn from_wasm_info(value: WasmInfo) -> Self {
-        ()
-    }
+    fn from_wasm_info(_value: WasmInfo) -> Self {}
 }
 impl<T: FromWasmInfo> FromWasmInfo for Option<T> {
     fn from_wasm_info(value: WasmInfo) -> Self {
@@ -613,7 +610,7 @@ pub fn control_depth(a: &FunctionBody<'_>) -> usize {
             _ => {}
         }
     }
-    return max;
+    max
 }
 
 /// Counts the number of auto-identified control-flow probe sites in a function.
@@ -676,21 +673,21 @@ pub struct ScanMach<T, F, D> {
 //     }
 // }
 impl<
-        'a,
-        A,
-        E,
-        I: Iterator<Item = Result<MachOperator<'a, A>, E>>,
-        T,
-        F: FnMut(&mut FnData, u32, MachOperator<'a, A>, &mut D) -> T,
-        D,
-    > Iterator for ScanMach<I, F, D>
+    'a,
+    A,
+    E,
+    I: Iterator<Item = Result<MachOperator<'a, A>, E>>,
+    T,
+    F: FnMut(&mut FnData, u32, MachOperator<'a, A>, &mut D) -> T,
+    D,
+> Iterator for ScanMach<I, F, D>
 {
     type Item = Result<T, E>;
     fn next(&mut self) -> Option<Self::Item> {
         let o = self.wrapped.next()?;
         match o {
             Ok(o) => {
-                if let MachOperator::StartFn { id, data } = &o {
+                if let MachOperator::StartFn { id: _, data } = &o {
                     self.data = data.clone();
                     self.locals = 0;
                     return Some(Ok((self.handler)(
@@ -700,18 +697,18 @@ impl<
                         &mut self.userdata,
                     )));
                 }
-                if let MachOperator::Local { count: a, ty: b } = &o {
+                if let MachOperator::Local { count: a, ty: _b } = &o {
                     self.locals += *a;
                 }
                 let mut tmp = self.data.clone();
-                return Some(Ok((self.handler)(
+                Some(Ok((self.handler)(
                     &mut tmp,
                     self.locals,
                     o,
                     &mut self.userdata,
-                )));
+                )))
             }
-            Err(e) => return Some(Err(e)),
+            Err(e) => Some(Err(e)),
         }
     }
 }

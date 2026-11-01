@@ -2019,7 +2019,13 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                         }
                         None => {
                             let idx = fn_idx_val - func_imports.len() as u32;
-                            crate::load_label_addr(self, ctx, arch, &reg(T0), AArch64Label::Func { r#fn: idx })?;
+                            crate::load_label_addr(
+                                self,
+                                ctx,
+                                arch,
+                                &reg(T0),
+                                AArch64Label::Func { r#fn: idx },
+                            )?;
                             self.bl(ctx, arch, &reg(T0))?;
                         }
                     },
@@ -2189,25 +2195,49 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 self.mov_imm(ctx, arch, &reg(Reg(10)), 0xFFFF_FFFF)?;
                 self.and(ctx, arch, &reg(T0), &reg(T0), &reg(Reg(10)))?;
                 // T1 = (x >> 1) & 0x55555555; T0 = x - T1
-                self.lsr(ctx, arch, &reg(T1), &reg(T0), &MemArgKind::NoMem(ArgKind::Lit(1)))?;
+                self.lsr(
+                    ctx,
+                    arch,
+                    &reg(T1),
+                    &reg(T0),
+                    &MemArgKind::NoMem(ArgKind::Lit(1)),
+                )?;
                 self.mov_imm(ctx, arch, &reg(T2), 0x5555_5555)?;
                 self.and(ctx, arch, &reg(T1), &reg(T1), &reg(T2))?;
                 self.sub(ctx, arch, &reg(T0), &reg(T0), &reg(T1))?;
                 // T1 = x & 0x33333333; T2 = (x >> 2) & 0x33333333; T0 = T1 + T2
                 self.mov_imm(ctx, arch, &reg(T2), 0x3333_3333)?;
                 self.and(ctx, arch, &reg(T1), &reg(T0), &reg(T2))?;
-                self.lsr(ctx, arch, &reg(T0), &reg(T0), &MemArgKind::NoMem(ArgKind::Lit(2)))?;
+                self.lsr(
+                    ctx,
+                    arch,
+                    &reg(T0),
+                    &reg(T0),
+                    &MemArgKind::NoMem(ArgKind::Lit(2)),
+                )?;
                 self.and(ctx, arch, &reg(T0), &reg(T0), &reg(T2))?;
                 self.add(ctx, arch, &reg(T0), &reg(T0), &reg(T1))?;
                 // T1 = x >> 4; T0 = (x + T1) & 0x0F0F0F0F
-                self.lsr(ctx, arch, &reg(T1), &reg(T0), &MemArgKind::NoMem(ArgKind::Lit(4)))?;
+                self.lsr(
+                    ctx,
+                    arch,
+                    &reg(T1),
+                    &reg(T0),
+                    &MemArgKind::NoMem(ArgKind::Lit(4)),
+                )?;
                 self.add(ctx, arch, &reg(T0), &reg(T0), &reg(T1))?;
                 self.mov_imm(ctx, arch, &reg(T2), 0x0F0F_0F0F)?;
                 self.and(ctx, arch, &reg(T0), &reg(T0), &reg(T2))?;
                 // T0 = (x * 0x01010101) >> 24
                 self.mov_imm(ctx, arch, &reg(T2), 0x0101_0101)?;
                 self.mul(ctx, arch, &reg(T0), &reg(T0), &reg(T2))?;
-                self.lsr(ctx, arch, &reg(T0), &reg(T0), &MemArgKind::NoMem(ArgKind::Lit(24)))?;
+                self.lsr(
+                    ctx,
+                    arch,
+                    &reg(T0),
+                    &reg(T0),
+                    &MemArgKind::NoMem(ArgKind::Lit(24)),
+                )?;
                 self.wasm_push(ctx, arch, T0)
             }
 
@@ -2769,10 +2799,7 @@ mod membase_tests {
             mem: 2,
             data_index: 0,
         });
-        assert!(
-            e.iter().any(|n| n == "__wasm_memory_init_copy_2"),
-            "{e:?}"
-        );
+        assert!(e.iter().any(|n| n == "__wasm_memory_init_copy_2"), "{e:?}");
         assert!(e.iter().any(|n| n == "__wasm_data_seg_0"), "{e:?}");
     }
 

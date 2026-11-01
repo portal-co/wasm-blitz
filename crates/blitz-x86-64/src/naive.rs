@@ -9,7 +9,10 @@ use portal_solutions_asm_x86_64::out::arg::{ArgKind, MemArg, MemArgKind};
 use portal_solutions_blitz_common::asm::Reg;
 use portal_solutions_blitz_common::ops::ProbeTableConfig;
 use portal_solutions_blitz_common::shard::{CallTarget, SecondCtxConfig};
-use portal_solutions_blitz_common::wasm_encoder::{self, Catch, FuncType, Instruction, reencode::{self as reencode, Reencode}};
+use portal_solutions_blitz_common::wasm_encoder::{
+    self, Catch, FuncType, Instruction,
+    reencode::{self as reencode, Reencode},
+};
 
 /// Static Context Register (SCR) — r14 on x86-64.
 ///
@@ -73,7 +76,12 @@ impl<'a> NaiveShardState<'a> {
         imports_len: u32,
         map: &'a (dyn portal_solutions_blitz_common::shard::ShardMap + 'a),
     ) -> Self {
-        Self { config, current_shard, imports_len, map }
+        Self {
+            config,
+            current_shard,
+            imports_len,
+            map,
+        }
     }
 
     /// Classify a call to `callee_fn` (WASM-space function index).
@@ -85,7 +93,9 @@ impl<'a> NaiveShardState<'a> {
         if callee_shard == self.current_shard {
             CallTarget::Local
         } else {
-            CallTarget::CrossShard { table_slot: callee_fn }
+            CallTarget::CrossShard {
+                table_slot: callee_fn,
+            }
         }
     }
 }
@@ -213,7 +223,10 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
             state.next_probe_id += 1;
             let mut bw = crate::codegen::BlitzW::new(self, ctx, arch);
             portal_solutions_blitz_codegen::emit_probe_site(
-                &mut bw, cfg.table_base_off, probe_id, 2,
+                &mut bw,
+                cfg.table_base_off,
+                probe_id,
+                2,
                 portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
                 &mut state.label_index,
             )?;
@@ -276,10 +289,12 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                             return state.label_index - 1;
                         }),
                     },
-                ).map_err(Err::from)?;
+                )
+                .map_err(Err::from)?;
                 state.body = target;
                 if let Some(idx) = state.body_labels.remove(&state.body) {
-                    self.set_label(ctx, arch, X64Label::Indexed { idx }).map_err(Err::from)?;
+                    self.set_label(ctx, arch, X64Label::Indexed { idx })
+                        .map_err(Err::from)?;
                 }
             }
         }
@@ -313,9 +328,12 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         reg_class: RegisterClass::Gpr,
                         segment: Default::default(),
                     },
-                ).map_err(Err::from)?;
-                self.xchg(ctx, arch, &Reg(0), &Reg::CTX).map_err(Err::from)?;
-                self.set_label(ctx, arch, X64Label::Func { r#fn: *id }).map_err(Err::from)?;
+                )
+                .map_err(Err::from)?;
+                self.xchg(ctx, arch, &Reg(0), &Reg::CTX)
+                    .map_err(Err::from)?;
+                self.set_label(ctx, arch, X64Label::Func { r#fn: *id })
+                    .map_err(Err::from)?;
             }
             MachOperator::Local { count, ty } => {
                 for _ in 0..*count {
@@ -328,10 +346,14 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 if let Some(cfg) = state.probes.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW::new(self, ctx, arch);
                     portal_solutions_blitz_codegen::emit_probe_site(
-                        &mut bw, cfg.table_base_off, 0, 2,
+                        &mut bw,
+                        cfg.table_base_off,
+                        0,
+                        2,
                         portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
                         &mut state.label_index,
-                    ).map_err(Err::from)?;
+                    )
+                    .map_err(Err::from)?;
                 }
                 self.push(ctx, arch, &Reg(1)).map_err(Err::from)?;
                 self.push(ctx, arch, &Reg(0)).map_err(Err::from)?;
@@ -347,8 +369,10 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         reg_class: RegisterClass::Gpr,
                         segment: Default::default(),
                     },
-                ).map_err(Err::from)?;
-                self.xchg(ctx, arch, &Reg(0), &Reg::CTX).map_err(Err::from)?;
+                )
+                .map_err(Err::from)?;
+                self.xchg(ctx, arch, &Reg(0), &Reg::CTX)
+                    .map_err(Err::from)?;
                 self.push(ctx, arch, &Reg(0)).map_err(Err::from)?;
                 for _ in 0..state.control_depth {
                     for _ in 0..2 {
@@ -356,27 +380,28 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     }
                 }
             }
-            MachOperator::Instruction { op, .. } => {
-                self._handle_op(ctx, arch, state, func_imports, sigs, tags, op, target).map_err(Err::from)?
-            }
+            MachOperator::Instruction { op, .. } => self
+                ._handle_op(ctx, arch, state, func_imports, sigs, tags, op, target)
+                .map_err(Err::from)?,
             MachOperator::Operator { op, annot } => match match op.as_ref() {
                 None => return Ok(()),
                 Some(a) => a,
             } {
-                op => self._handle_op(
-                    ctx,
-                    arch,
-                    state,
-                    func_imports,
-                    sigs,
-                    tags,
-                    &rewriter.instruction(op.clone())?,
-                    target,
-                ).map_err(Err::from)?,
+                op => self
+                    ._handle_op(
+                        ctx,
+                        arch,
+                        state,
+                        func_imports,
+                        sigs,
+                        tags,
+                        &rewriter.instruction(op.clone())?,
+                        target,
+                    )
+                    .map_err(Err::from)?,
             },
             // EndBody and any future meta-ops are no-ops at the assembly level.
             _ => {} // non-instruction MachOperators (meta-ops)
-
         }
         Ok(())
     }
@@ -401,7 +426,10 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
             return Ok(());
         }
         // addr := (uint32_t)addr — writing the 32-bit subregister zero-extends.
-        let addr32 = MemArgKind::NoMem(ArgKind::Reg { reg: addr, size: MemorySize::_32 });
+        let addr32 = MemArgKind::NoMem(ArgKind::Reg {
+            reg: addr,
+            size: MemorySize::_32,
+        });
         self.mov(ctx, arch, &addr32, &addr32)?;
         // scratch := __wasm_mem_N (load the base pointer value).
         let sym = if memory_index == 0 {
@@ -410,23 +438,33 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
             alloc::format!("__wasm_mem_{memory_index}")
         };
         self.lea_label(ctx, arch, &scratch, X64Label::External { name: sym })?;
-        self.mov(ctx, arch, &scratch, &MemArgKind::Mem {
-            base: scratch,
-            offset: None,
-            disp: 0,
-            size: MemorySize::_64,
-            reg_class: RegisterClass::Gpr,
-            segment: Default::default(),
-        })?;
+        self.mov(
+            ctx,
+            arch,
+            &scratch,
+            &MemArgKind::Mem {
+                base: scratch,
+                offset: None,
+                disp: 0,
+                size: MemorySize::_64,
+                reg_class: RegisterClass::Gpr,
+                segment: Default::default(),
+            },
+        )?;
         // addr := addr + scratch.
-        self.lea(ctx, arch, &addr, &MemArgKind::Mem {
-            base: addr,
-            offset: Some((scratch, 1)),
-            disp: 0,
-            size: MemorySize::_64,
-            reg_class: RegisterClass::Gpr,
-            segment: Default::default(),
-        })?;
+        self.lea(
+            ctx,
+            arch,
+            &addr,
+            &MemArgKind::Mem {
+                base: addr,
+                offset: Some((scratch, 1)),
+                disp: 0,
+                size: MemorySize::_64,
+                reg_class: RegisterClass::Gpr,
+                segment: Default::default(),
+            },
+        )?;
         Ok(())
     }
 
@@ -446,10 +484,19 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
     {
         if offset != 0 {
             self.mov64(ctx, arch, &Reg(1), offset)?;
-            self.lea(ctx, arch, &Reg(0), &MemArgKind::Mem {
-                base: Reg(0), offset: Some((Reg(1), 1)), disp: 0,
-                size: MemorySize::_64, reg_class: RegisterClass::Gpr, segment: Default::default(),
-            })?;
+            self.lea(
+                ctx,
+                arch,
+                &Reg(0),
+                &MemArgKind::Mem {
+                    base: Reg(0),
+                    offset: Some((Reg(1), 1)),
+                    disp: 0,
+                    size: MemorySize::_64,
+                    reg_class: RegisterClass::Gpr,
+                    segment: Default::default(),
+                },
+            )?;
         }
         self.apply_mem_base(ctx, arch, state, Reg(0), Reg(1), memory_index)
     }
@@ -474,14 +521,21 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         self.pop(ctx, arch, &Reg(0))?; // address
         self.mem_effective_addr(ctx, arch, state, offset, memory_index)?;
         let mem = MemArgKind::Mem {
-            base: Reg(0), offset: None, disp: 0,
-            size: access, reg_class: RegisterClass::Gpr, segment: Default::default(),
+            base: Reg(0),
+            offset: None,
+            disp: 0,
+            size: access,
+            reg_class: RegisterClass::Gpr,
+            segment: Default::default(),
         };
         match (access, signed) {
             (MemorySize::_64, _) => self.mov(ctx, arch, &Reg(0), &mem)?,
             (MemorySize::_32, false) => {
                 // mov eax, dword [addr] — zero-extends to rax.
-                let eax = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 });
+                let eax = MemArgKind::NoMem(ArgKind::Reg {
+                    reg: Reg(0),
+                    size: MemorySize::_32,
+                });
                 self.mov(ctx, arch, &eax, &mem)?;
             }
             (_, false) => self.movzx(ctx, arch, &Reg(0), &mem)?, // byte/word zero-extend
@@ -489,7 +543,10 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.movsx(ctx, arch, &Reg(0), &mem)?; // sign-extend access-width to 64
                 if !to64 {
                     // i32 result: keep low 32 (sign-extended within 32), zero upper 32.
-                    let eax = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 });
+                    let eax = MemArgKind::NoMem(ArgKind::Reg {
+                        reg: Reg(0),
+                        size: MemorySize::_32,
+                    });
                     self.mov(ctx, arch, &eax, &eax)?;
                 }
             }
@@ -514,10 +571,17 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
         self.pop(ctx, arch, &Reg(0))?; // addr → RAX
         self.mem_effective_addr(ctx, arch, state, offset, memory_index)?;
         let mem = MemArgKind::Mem {
-            base: Reg(0), offset: None, disp: 0,
-            size: access, reg_class: RegisterClass::Gpr, segment: Default::default(),
+            base: Reg(0),
+            offset: None,
+            disp: 0,
+            size: access,
+            reg_class: RegisterClass::Gpr,
+            segment: Default::default(),
         };
-        let val = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(2), size: access });
+        let val = MemArgKind::NoMem(ArgKind::Reg {
+            reg: Reg(2),
+            size: access,
+        });
         self.mov(ctx, arch, &mem, &val)
     }
 
@@ -529,8 +593,13 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
 
     /// Pop two F64 operands, `op(XMM0, XMM1)` (x86 2-operand: `XMM0 op= XMM1`),
     /// push the XMM0 result bits. `f32` selects the single-precision moves.
-    fn fp_binop<F>(&mut self, ctx: &mut Context, arch: X64Arch, f32: bool, f: F)
-        -> Result<(), Self::Error>
+    fn fp_binop<F>(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        f32: bool,
+        f: F,
+    ) -> Result<(), Self::Error>
     where
         F: FnOnce(&mut Self, &mut Context, X64Arch, Reg, Reg) -> Result<(), Self::Error>,
     {
@@ -551,15 +620,20 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
     }
 
     /// Pop one FP operand, `op(XMM0, XMM1)` (`XMM0 = f(XMM1)`), push XMM0 bits.
-    fn fp_unop<F>(&mut self, ctx: &mut Context, arch: X64Arch, f32: bool, f: F)
-        -> Result<(), Self::Error>
+    fn fp_unop<F>(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        f32: bool,
+        f: F,
+    ) -> Result<(), Self::Error>
     where
         F: FnOnce(&mut Self, &mut Context, X64Arch, Reg, Reg) -> Result<(), Self::Error>,
     {
         self.pop(ctx, arch, &Reg(0))?; // operand bits → RAX
         if f32 {
             self.fmov_gp_to_s(ctx, arch, &Reg(1), &Reg(0))?; // XMM1 = operand
-            f(self, ctx, arch, Reg(0), Reg(1))?;             // XMM0 = f(XMM1)
+            f(self, ctx, arch, Reg(0), Reg(1))?; // XMM0 = f(XMM1)
             self.fmov_s_to_gp(ctx, arch, &Reg(0), &Reg(0))?;
         } else {
             self.fmov_gp_to_d(ctx, arch, &Reg(1), &Reg(0))?;
@@ -571,9 +645,12 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
 
     /// Load the two FP comparison operands into XMM0 (=a, lower) and XMM1 (=b,
     /// top), as bits. Leaves RAX/RCX free for the boolean materialization.
-    fn fp_cmp_load(&mut self, ctx: &mut Context, arch: X64Arch, f32: bool)
-        -> Result<(), Self::Error>
-    {
+    fn fp_cmp_load(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        f32: bool,
+    ) -> Result<(), Self::Error> {
         self.pop(ctx, arch, &Reg(0))?; // b bits → RAX
         self.pop(ctx, arch, &Reg(1))?; // a bits → RCX
         if f32 {
@@ -589,12 +666,21 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
     /// `a OP b` for the ordered relational compares (lt/le/gt/ge): false on NaN.
     /// `swap` exchanges the `ucomisd` operands so `lt`/`le` reuse the
     /// above/above-or-equal conditions; `cc` is `A` (strict) or `NB` (or-equal).
-    fn fp_cmp_rel(&mut self, ctx: &mut Context, arch: X64Arch, f32: bool, swap: bool, cc: ConditionCode)
-        -> Result<(), Self::Error>
-    {
+    fn fp_cmp_rel(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        f32: bool,
+        swap: bool,
+        cc: ConditionCode,
+    ) -> Result<(), Self::Error> {
         self.fp_cmp_load(ctx, arch, f32)?;
         if swap {
-            if f32 { self.fcmp_s(ctx, arch, &Reg(1), &Reg(0))?; } else { self.fcmp(ctx, arch, &Reg(1), &Reg(0))?; }
+            if f32 {
+                self.fcmp_s(ctx, arch, &Reg(1), &Reg(0))?;
+            } else {
+                self.fcmp(ctx, arch, &Reg(1), &Reg(0))?;
+            }
         } else if f32 {
             self.fcmp_s(ctx, arch, &Reg(0), &Reg(1))?;
         } else {
@@ -610,11 +696,19 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
     /// `a == b` / `a != b` with WASM NaN semantics (eq false on NaN; ne true on
     /// NaN). `ucomisd` sets ZF for equal-OR-unordered and PF for unordered, so
     /// the parity flag distinguishes the NaN case.
-    fn fp_cmp_eq(&mut self, ctx: &mut Context, arch: X64Arch, f32: bool, want_eq: bool)
-        -> Result<(), Self::Error>
-    {
+    fn fp_cmp_eq(
+        &mut self,
+        ctx: &mut Context,
+        arch: X64Arch,
+        f32: bool,
+        want_eq: bool,
+    ) -> Result<(), Self::Error> {
         self.fp_cmp_load(ctx, arch, f32)?;
-        if f32 { self.fcmp_s(ctx, arch, &Reg(0), &Reg(1))?; } else { self.fcmp(ctx, arch, &Reg(0), &Reg(1))?; }
+        if f32 {
+            self.fcmp_s(ctx, arch, &Reg(0), &Reg(1))?;
+        } else {
+            self.fcmp(ctx, arch, &Reg(0), &Reg(1))?;
+        }
         if want_eq {
             self.mov64(ctx, arch, &Reg(0), 0)?;
             self.mov64(ctx, arch, &Reg(2), 1)?;
@@ -633,8 +727,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
 
     /// Pop one value into RAX, run `f` (producing the result in RAX via XMM0/XMM1
     /// scratch), and push RAX. Used for all int<->fp and f32<->f64 conversions.
-    fn fp_convert<F>(&mut self, ctx: &mut Context, arch: X64Arch, f: F)
-        -> Result<(), Self::Error>
+    fn fp_convert<F>(&mut self, ctx: &mut Context, arch: X64Arch, f: F) -> Result<(), Self::Error>
     where
         F: FnOnce(&mut Self, &mut Context, X64Arch) -> Result<(), Self::Error>,
     {
@@ -720,14 +813,20 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     },
                 )?;
                 if let Instruction::I32Add = op {
-                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
+                    {
+                        let r = MemArgKind::NoMem(ArgKind::Reg {
+                            reg: Reg(0),
+                            size: MemorySize::_32,
+                        });
+                        self.mov(ctx, arch, &r, &r)?;
+                    }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I32Sub | Instruction::I64Sub => {
-                self.pop(ctx, arch, &Reg(0))?;   // Reg(0) = b (subtrahend, top of stack)
-                self.pop(ctx, arch, &Reg(1))?;   // Reg(1) = a (minuend)
-                self.not(ctx, arch, &Reg(0))?;   // ~b; result = ~b + a + 1 = a - b
+                self.pop(ctx, arch, &Reg(0))?; // Reg(0) = b (subtrahend, top of stack)
+                self.pop(ctx, arch, &Reg(1))?; // Reg(1) = a (minuend)
+                self.not(ctx, arch, &Reg(0))?; // ~b; result = ~b + a + 1 = a - b
                 self.lea(
                     ctx,
                     arch,
@@ -742,7 +841,13 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     },
                 )?;
                 if let Instruction::I32Sub = op {
-                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
+                    {
+                        let r = MemArgKind::NoMem(ArgKind::Reg {
+                            reg: Reg(0),
+                            size: MemorySize::_32,
+                        });
+                        self.mov(ctx, arch, &r, &r)?;
+                    }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
@@ -751,49 +856,79 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.pop(ctx, arch, &Reg(1))?;
                 self.mul(ctx, arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32Mul = op {
-                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
+                    {
+                        let r = MemArgKind::NoMem(ArgKind::Reg {
+                            reg: Reg(0),
+                            size: MemorySize::_32,
+                        });
+                        self.mov(ctx, arch, &r, &r)?;
+                    }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I32DivU | Instruction::I64DivU => {
                 // WASM stack: [dividend, divisor]. Pop divisor→RCX, dividend→RAX.
                 // x86-64 div: rdx:rax / rcx → quotient in rax, remainder in rdx.
-                self.pop(ctx, arch, &Reg(1))?;   // divisor → RCX
-                self.pop(ctx, arch, &Reg(0))?;   // dividend → RAX
+                self.pop(ctx, arch, &Reg(1))?; // divisor → RCX
+                self.pop(ctx, arch, &Reg(0))?; // dividend → RAX
                 self.mov64(ctx, arch, &Reg(2), 0)?; // zero RDX (high half of dividend)
                 self.div(ctx, arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32DivU = op {
-                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
+                    {
+                        let r = MemArgKind::NoMem(ArgKind::Reg {
+                            reg: Reg(0),
+                            size: MemorySize::_32,
+                        });
+                        self.mov(ctx, arch, &r, &r)?;
+                    }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I32DivS | Instruction::I64DivS => {
-                self.pop(ctx, arch, &Reg(1))?;   // divisor → RCX
-                self.pop(ctx, arch, &Reg(0))?;   // dividend → RAX
+                self.pop(ctx, arch, &Reg(1))?; // divisor → RCX
+                self.pop(ctx, arch, &Reg(0))?; // dividend → RAX
                 self.mov64(ctx, arch, &Reg(2), 0)?; // zero RDX (sign-extend not available yet)
                 self.idiv(ctx, arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32DivS = op {
-                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
+                    {
+                        let r = MemArgKind::NoMem(ArgKind::Reg {
+                            reg: Reg(0),
+                            size: MemorySize::_32,
+                        });
+                        self.mov(ctx, arch, &r, &r)?;
+                    }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I32RemU | Instruction::I64RemU => {
-                self.pop(ctx, arch, &Reg(1))?;   // divisor → RCX
-                self.pop(ctx, arch, &Reg(0))?;   // dividend → RAX
+                self.pop(ctx, arch, &Reg(1))?; // divisor → RCX
+                self.pop(ctx, arch, &Reg(0))?; // dividend → RAX
                 self.mov64(ctx, arch, &Reg(2), 0)?; // zero RDX
                 self.div(ctx, arch, &Reg(0), &Reg(1))?; // remainder → RDX
                 if let Instruction::I32RemU = op {
-                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(2), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
+                    {
+                        let r = MemArgKind::NoMem(ArgKind::Reg {
+                            reg: Reg(2),
+                            size: MemorySize::_32,
+                        });
+                        self.mov(ctx, arch, &r, &r)?;
+                    }
                 }
                 self.push(ctx, arch, &Reg(2))?; // push RDX (remainder)
             }
             Instruction::I32RemS | Instruction::I64RemS => {
-                self.pop(ctx, arch, &Reg(1))?;   // divisor → RCX
-                self.pop(ctx, arch, &Reg(0))?;   // dividend → RAX
+                self.pop(ctx, arch, &Reg(1))?; // divisor → RCX
+                self.pop(ctx, arch, &Reg(0))?; // dividend → RAX
                 self.mov64(ctx, arch, &Reg(2), 0)?; // zero RDX
                 self.idiv(ctx, arch, &Reg(0), &Reg(1))?; // remainder → RDX
                 if let Instruction::I32RemS = op {
-                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(2), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
+                    {
+                        let r = MemArgKind::NoMem(ArgKind::Reg {
+                            reg: Reg(2),
+                            size: MemorySize::_32,
+                        });
+                        self.mov(ctx, arch, &r, &r)?;
+                    }
                 }
                 self.push(ctx, arch, &Reg(2))?; // push RDX (remainder)
             }
@@ -802,7 +937,13 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.pop(ctx, arch, &Reg(1))?;
                 self.and(ctx, arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32And = op {
-                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
+                    {
+                        let r = MemArgKind::NoMem(ArgKind::Reg {
+                            reg: Reg(0),
+                            size: MemorySize::_32,
+                        });
+                        self.mov(ctx, arch, &r, &r)?;
+                    }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
@@ -811,7 +952,13 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.pop(ctx, arch, &Reg(1))?;
                 self.or(ctx, arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32Or = op {
-                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
+                    {
+                        let r = MemArgKind::NoMem(ArgKind::Reg {
+                            reg: Reg(0),
+                            size: MemorySize::_32,
+                        });
+                        self.mov(ctx, arch, &r, &r)?;
+                    }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
@@ -820,50 +967,92 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.pop(ctx, arch, &Reg(1))?;
                 self.eor(ctx, arch, &Reg(0), &Reg(1))?;
                 if let Instruction::I32Xor = op {
-                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
+                    {
+                        let r = MemArgKind::NoMem(ArgKind::Reg {
+                            reg: Reg(0),
+                            size: MemorySize::_32,
+                        });
+                        self.mov(ctx, arch, &r, &r)?;
+                    }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I32Shl | Instruction::I64Shl => {
                 // x86-64 shl count must be in CL (low byte of RCX).
                 // Pass count as 8-bit so text-asm emits "cl" and IcedWriter uses CL.
-                let cl = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(1), size: MemorySize::_8 });
-                self.pop(ctx, arch, &Reg(1))?;   // shift count → RCX
-                self.pop(ctx, arch, &Reg(0))?;   // value → RAX
+                let cl = MemArgKind::NoMem(ArgKind::Reg {
+                    reg: Reg(1),
+                    size: MemorySize::_8,
+                });
+                self.pop(ctx, arch, &Reg(1))?; // shift count → RCX
+                self.pop(ctx, arch, &Reg(0))?; // value → RAX
                 self.shl(ctx, arch, &Reg(0), &cl)?;
                 if let Instruction::I32Shl = op {
-                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
+                    {
+                        let r = MemArgKind::NoMem(ArgKind::Reg {
+                            reg: Reg(0),
+                            size: MemorySize::_32,
+                        });
+                        self.mov(ctx, arch, &r, &r)?;
+                    }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I32ShrU | Instruction::I64ShrU => {
-                let cl = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(1), size: MemorySize::_8 });
-                self.pop(ctx, arch, &Reg(1))?;   // shift count → RCX
-                self.pop(ctx, arch, &Reg(0))?;   // value → RAX
+                let cl = MemArgKind::NoMem(ArgKind::Reg {
+                    reg: Reg(1),
+                    size: MemorySize::_8,
+                });
+                self.pop(ctx, arch, &Reg(1))?; // shift count → RCX
+                self.pop(ctx, arch, &Reg(0))?; // value → RAX
                 self.shr(ctx, arch, &Reg(0), &cl)?;
                 if let Instruction::I32ShrU = op {
-                    { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
+                    {
+                        let r = MemArgKind::NoMem(ArgKind::Reg {
+                            reg: Reg(0),
+                            size: MemorySize::_32,
+                        });
+                        self.mov(ctx, arch, &r, &r)?;
+                    }
                 }
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I32WrapI64 => {
                 self.pop(ctx, arch, &Reg(0))?;
-                { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
+                {
+                    let r = MemArgKind::NoMem(ArgKind::Reg {
+                        reg: Reg(0),
+                        size: MemorySize::_32,
+                    });
+                    self.mov(ctx, arch, &r, &r)?;
+                }
                 self.push(ctx, arch, &Reg(0))?;
             }
             // Sign-extend the low 32 bits to 64 (MOVSXD).
             // Both sign-extend the low 32 bits to 64.
             Instruction::I64ExtendI32S | Instruction::I64Extend32S => {
                 self.pop(ctx, arch, &Reg(0))?;
-                let dst = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_64 });
-                let src = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 });
+                let dst = MemArgKind::NoMem(ArgKind::Reg {
+                    reg: Reg(0),
+                    size: MemorySize::_64,
+                });
+                let src = MemArgKind::NoMem(ArgKind::Reg {
+                    reg: Reg(0),
+                    size: MemorySize::_32,
+                });
                 self.movsx(ctx, arch, &dst, &src)?;
                 self.push(ctx, arch, &Reg(0))?;
             }
             // Zero-extend the low 32 bits to 64 (writing a 32-bit reg zero-extends).
             Instruction::I64ExtendI32U => {
                 self.pop(ctx, arch, &Reg(0))?;
-                { let r = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 }); self.mov(ctx, arch, &r, &r)?; }
+                {
+                    let r = MemArgKind::NoMem(ArgKind::Reg {
+                        reg: Reg(0),
+                        size: MemorySize::_32,
+                    });
+                    self.mov(ctx, arch, &r, &r)?;
+                }
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I32Eqz | Instruction::I64Eqz => {
@@ -926,29 +1115,39 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.pop(ctx, arch, &Reg(0))?;
                 self.mem_effective_addr(ctx, arch, state, memarg.offset, memarg.memory_index)?;
                 // Dereference: load 64-bit value from [rax] into rax.
-                self.mov(ctx, arch, &Reg(0), &MemArgKind::Mem {
-                    base: Reg(0),
-                    offset: None,
-                    disp: 0,
-                    size: MemorySize::_64,
-                    reg_class: RegisterClass::Gpr,
-                    segment: Default::default(),
-                })?;
+                self.mov(
+                    ctx,
+                    arch,
+                    &Reg(0),
+                    &MemArgKind::Mem {
+                        base: Reg(0),
+                        offset: None,
+                        disp: 0,
+                        size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
+                    },
+                )?;
                 self.push(ctx, arch, &Reg(0))?;
             }
             Instruction::I64Store(memarg) | Instruction::F64Store(memarg) => {
-                self.pop(ctx, arch, &Reg(2))?;  // value → RDX
-                self.pop(ctx, arch, &Reg(0))?;  // addr → RAX
+                self.pop(ctx, arch, &Reg(2))?; // value → RDX
+                self.pop(ctx, arch, &Reg(0))?; // addr → RAX
                 self.mem_effective_addr(ctx, arch, state, memarg.offset, memarg.memory_index)?;
                 // Store 64-bit value from RDX to [RAX].
-                self.mov(ctx, arch, &MemArgKind::Mem {
-                    base: Reg(0),
-                    offset: None,
-                    disp: 0,
-                    size: MemorySize::_64,
-                    reg_class: RegisterClass::Gpr,
-                    segment: Default::default(),
-                }, &Reg(2))?;
+                self.mov(
+                    ctx,
+                    arch,
+                    &MemArgKind::Mem {
+                        base: Reg(0),
+                        offset: None,
+                        disp: 0,
+                        size: MemorySize::_64,
+                        reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
+                    },
+                    &Reg(2),
+                )?;
             }
             Instruction::I32Load(memarg) | Instruction::F32Load(memarg) => {
                 self.pop(ctx, arch, &Reg(0))?;
@@ -957,7 +1156,10 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 // Previously this was `mov rax, rax`, a register-to-register
                 // no-op that left the *address* in rax instead of loading the
                 // value at that address.
-                let eax = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 });
+                let eax = MemArgKind::NoMem(ArgKind::Reg {
+                    reg: Reg(0),
+                    size: MemorySize::_32,
+                });
                 self.mov(
                     ctx,
                     arch,
@@ -974,48 +1176,162 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.push(ctx, arch, &Reg(0))?;
             }
             // i32.store and i64.store32 both write the low 32 bits to memory.
-            Instruction::I32Store(memarg) | Instruction::I64Store32(memarg) | Instruction::F32Store(memarg) => {
-                self.pop(ctx, arch, &Reg(2))?;  // value → RDX
-                self.pop(ctx, arch, &Reg(0))?;  // addr → RAX
+            Instruction::I32Store(memarg)
+            | Instruction::I64Store32(memarg)
+            | Instruction::F32Store(memarg) => {
+                self.pop(ctx, arch, &Reg(2))?; // value → RDX
+                self.pop(ctx, arch, &Reg(0))?; // addr → RAX
                 self.mem_effective_addr(ctx, arch, state, memarg.offset, memarg.memory_index)?;
                 // Store 32-bit value from EDX to [RAX].
-                let edx = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(2), size: MemorySize::_32 });
-                self.mov(ctx, arch, &MemArgKind::Mem {
-                    base: Reg(0),
-                    offset: None,
-                    disp: 0,
+                let edx = MemArgKind::NoMem(ArgKind::Reg {
+                    reg: Reg(2),
                     size: MemorySize::_32,
-                    reg_class: RegisterClass::Gpr,
-                    segment: Default::default(),
-                }, &edx)?;
+                });
+                self.mov(
+                    ctx,
+                    arch,
+                    &MemArgKind::Mem {
+                        base: Reg(0),
+                        offset: None,
+                        disp: 0,
+                        size: MemorySize::_32,
+                        reg_class: RegisterClass::Gpr,
+                        segment: Default::default(),
+                    },
+                    &edx,
+                )?;
             }
 
             // ---- sub-word loads (zero/sign-extended) ----
-            Instruction::I32Load8U(m)  => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_8,  false, false)?,
-            Instruction::I32Load8S(m)  => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_8,  true,  false)?,
-            Instruction::I32Load16U(m) => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_16, false, false)?,
-            Instruction::I32Load16S(m) => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_16, true,  false)?,
-            Instruction::I64Load8U(m)  => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_8,  false, true)?,
-            Instruction::I64Load8S(m)  => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_8,  true,  true)?,
-            Instruction::I64Load16U(m) => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_16, false, true)?,
-            Instruction::I64Load16S(m) => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_16, true,  true)?,
-            Instruction::I64Load32U(m) => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_32, false, true)?,
-            Instruction::I64Load32S(m) => self.mem_load(ctx, arch, state, m.offset, m.memory_index, MemorySize::_32, true,  true)?,
+            Instruction::I32Load8U(m) => self.mem_load(
+                ctx,
+                arch,
+                state,
+                m.offset,
+                m.memory_index,
+                MemorySize::_8,
+                false,
+                false,
+            )?,
+            Instruction::I32Load8S(m) => self.mem_load(
+                ctx,
+                arch,
+                state,
+                m.offset,
+                m.memory_index,
+                MemorySize::_8,
+                true,
+                false,
+            )?,
+            Instruction::I32Load16U(m) => self.mem_load(
+                ctx,
+                arch,
+                state,
+                m.offset,
+                m.memory_index,
+                MemorySize::_16,
+                false,
+                false,
+            )?,
+            Instruction::I32Load16S(m) => self.mem_load(
+                ctx,
+                arch,
+                state,
+                m.offset,
+                m.memory_index,
+                MemorySize::_16,
+                true,
+                false,
+            )?,
+            Instruction::I64Load8U(m) => self.mem_load(
+                ctx,
+                arch,
+                state,
+                m.offset,
+                m.memory_index,
+                MemorySize::_8,
+                false,
+                true,
+            )?,
+            Instruction::I64Load8S(m) => self.mem_load(
+                ctx,
+                arch,
+                state,
+                m.offset,
+                m.memory_index,
+                MemorySize::_8,
+                true,
+                true,
+            )?,
+            Instruction::I64Load16U(m) => self.mem_load(
+                ctx,
+                arch,
+                state,
+                m.offset,
+                m.memory_index,
+                MemorySize::_16,
+                false,
+                true,
+            )?,
+            Instruction::I64Load16S(m) => self.mem_load(
+                ctx,
+                arch,
+                state,
+                m.offset,
+                m.memory_index,
+                MemorySize::_16,
+                true,
+                true,
+            )?,
+            Instruction::I64Load32U(m) => self.mem_load(
+                ctx,
+                arch,
+                state,
+                m.offset,
+                m.memory_index,
+                MemorySize::_32,
+                false,
+                true,
+            )?,
+            Instruction::I64Load32S(m) => self.mem_load(
+                ctx,
+                arch,
+                state,
+                m.offset,
+                m.memory_index,
+                MemorySize::_32,
+                true,
+                true,
+            )?,
 
             // ---- sub-word stores ----
-            Instruction::I32Store8(m)  => self.mem_store(ctx, arch, state, m.offset, m.memory_index, MemorySize::_8)?,
-            Instruction::I32Store16(m) => self.mem_store(ctx, arch, state, m.offset, m.memory_index, MemorySize::_16)?,
-            Instruction::I64Store8(m)  => self.mem_store(ctx, arch, state, m.offset, m.memory_index, MemorySize::_8)?,
-            Instruction::I64Store16(m) => self.mem_store(ctx, arch, state, m.offset, m.memory_index, MemorySize::_16)?,
+            Instruction::I32Store8(m) => {
+                self.mem_store(ctx, arch, state, m.offset, m.memory_index, MemorySize::_8)?
+            }
+            Instruction::I32Store16(m) => {
+                self.mem_store(ctx, arch, state, m.offset, m.memory_index, MemorySize::_16)?
+            }
+            Instruction::I64Store8(m) => {
+                self.mem_store(ctx, arch, state, m.offset, m.memory_index, MemorySize::_8)?
+            }
+            Instruction::I64Store16(m) => {
+                self.mem_store(ctx, arch, state, m.offset, m.memory_index, MemorySize::_16)?
+            }
 
             // ---- arithmetic shift right (sar) ----
             Instruction::I32ShrS | Instruction::I64ShrS => {
-                let cl = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(1), size: MemorySize::_8 });
+                let cl = MemArgKind::NoMem(ArgKind::Reg {
+                    reg: Reg(1),
+                    size: MemorySize::_8,
+                });
                 self.pop(ctx, arch, &Reg(1))?; // shift count → RCX
                 self.pop(ctx, arch, &Reg(0))?; // value → RAX
                 if let Instruction::I32ShrS = op {
                     // 32-bit sar replicates bit 31 and zero-extends the result.
-                    let eax = MemArgKind::NoMem(ArgKind::Reg { reg: Reg(0), size: MemorySize::_32 });
+                    let eax = MemArgKind::NoMem(ArgKind::Reg {
+                        reg: Reg(0),
+                        size: MemorySize::_32,
+                    });
                     self.sar(ctx, arch, &eax, &cl)?;
                 } else {
                     self.sar(ctx, arch, &Reg(0), &cl)?;
@@ -1223,7 +1539,12 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 state.if_stack.push(Endable::If { idx: i });
                 self.pop(ctx, arch, &Reg(2))?;
                 self.cmp0(ctx, arch, &Reg(2))?;
-                self.jcc_label(ctx, arch, ConditionCode::E, X64Label::Indexed { idx: i + 1 })?;
+                self.jcc_label(
+                    ctx,
+                    arch,
+                    ConditionCode::E,
+                    X64Label::Indexed { idx: i + 1 },
+                )?;
                 self.jmp_label(ctx, arch, X64Label::Indexed { idx: i })?;
                 self.set_label(ctx, arch, X64Label::Indexed { idx: i })?;
             }
@@ -1263,10 +1584,15 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         Endable::If { idx: i } => {
                             self.set_label(ctx, arch, X64Label::Indexed { idx: i + 2 })?;
                         }
-                        Endable::TryTable { exit_idx: _, dispatch_idx, after_dispatch_idx, catches } => {
+                        Endable::TryTable {
+                            exit_idx: _,
+                            dispatch_idx,
+                            after_dispatch_idx,
+                            catches,
+                        } => {
                             // Normal fall-through: pop CTX frame (same as Block).
-                            self.pop(ctx, arch, &Reg(0))?;  // exit_label
-                            self.pop(ctx, arch, &Reg(1))?;  // old_RSP
+                            self.pop(ctx, arch, &Reg(0))?; // exit_label
+                            self.pop(ctx, arch, &Reg(1))?; // old_RSP
                             self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
                             // Software EH stack: normal (non-throwing) exit —
                             // discard our frame. Local `Throw` and
@@ -1274,38 +1600,62 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                             // frame right before jumping into a dispatch
                             // stub, so this is the only path that needs to
                             // pop here.
-                            self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: "__wasm_eh_pop".into() })?;
+                            self.lea_label(
+                                ctx,
+                                arch,
+                                &Reg(0),
+                                X64Label::External {
+                                    name: "__wasm_eh_pop".into(),
+                                },
+                            )?;
                             self.call(ctx, arch, &Reg(0))?;
                             // Jump over dispatch stub.
-                            self.jmp_label(ctx, arch, X64Label::Indexed { idx: after_dispatch_idx })?;
+                            self.jmp_label(
+                                ctx,
+                                arch,
+                                X64Label::Indexed {
+                                    idx: after_dispatch_idx,
+                                },
+                            )?;
 
                             // Dispatch stub: entered when throw jumps here.
                             self.set_label(ctx, arch, X64Label::Indexed { idx: dispatch_idx })?;
                             // Restore operand stack to TryTable entry RSP.
                             // The CTX frame still has old_RSP; re-read from CTX stack.
                             self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
-                            self.pop(ctx, arch, &Reg(0))?;  // exit_label (discard)
-                            self.pop(ctx, arch, &Reg(1))?;  // old_RSP
+                            self.pop(ctx, arch, &Reg(0))?; // exit_label (discard)
+                            self.pop(ctx, arch, &Reg(1))?; // old_RSP
                             self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
-                            self.mov(ctx, arch, &RSP, &Reg(1))?;  // restore operand RSP
+                            self.mov(ctx, arch, &RSP, &Reg(1))?; // restore operand RSP
                             // r2 = thrown tag index (set by Throw instruction).
                             for catch in catches.iter() {
                                 match catch {
                                     Catch::One { tag, label } => {
                                         let arity = if (*tag as usize) < tags.len() {
                                             sigs[tags[*tag as usize] as usize].params().len()
-                                        } else { 0 };
+                                        } else {
+                                            0
+                                        };
                                         let skip_lbl = state.label_index;
                                         state.label_index += 1;
                                         self.mov64(ctx, arch, &Reg(0), *tag as u64)?;
                                         self.cmp(ctx, arch, &Reg(2), &Reg(0))?;
-                                        self.jcc_label(ctx, arch, ConditionCode::NE, X64Label::Indexed { idx: skip_lbl })?;
+                                        self.jcc_label(
+                                            ctx,
+                                            arch,
+                                            ConditionCode::NE,
+                                            X64Label::Indexed { idx: skip_lbl },
+                                        )?;
                                         // Tag matched: push exception values (r3..r(2+arity))
                                         for i in (0..arity).rev() {
                                             self.push(ctx, arch, &Reg(3 + i as u8))?;
                                         }
                                         self.br(ctx, arch, state, *label)?;
-                                        self.set_label(ctx, arch, X64Label::Indexed { idx: skip_lbl })?;
+                                        self.set_label(
+                                            ctx,
+                                            arch,
+                                            X64Label::Indexed { idx: skip_lbl },
+                                        )?;
                                     }
                                     Catch::All { label } => {
                                         self.br(ctx, arch, state, *label)?;
@@ -1316,11 +1666,22 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                                 }
                             }
                             // No catch matched: propagate via CTX chain.
-                            self.lea_label(ctx, arch, &Reg(0), X64Label::External {
-                                name: alloc::format!("__wasm_exn_propagate"),
-                            })?;
+                            self.lea_label(
+                                ctx,
+                                arch,
+                                &Reg(0),
+                                X64Label::External {
+                                    name: alloc::format!("__wasm_exn_propagate"),
+                                },
+                            )?;
                             self.jmp(ctx, arch, &Reg(0))?;
-                            self.set_label(ctx, arch, X64Label::Indexed { idx: after_dispatch_idx })?;
+                            self.set_label(
+                                ctx,
+                                arch,
+                                X64Label::Indexed {
+                                    idx: after_dispatch_idx,
+                                },
+                            )?;
                             return Ok(());
                         }
                     }
@@ -1331,7 +1692,9 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
             Instruction::Throw(tag_index) => {
                 let arity = if (*tag_index as usize) < tags.len() {
                     sigs[tags[*tag_index as usize] as usize].params().len()
-                } else { 0 };
+                } else {
+                    0
+                };
                 // Static dispatch: does the innermost TryTable's if_stack
                 // entry (a purely compile-time, same-function lookup) have a
                 // dispatch stub for us? Resolved before marshalling
@@ -1346,7 +1709,14 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     // throw locally (bypassing __wasm_exn_propagate
                     // entirely), so pop its frame ourselves — propagate
                     // only pops when *it* dispatches (see TryTable::End).
-                    self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: "__wasm_eh_pop".into() })?;
+                    self.lea_label(
+                        ctx,
+                        arch,
+                        &Reg(0),
+                        X64Label::External {
+                            name: "__wasm_eh_pop".into(),
+                        },
+                    )?;
                     self.call(ctx, arch, &Reg(0))?;
                 }
                 // Tag index → r2; exception values → r3, r4, r5 (up to arity 3).
@@ -1359,9 +1729,14 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 } else {
                     // No intra-function handler: propagate via the software
                     // EH stack (see `speet_rt::generate_exn_tu`).
-                    self.lea_label(ctx, arch, &Reg(0), X64Label::External {
-                        name: alloc::format!("__wasm_exn_propagate"),
-                    })?;
+                    self.lea_label(
+                        ctx,
+                        arch,
+                        &Reg(0),
+                        X64Label::External {
+                            name: alloc::format!("__wasm_exn_propagate"),
+                        },
+                    )?;
                     self.jmp(ctx, arch, &Reg(0))?;
                 }
             }
@@ -1376,14 +1751,18 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     exit_idx,
                     dispatch_idx,
                     after_dispatch_idx,
-                    catches: catches.iter().cloned().collect::<alloc::vec::Vec<_>>().into_boxed_slice(),
+                    catches: catches
+                        .iter()
+                        .cloned()
+                        .collect::<alloc::vec::Vec<_>>()
+                        .into_boxed_slice(),
                 });
                 // Push CTX frame (same as Block): old_RSP + exit_label.
                 self.lea_label(ctx, arch, &Reg(0), X64Label::Indexed { idx: exit_idx })?;
                 self.mov(ctx, arch, &Reg(1), &RSP)?;
                 self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
-                self.push(ctx, arch, &Reg(1))?;  // old_RSP
-                self.push(ctx, arch, &Reg(0))?;  // exit_label
+                self.push(ctx, arch, &Reg(1))?; // old_RSP
+                self.push(ctx, arch, &Reg(0))?; // exit_label
                 self.xchg(ctx, arch, &RSP, &Reg::CTX)?;
                 self.set_label(ctx, arch, X64Label::Indexed { idx: exit_idx })?;
                 // Software EH stack: __wasm_eh_push(dispatch_addr, current
@@ -1395,7 +1774,14 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 // same-function fast path unchanged.
                 self.lea_label(ctx, arch, &Reg(7), X64Label::Indexed { idx: dispatch_idx })?; // RDI = dispatch addr
                 self.mov(ctx, arch, &Reg(6), &RSP)?; // RSI = saved operand-stack RSP
-                self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: "__wasm_eh_push".into() })?;
+                self.lea_label(
+                    ctx,
+                    arch,
+                    &Reg(0),
+                    X64Label::External {
+                        name: "__wasm_eh_push".into(),
+                    },
+                )?;
                 self.call(ctx, arch, &Reg(0))?;
             }
             Instruction::Call(function_index) => {
@@ -1405,14 +1791,19 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 match target {
                     Some(CallTarget::CrossShard { table_slot }) => {
                         // Cross-shard: load fn ptr from [SCR + table_slot * 8].
-                        self.mov(ctx, arch, &Reg(0), &MemArgKind::Mem {
-                            base: SCR,
-                            offset: None,
-                            disp: table_slot.wrapping_mul(8),
-                            size: MemorySize::_64,
-                            reg_class: RegisterClass::Gpr,
-                            segment: Default::default(),
-                        })?;
+                        self.mov(
+                            ctx,
+                            arch,
+                            &Reg(0),
+                            &MemArgKind::Mem {
+                                base: SCR,
+                                offset: None,
+                                disp: table_slot.wrapping_mul(8),
+                                size: MemorySize::_64,
+                                reg_class: RegisterClass::Gpr,
+                                segment: Default::default(),
+                            },
+                        )?;
                         self.call(ctx, arch, &Reg(0))?;
                     }
                     _ => {
@@ -1420,7 +1811,12 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         match func_imports.get(fn_idx as usize) {
                             Some((module, name)) => {
                                 let sym = alloc::format!("{module}__{name}");
-                                self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: sym })?;
+                                self.lea_label(
+                                    ctx,
+                                    arch,
+                                    &Reg(0),
+                                    X64Label::External { name: sym },
+                                )?;
                                 self.call(ctx, arch, &Reg(0))?;
                             }
                             None => {
@@ -1446,12 +1842,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                     alloc::format!("__wasm_mem_pages_{mi}")
                 };
                 // Get address of the pages-count global into Reg(0).
-                self.lea_label(
-                    ctx,
-                    arch,
-                    &Reg(0),
-                    X64Label::External { name: pages_sym },
-                )?;
+                self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: pages_sym })?;
                 // Load the 32-bit value (zero-extend to 64 bits).
                 // Dest must be eax (the 32-bit half) for the assembler to accept
                 // `mov eax, dword ptr [rax]` — writing eax auto-zero-extends rax.
@@ -1491,12 +1882,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 } else {
                     alloc::format!("__wasm_memory_grow_{mi}")
                 };
-                self.lea_label(
-                    ctx,
-                    arch,
-                    &Reg(0),
-                    X64Label::External { name: grow_sym },
-                )?;
+                self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: grow_sym })?;
                 self.call(ctx, arch, &Reg(0))?;
             }
             // ---- memory.init ------------------------------------------------
@@ -1531,12 +1917,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                         name: alloc::format!("__wasm_data_seg_{data_index}"),
                     },
                 )?; // RSI ← segment base (2nd SysV arg)
-                self.lea_label(
-                    ctx,
-                    arch,
-                    &Reg(0),
-                    X64Label::External { name: init_sym },
-                )?;
+                self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: init_sym })?;
                 self.call(ctx, arch, &Reg(0))?;
             }
             // memory.copy: (dest, src, len) → `__wasm_memory_copy` (memmove).
@@ -1551,12 +1932,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.pop(ctx, arch, &Reg(2))?; // RDX ← len
                 self.pop(ctx, arch, &Reg(6))?; // RSI ← src_offset
                 self.pop(ctx, arch, &Reg(7))?; // RDI ← dest_offset
-                self.lea_label(
-                    ctx,
-                    arch,
-                    &Reg(0),
-                    X64Label::External { name: copy_sym },
-                )?;
+                self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: copy_sym })?;
                 self.call(ctx, arch, &Reg(0))?;
             }
             // memory.fill: (dest, val, len) → `__wasm_memory_fill[_N]` (memset).
@@ -1569,12 +1945,7 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.pop(ctx, arch, &Reg(2))?; // RDX ← len
                 self.pop(ctx, arch, &Reg(6))?; // RSI ← val
                 self.pop(ctx, arch, &Reg(7))?; // RDI ← dest_offset
-                self.lea_label(
-                    ctx,
-                    arch,
-                    &Reg(0),
-                    X64Label::External { name: fill_sym },
-                )?;
+                self.lea_label(ctx, arch, &Reg(0), X64Label::External { name: fill_sym })?;
                 self.call(ctx, arch, &Reg(0))?;
             }
             // `data.drop` is a compile-time no-op here: this AOT backend
@@ -1600,14 +1971,19 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 let call_target = state.shard.as_ref().map(|s| s.call_target(fn_idx));
                 match call_target {
                     Some(CallTarget::CrossShard { table_slot }) => {
-                        self.mov(ctx, arch, &Reg(3), &MemArgKind::Mem {
-                            base: SCR,
-                            offset: None,
-                            disp: table_slot.wrapping_mul(8),
-                            size: MemorySize::_64,
-                            reg_class: RegisterClass::Gpr,
-                            segment: Default::default(),
-                        })?;
+                        self.mov(
+                            ctx,
+                            arch,
+                            &Reg(3),
+                            &MemArgKind::Mem {
+                                base: SCR,
+                                offset: None,
+                                disp: table_slot.wrapping_mul(8),
+                                size: MemorySize::_64,
+                                reg_class: RegisterClass::Gpr,
+                                segment: Default::default(),
+                            },
+                        )?;
                     }
                     _ => match func_imports.get(fn_idx as usize) {
                         Some((module, name)) => {
@@ -1648,27 +2024,75 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
                 self.jmp(ctx, arch, &Reg(3))?;
             }
             // ---- F64 arithmetic (XMM0 op= XMM1) ----
-            Instruction::F64Add => self.fp_binop(ctx, arch, false, |w, c, a, d, s| w.fadd(c, a, &d, &s))?,
-            Instruction::F64Sub => self.fp_binop(ctx, arch, false, |w, c, a, d, s| w.fsub(c, a, &d, &s))?,
-            Instruction::F64Mul => self.fp_binop(ctx, arch, false, |w, c, a, d, s| w.fmul(c, a, &d, &s))?,
-            Instruction::F64Div => self.fp_binop(ctx, arch, false, |w, c, a, d, s| w.fdiv(c, a, &d, &s))?,
-            Instruction::F64Min => self.fp_binop(ctx, arch, false, |w, c, a, d, s| w.fmin(c, a, &d, &s))?,
-            Instruction::F64Max => self.fp_binop(ctx, arch, false, |w, c, a, d, s| w.fmax(c, a, &d, &s))?,
-            Instruction::F64Sqrt => self.fp_unop(ctx, arch, false, |w, c, a, d, s| w.fsqrt(c, a, &d, &s))?,
+            Instruction::F64Add => {
+                self.fp_binop(ctx, arch, false, |w, c, a, d, s| w.fadd(c, a, &d, &s))?
+            }
+            Instruction::F64Sub => {
+                self.fp_binop(ctx, arch, false, |w, c, a, d, s| w.fsub(c, a, &d, &s))?
+            }
+            Instruction::F64Mul => {
+                self.fp_binop(ctx, arch, false, |w, c, a, d, s| w.fmul(c, a, &d, &s))?
+            }
+            Instruction::F64Div => {
+                self.fp_binop(ctx, arch, false, |w, c, a, d, s| w.fdiv(c, a, &d, &s))?
+            }
+            Instruction::F64Min => {
+                self.fp_binop(ctx, arch, false, |w, c, a, d, s| w.fmin(c, a, &d, &s))?
+            }
+            Instruction::F64Max => {
+                self.fp_binop(ctx, arch, false, |w, c, a, d, s| w.fmax(c, a, &d, &s))?
+            }
+            Instruction::F64Sqrt => {
+                self.fp_unop(ctx, arch, false, |w, c, a, d, s| w.fsqrt(c, a, &d, &s))?
+            }
             // ---- F32 arithmetic ----
-            Instruction::F32Add => self.fp_binop(ctx, arch, true, |w, c, a, d, s| w.fadd_s(c, a, &d, &s))?,
-            Instruction::F32Sub => self.fp_binop(ctx, arch, true, |w, c, a, d, s| w.fsub_s(c, a, &d, &s))?,
-            Instruction::F32Mul => self.fp_binop(ctx, arch, true, |w, c, a, d, s| w.fmul_s(c, a, &d, &s))?,
-            Instruction::F32Div => self.fp_binop(ctx, arch, true, |w, c, a, d, s| w.fdiv_s(c, a, &d, &s))?,
-            Instruction::F32Min => self.fp_binop(ctx, arch, true, |w, c, a, d, s| w.fmin_s(c, a, &d, &s))?,
-            Instruction::F32Max => self.fp_binop(ctx, arch, true, |w, c, a, d, s| w.fmax_s(c, a, &d, &s))?,
-            Instruction::F32Sqrt => self.fp_unop(ctx, arch, true, |w, c, a, d, s| w.fsqrt_s(c, a, &d, &s))?,
+            Instruction::F32Add => {
+                self.fp_binop(ctx, arch, true, |w, c, a, d, s| w.fadd_s(c, a, &d, &s))?
+            }
+            Instruction::F32Sub => {
+                self.fp_binop(ctx, arch, true, |w, c, a, d, s| w.fsub_s(c, a, &d, &s))?
+            }
+            Instruction::F32Mul => {
+                self.fp_binop(ctx, arch, true, |w, c, a, d, s| w.fmul_s(c, a, &d, &s))?
+            }
+            Instruction::F32Div => {
+                self.fp_binop(ctx, arch, true, |w, c, a, d, s| w.fdiv_s(c, a, &d, &s))?
+            }
+            Instruction::F32Min => {
+                self.fp_binop(ctx, arch, true, |w, c, a, d, s| w.fmin_s(c, a, &d, &s))?
+            }
+            Instruction::F32Max => {
+                self.fp_binop(ctx, arch, true, |w, c, a, d, s| w.fmax_s(c, a, &d, &s))?
+            }
+            Instruction::F32Sqrt => {
+                self.fp_unop(ctx, arch, true, |w, c, a, d, s| w.fsqrt_s(c, a, &d, &s))?
+            }
 
             // ---- FP abs/neg via GP bit masking (exact, no SSE constant pool) ----
-            Instruction::F64Abs => { self.pop(ctx, arch, &Reg(0))?; self.mov64(ctx, arch, &Reg(1), 0x7fff_ffff_ffff_ffff)?; self.and(ctx, arch, &Reg(0), &Reg(1))?; self.push(ctx, arch, &Reg(0))?; }
-            Instruction::F64Neg => { self.pop(ctx, arch, &Reg(0))?; self.mov64(ctx, arch, &Reg(1), 0x8000_0000_0000_0000)?; self.eor(ctx, arch, &Reg(0), &Reg(1))?; self.push(ctx, arch, &Reg(0))?; }
-            Instruction::F32Abs => { self.pop(ctx, arch, &Reg(0))?; self.mov64(ctx, arch, &Reg(1), 0x7fff_ffff)?; self.and(ctx, arch, &Reg(0), &Reg(1))?; self.push(ctx, arch, &Reg(0))?; }
-            Instruction::F32Neg => { self.pop(ctx, arch, &Reg(0))?; self.mov64(ctx, arch, &Reg(1), 0x8000_0000)?; self.eor(ctx, arch, &Reg(0), &Reg(1))?; self.push(ctx, arch, &Reg(0))?; }
+            Instruction::F64Abs => {
+                self.pop(ctx, arch, &Reg(0))?;
+                self.mov64(ctx, arch, &Reg(1), 0x7fff_ffff_ffff_ffff)?;
+                self.and(ctx, arch, &Reg(0), &Reg(1))?;
+                self.push(ctx, arch, &Reg(0))?;
+            }
+            Instruction::F64Neg => {
+                self.pop(ctx, arch, &Reg(0))?;
+                self.mov64(ctx, arch, &Reg(1), 0x8000_0000_0000_0000)?;
+                self.eor(ctx, arch, &Reg(0), &Reg(1))?;
+                self.push(ctx, arch, &Reg(0))?;
+            }
+            Instruction::F32Abs => {
+                self.pop(ctx, arch, &Reg(0))?;
+                self.mov64(ctx, arch, &Reg(1), 0x7fff_ffff)?;
+                self.and(ctx, arch, &Reg(0), &Reg(1))?;
+                self.push(ctx, arch, &Reg(0))?;
+            }
+            Instruction::F32Neg => {
+                self.pop(ctx, arch, &Reg(0))?;
+                self.mov64(ctx, arch, &Reg(1), 0x8000_0000)?;
+                self.eor(ctx, arch, &Reg(0), &Reg(1))?;
+                self.push(ctx, arch, &Reg(0))?;
+            }
 
             // ---- FP compares (false on NaN except ne) ----
             Instruction::F64Eq => self.fp_cmp_eq(ctx, arch, false, true)?,
@@ -1685,27 +2109,83 @@ pub trait WriterExt<Context>: Writer<X64Label, Context> {
             Instruction::F32Le => self.fp_cmp_rel(ctx, arch, true, true, ConditionCode::NB)?,
 
             // ---- conversions: int -> fp (signed; bits already in RAX) ----
-            Instruction::F64ConvertI32S => self.fp_convert(ctx, arch, |w, c, a| { w.scvtf_d_w(c, a, &Reg(0), &Reg(0))?; w.fmov_d_to_gp(c, a, &Reg(0), &Reg(0)) })?,
-            Instruction::F64ConvertI64S => self.fp_convert(ctx, arch, |w, c, a| { w.scvtf_d_x(c, a, &Reg(0), &Reg(0))?; w.fmov_d_to_gp(c, a, &Reg(0), &Reg(0)) })?,
-            Instruction::F32ConvertI32S => self.fp_convert(ctx, arch, |w, c, a| { w.scvtf_s_w(c, a, &Reg(0), &Reg(0))?; w.fmov_s_to_gp(c, a, &Reg(0), &Reg(0)) })?,
-            Instruction::F32ConvertI64S => self.fp_convert(ctx, arch, |w, c, a| { w.scvtf_s_x(c, a, &Reg(0), &Reg(0))?; w.fmov_s_to_gp(c, a, &Reg(0), &Reg(0)) })?,
+            Instruction::F64ConvertI32S => self.fp_convert(ctx, arch, |w, c, a| {
+                w.scvtf_d_w(c, a, &Reg(0), &Reg(0))?;
+                w.fmov_d_to_gp(c, a, &Reg(0), &Reg(0))
+            })?,
+            Instruction::F64ConvertI64S => self.fp_convert(ctx, arch, |w, c, a| {
+                w.scvtf_d_x(c, a, &Reg(0), &Reg(0))?;
+                w.fmov_d_to_gp(c, a, &Reg(0), &Reg(0))
+            })?,
+            Instruction::F32ConvertI32S => self.fp_convert(ctx, arch, |w, c, a| {
+                w.scvtf_s_w(c, a, &Reg(0), &Reg(0))?;
+                w.fmov_s_to_gp(c, a, &Reg(0), &Reg(0))
+            })?,
+            Instruction::F32ConvertI64S => self.fp_convert(ctx, arch, |w, c, a| {
+                w.scvtf_s_x(c, a, &Reg(0), &Reg(0))?;
+                w.fmov_s_to_gp(c, a, &Reg(0), &Reg(0))
+            })?,
             // i32-unsigned: zero-extend to 64 bits, then use the signed r64 convert.
-            Instruction::F64ConvertI32U => self.fp_convert(ctx, arch, |w, c, a| { w.mov64(c, a, &Reg(1), 0xffff_ffff)?; w.and(c, a, &Reg(0), &Reg(1))?; w.scvtf_d_x(c, a, &Reg(0), &Reg(0))?; w.fmov_d_to_gp(c, a, &Reg(0), &Reg(0)) })?,
-            Instruction::F32ConvertI32U => self.fp_convert(ctx, arch, |w, c, a| { w.mov64(c, a, &Reg(1), 0xffff_ffff)?; w.and(c, a, &Reg(0), &Reg(1))?; w.scvtf_s_x(c, a, &Reg(0), &Reg(0))?; w.fmov_s_to_gp(c, a, &Reg(0), &Reg(0)) })?,
+            Instruction::F64ConvertI32U => self.fp_convert(ctx, arch, |w, c, a| {
+                w.mov64(c, a, &Reg(1), 0xffff_ffff)?;
+                w.and(c, a, &Reg(0), &Reg(1))?;
+                w.scvtf_d_x(c, a, &Reg(0), &Reg(0))?;
+                w.fmov_d_to_gp(c, a, &Reg(0), &Reg(0))
+            })?,
+            Instruction::F32ConvertI32U => self.fp_convert(ctx, arch, |w, c, a| {
+                w.mov64(c, a, &Reg(1), 0xffff_ffff)?;
+                w.and(c, a, &Reg(0), &Reg(1))?;
+                w.scvtf_s_x(c, a, &Reg(0), &Reg(0))?;
+                w.fmov_s_to_gp(c, a, &Reg(0), &Reg(0))
+            })?,
             // i64-unsigned: use the signed convert (exact for values < 2^63).
-            Instruction::F64ConvertI64U => self.fp_convert(ctx, arch, |w, c, a| { w.scvtf_d_x(c, a, &Reg(0), &Reg(0))?; w.fmov_d_to_gp(c, a, &Reg(0), &Reg(0)) })?,
-            Instruction::F32ConvertI64U => self.fp_convert(ctx, arch, |w, c, a| { w.scvtf_s_x(c, a, &Reg(0), &Reg(0))?; w.fmov_s_to_gp(c, a, &Reg(0), &Reg(0)) })?,
+            Instruction::F64ConvertI64U => self.fp_convert(ctx, arch, |w, c, a| {
+                w.scvtf_d_x(c, a, &Reg(0), &Reg(0))?;
+                w.fmov_d_to_gp(c, a, &Reg(0), &Reg(0))
+            })?,
+            Instruction::F32ConvertI64U => self.fp_convert(ctx, arch, |w, c, a| {
+                w.scvtf_s_x(c, a, &Reg(0), &Reg(0))?;
+                w.fmov_s_to_gp(c, a, &Reg(0), &Reg(0))
+            })?,
 
             // ---- conversions: fp -> int (truncating; unsigned uses the signed
             // trunc, exact for in-range values) ----
-            Instruction::I32TruncF64S | Instruction::I32TruncF64U => self.fp_convert(ctx, arch, |w, c, a| { w.fmov_gp_to_d(c, a, &Reg(0), &Reg(0))?; w.fcvtzs_w_d(c, a, &Reg(0), &Reg(0)) })?,
-            Instruction::I64TruncF64S | Instruction::I64TruncF64U => self.fp_convert(ctx, arch, |w, c, a| { w.fmov_gp_to_d(c, a, &Reg(0), &Reg(0))?; w.fcvtzs_x_d(c, a, &Reg(0), &Reg(0)) })?,
-            Instruction::I32TruncF32S | Instruction::I32TruncF32U => self.fp_convert(ctx, arch, |w, c, a| { w.fmov_gp_to_s(c, a, &Reg(0), &Reg(0))?; w.fcvtzs_w_s(c, a, &Reg(0), &Reg(0)) })?,
-            Instruction::I64TruncF32S | Instruction::I64TruncF32U => self.fp_convert(ctx, arch, |w, c, a| { w.fmov_gp_to_s(c, a, &Reg(0), &Reg(0))?; w.fcvtzs_x_s(c, a, &Reg(0), &Reg(0)) })?,
+            Instruction::I32TruncF64S | Instruction::I32TruncF64U => {
+                self.fp_convert(ctx, arch, |w, c, a| {
+                    w.fmov_gp_to_d(c, a, &Reg(0), &Reg(0))?;
+                    w.fcvtzs_w_d(c, a, &Reg(0), &Reg(0))
+                })?
+            }
+            Instruction::I64TruncF64S | Instruction::I64TruncF64U => {
+                self.fp_convert(ctx, arch, |w, c, a| {
+                    w.fmov_gp_to_d(c, a, &Reg(0), &Reg(0))?;
+                    w.fcvtzs_x_d(c, a, &Reg(0), &Reg(0))
+                })?
+            }
+            Instruction::I32TruncF32S | Instruction::I32TruncF32U => {
+                self.fp_convert(ctx, arch, |w, c, a| {
+                    w.fmov_gp_to_s(c, a, &Reg(0), &Reg(0))?;
+                    w.fcvtzs_w_s(c, a, &Reg(0), &Reg(0))
+                })?
+            }
+            Instruction::I64TruncF32S | Instruction::I64TruncF32U => {
+                self.fp_convert(ctx, arch, |w, c, a| {
+                    w.fmov_gp_to_s(c, a, &Reg(0), &Reg(0))?;
+                    w.fcvtzs_x_s(c, a, &Reg(0), &Reg(0))
+                })?
+            }
 
             // ---- conversions: f32 <-> f64 ----
-            Instruction::F32DemoteF64 => self.fp_convert(ctx, arch, |w, c, a| { w.fmov_gp_to_d(c, a, &Reg(0), &Reg(0))?; w.fcvt_s_d(c, a, &Reg(1), &Reg(0))?; w.fmov_s_to_gp(c, a, &Reg(0), &Reg(1)) })?,
-            Instruction::F64PromoteF32 => self.fp_convert(ctx, arch, |w, c, a| { w.fmov_gp_to_s(c, a, &Reg(0), &Reg(0))?; w.fcvt_d_s(c, a, &Reg(1), &Reg(0))?; w.fmov_d_to_gp(c, a, &Reg(0), &Reg(1)) })?,
+            Instruction::F32DemoteF64 => self.fp_convert(ctx, arch, |w, c, a| {
+                w.fmov_gp_to_d(c, a, &Reg(0), &Reg(0))?;
+                w.fcvt_s_d(c, a, &Reg(1), &Reg(0))?;
+                w.fmov_s_to_gp(c, a, &Reg(0), &Reg(1))
+            })?,
+            Instruction::F64PromoteF32 => self.fp_convert(ctx, arch, |w, c, a| {
+                w.fmov_gp_to_s(c, a, &Reg(0), &Reg(0))?;
+                w.fcvt_d_s(c, a, &Reg(1), &Reg(0))?;
+                w.fmov_d_to_gp(c, a, &Reg(0), &Reg(1))
+            })?,
 
             // drop: pop one value and discard it (no push back).
             Instruction::Drop => self.pop(ctx, arch, &Reg(0))?,
@@ -1734,9 +2214,18 @@ fn naive_share_region_delta(insn: &Instruction<'_>) -> Option<i32> {
     match insn {
         I::I32Const(_) | I::I64Const(_) | I::LocalGet(_) => Some(1),
         I::LocalSet(_) => Some(-1),
-        I::I32Add | I::I64Add | I::I32Sub | I::I64Sub
-        | I::I32And | I::I64And | I::I32Or | I::I64Or
-        | I::I32Xor | I::I64Xor | I::I32Mul | I::I64Mul => Some(-1),
+        I::I32Add
+        | I::I64Add
+        | I::I32Sub
+        | I::I64Sub
+        | I::I32And
+        | I::I64And
+        | I::I32Or
+        | I::I64Or
+        | I::I32Xor
+        | I::I64Xor
+        | I::I32Mul
+        | I::I64Mul => Some(-1),
         _ => None,
     }
 }
@@ -1790,7 +2279,10 @@ impl<B> NaiveSharing<B> {
     }
     /// Enabled v1 configuration with the default size thresholds.
     pub fn enabled() -> Self {
-        Self::new(CodeSharingConfig { enabled: true, ..CodeSharingConfig::default() })
+        Self::new(CodeSharingConfig {
+            enabled: true,
+            ..CodeSharingConfig::default()
+        })
     }
 }
 
@@ -1852,12 +2344,28 @@ pub trait NaiveSharingWriterExt<Context>: WriterExt<Context> {
                 sharing.next_helper = sw.next_helper;
             }
             return self.handle_op::<E, Err>(
-                ctx, arch, state, func_imports, sigs, tags, op, rewriter, target,
+                ctx,
+                arch,
+                state,
+                func_imports,
+                sigs,
+                tags,
+                op,
+                rewriter,
+                target,
             );
         }
         if !sharing.config.enabled {
             return self.handle_op::<E, Err>(
-                ctx, arch, state, func_imports, sigs, tags, op, rewriter, target,
+                ctx,
+                arch,
+                state,
+                func_imports,
+                sigs,
+                tags,
+                op,
+                rewriter,
+                target,
             );
         }
 
@@ -1910,12 +2418,21 @@ pub trait NaiveSharingWriterExt<Context>: WriterExt<Context> {
         {
             let anchor = state.label_index;
             state.label_index += 1;
-            self.set_label(ctx, arch, X64Label::Indexed { idx: anchor }).map_err(Err::from)?;
+            self.set_label(ctx, arch, X64Label::Indexed { idx: anchor })
+                .map_err(Err::from)?;
             sharing.open_anchor = Some(anchor);
         }
 
         self.handle_op::<E, Err>(
-            ctx, arch, state, func_imports, sigs, tags, op, rewriter, target,
+            ctx,
+            arch,
+            state,
+            func_imports,
+            sigs,
+            tags,
+            op,
+            rewriter,
+            target,
         )?;
 
         // Track the WASM stack depth across instructions with statically
@@ -1980,7 +2497,13 @@ where
     W: WriterExt<Ctx>,
 {
     for (id, name) in exports {
-        w.set_label(ctx, arch, X64Label::External { name: (*name).into() })?;
+        w.set_label(
+            ctx,
+            arch,
+            X64Label::External {
+                name: (*name).into(),
+            },
+        )?;
         w.jmp_label(ctx, arch, X64Label::Func { r#fn: *id })?;
     }
     Ok(())
@@ -2000,10 +2523,27 @@ mod membase_tests {
     fn load_externals(mem_base: MemBase, memory_index: u32) -> Vec<String> {
         let mut out = IcedWriter::<X64Label>::new(0x1000);
         let mut ctx = ();
-        let mut state = State { mem_base, ..State::default() };
-        let op = Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index });
-        WriterExt::_handle_op(&mut out, &mut ctx, X64Arch::default(), &mut state, &[], &[], &[], &op, 0)
-            .unwrap();
+        let mut state = State {
+            mem_base,
+            ..State::default()
+        };
+        let op = Instruction::I64Load(MemArg {
+            offset: 0,
+            align: 3,
+            memory_index,
+        });
+        WriterExt::_handle_op(
+            &mut out,
+            &mut ctx,
+            X64Arch::default(),
+            &mut state,
+            &[],
+            &[],
+            &[],
+            &op,
+            0,
+        )
+        .unwrap();
         let (_bytes, _labels, relocs) = out.into_parts_with_relocs();
         relocs
             .into_iter()
@@ -2017,7 +2557,11 @@ mod membase_tests {
     #[test]
     fn raw_mode_emits_no_wasm_mem_reference() {
         // Default raw-pointer addressing references no runtime memory symbol.
-        assert!(!load_externals(MemBase::Raw, 0).iter().any(|n| n == "__wasm_mem"));
+        assert!(
+            !load_externals(MemBase::Raw, 0)
+                .iter()
+                .any(|n| n == "__wasm_mem")
+        );
     }
 
     #[test]
@@ -2093,10 +2637,7 @@ mod membase_tests {
             mem: 2,
             data_index: 0,
         });
-        assert!(
-            e.iter().any(|n| n == "__wasm_memory_init_copy_2"),
-            "{e:?}"
-        );
+        assert!(e.iter().any(|n| n == "__wasm_memory_init_copy_2"), "{e:?}");
         assert!(e.iter().any(|n| n == "__wasm_data_seg_0"), "{e:?}");
     }
 
@@ -2131,9 +2672,23 @@ mod membase_tests {
             mem_base_by_index: by_index,
             ..State::default()
         };
-        let op = Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 1 });
-        WriterExt::_handle_op(&mut out, &mut ctx, X64Arch::default(), &mut state, &[], &[], &[], &op, 0)
-            .unwrap();
+        let op = Instruction::I64Load(MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 1,
+        });
+        WriterExt::_handle_op(
+            &mut out,
+            &mut ctx,
+            X64Arch::default(),
+            &mut state,
+            &[],
+            &[],
+            &[],
+            &op,
+            0,
+        )
+        .unwrap();
         let (_bytes, _labels, relocs) = out.into_parts_with_relocs();
         let externs: Vec<_> = relocs
             .into_iter()
@@ -2150,14 +2705,48 @@ mod membase_tests {
         let mut with_off = IcedWriter::<X64Label>::new(0x1000);
         let mut zero_off = IcedWriter::<X64Label>::new(0x1000);
         let mut ctx = ();
-        let mut s1 = State { mem_base: MemBase::Raw, ..State::default() };
-        let mut s2 = State { mem_base: MemBase::Raw, ..State::default() };
-        let op_off = Instruction::I64Load(MemArg { offset: 8, align: 3, memory_index: 0 });
-        let op_zero = Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 });
-        WriterExt::_handle_op(&mut with_off, &mut ctx, X64Arch::default(), &mut s1, &[], &[], &[], &op_off, 0)
-            .unwrap();
-        WriterExt::_handle_op(&mut zero_off, &mut ctx, X64Arch::default(), &mut s2, &[], &[], &[], &op_zero, 0)
-            .unwrap();
+        let mut s1 = State {
+            mem_base: MemBase::Raw,
+            ..State::default()
+        };
+        let mut s2 = State {
+            mem_base: MemBase::Raw,
+            ..State::default()
+        };
+        let op_off = Instruction::I64Load(MemArg {
+            offset: 8,
+            align: 3,
+            memory_index: 0,
+        });
+        let op_zero = Instruction::I64Load(MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        });
+        WriterExt::_handle_op(
+            &mut with_off,
+            &mut ctx,
+            X64Arch::default(),
+            &mut s1,
+            &[],
+            &[],
+            &[],
+            &op_off,
+            0,
+        )
+        .unwrap();
+        WriterExt::_handle_op(
+            &mut zero_off,
+            &mut ctx,
+            X64Arch::default(),
+            &mut s2,
+            &[],
+            &[],
+            &[],
+            &op_zero,
+            0,
+        )
+        .unwrap();
         assert!(with_off.into_bytes().len() > zero_off.into_bytes().len());
     }
 
@@ -2167,11 +2756,43 @@ mod membase_tests {
         let mut raw = IcedWriter::<X64Label>::new(0x1000);
         let mut sym = IcedWriter::<X64Label>::new(0x1000);
         let mut ctx = ();
-        let op = Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 });
-        let mut s_raw = State { mem_base: MemBase::Raw, ..State::default() };
-        let mut s_sym = State { mem_base: MemBase::WasmMemSymbol, ..State::default() };
-        WriterExt::_handle_op(&mut raw, &mut ctx, X64Arch::default(), &mut s_raw, &[], &[], &[], &op, 0).unwrap();
-        WriterExt::_handle_op(&mut sym, &mut ctx, X64Arch::default(), &mut s_sym, &[], &[], &[], &op, 0).unwrap();
+        let op = Instruction::I64Load(MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        });
+        let mut s_raw = State {
+            mem_base: MemBase::Raw,
+            ..State::default()
+        };
+        let mut s_sym = State {
+            mem_base: MemBase::WasmMemSymbol,
+            ..State::default()
+        };
+        WriterExt::_handle_op(
+            &mut raw,
+            &mut ctx,
+            X64Arch::default(),
+            &mut s_raw,
+            &[],
+            &[],
+            &[],
+            &op,
+            0,
+        )
+        .unwrap();
+        WriterExt::_handle_op(
+            &mut sym,
+            &mut ctx,
+            X64Arch::default(),
+            &mut s_sym,
+            &[],
+            &[],
+            &[],
+            &op,
+            0,
+        )
+        .unwrap();
         assert!(sym.into_bytes().len() > raw.into_bytes().len());
     }
 }
@@ -2182,8 +2803,8 @@ mod naive_sharing_tests {
     use portal_solutions_asm_x86_64::out::iced::IcedWriter;
     use portal_solutions_blitz_common::HandleOpError;
     use portal_solutions_blitz_common::ops::FnData;
-    use portal_solutions_blitz_common::wasmparser::ValType;
     use portal_solutions_blitz_common::wasm_encoder::reencode::RoundtripReencoder;
+    use portal_solutions_blitz_common::wasmparser::ValType;
 
     type TestErr = HandleOpError<core::convert::Infallible>;
 
@@ -2195,21 +2816,57 @@ mod naive_sharing_tests {
         data.num_returns = 0;
         [
             MachOperator::StartFn { id: 0, data },
-            MachOperator::Local { count: 1, ty: ValType::I64 },
+            MachOperator::Local {
+                count: 1,
+                ty: ValType::I64,
+            },
             MachOperator::StartBody,
-            MachOperator::Instruction { op: Instruction::I64Const(40), annot: () },
-            MachOperator::Instruction { op: Instruction::I64Const(2), annot: () },
-            MachOperator::Instruction { op: Instruction::I64Add, annot: () },
-            MachOperator::Instruction { op: Instruction::LocalSet(0), annot: () },
-            MachOperator::Instruction { op: Instruction::F32Const(0.0f32.into()), annot: () },
-            MachOperator::Instruction { op: Instruction::Drop, annot: () },
-            MachOperator::Instruction { op: Instruction::I64Const(40), annot: () },
-            MachOperator::Instruction { op: Instruction::I64Const(2), annot: () },
-            MachOperator::Instruction { op: Instruction::I64Add, annot: () },
-            MachOperator::Instruction { op: Instruction::LocalSet(0), annot: () },
+            MachOperator::Instruction {
+                op: Instruction::I64Const(40),
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::I64Const(2),
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::I64Add,
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::LocalSet(0),
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::F32Const(0.0f32.into()),
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::Drop,
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::I64Const(40),
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::I64Const(2),
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::I64Add,
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::LocalSet(0),
+                annot: (),
+            },
             // The ops pipeline always appends an explicit Return before EndBody;
             // naive's function-level End is a no-op, so the Return carries the epilogue.
-            MachOperator::Instruction { op: Instruction::Return, annot: () },
+            MachOperator::Instruction {
+                op: Instruction::Return,
+                annot: (),
+            },
             MachOperator::EndBody,
         ]
     }
@@ -2220,8 +2877,17 @@ mod naive_sharing_tests {
         let mut state = State::default();
         for op in test_ops().iter() {
             w.handle_op::<core::convert::Infallible, TestErr>(
-                &mut ctx, X64Arch::default(), &mut state, &[], &[], &[], op, &mut RoundtripReencoder, 0,
-            ).unwrap();
+                &mut ctx,
+                X64Arch::default(),
+                &mut state,
+                &[],
+                &[],
+                &[],
+                op,
+                &mut RoundtripReencoder,
+                0,
+            )
+            .unwrap();
         }
         w.into_bytes()
     }
@@ -2235,8 +2901,18 @@ mod naive_sharing_tests {
         let mut sharing: NaiveSharing<SharingBlob> = NaiveSharing::enabled();
         for op in test_ops().iter() {
             w.naive_handle_op_sharing::<core::convert::Infallible, TestErr, SharingBlob>(
-                &mut ctx, X64Arch::default(), &mut state, &mut sharing, &[], &[], &[], op, &mut RoundtripReencoder, 0,
-            ).unwrap();
+                &mut ctx,
+                X64Arch::default(),
+                &mut state,
+                &mut sharing,
+                &[],
+                &[],
+                &[],
+                op,
+                &mut RoundtripReencoder,
+                0,
+            )
+            .unwrap();
         }
         w.into_parts()
     }
@@ -2245,7 +2921,12 @@ mod naive_sharing_tests {
     fn repeated_region_is_outlined_and_smaller() {
         let plain = compile_plain();
         let (shared, labels) = compile_sharing();
-        assert!(shared.len() < plain.len(), "shared {} must be smaller than plain {}", shared.len(), plain.len());
+        assert!(
+            shared.len() < plain.len(),
+            "shared {} must be smaller than plain {}",
+            shared.len(),
+            plain.len()
+        );
         let helper_idx = crate::codegen::X86_HELPER_LABEL_BASE;
         assert!(labels.contains_key(&X64Label::Indexed { idx: helper_idx }));
         // The helper body ends in a return.
@@ -2260,8 +2941,18 @@ mod naive_sharing_tests {
         let mut sharing: NaiveSharing<SharingBlob> = NaiveSharing::default();
         for op in test_ops().iter() {
             w.naive_handle_op_sharing::<core::convert::Infallible, TestErr, SharingBlob>(
-                &mut ctx, X64Arch::default(), &mut state, &mut sharing, &[], &[], &[], op, &mut RoundtripReencoder, 0,
-            ).unwrap();
+                &mut ctx,
+                X64Arch::default(),
+                &mut state,
+                &mut sharing,
+                &[],
+                &[],
+                &[],
+                op,
+                &mut RoundtripReencoder,
+                0,
+            )
+            .unwrap();
         }
         assert_eq!(w.into_bytes(), compile_plain());
     }

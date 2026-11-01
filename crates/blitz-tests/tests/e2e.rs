@@ -3236,7 +3236,9 @@ fn extract_elf_text(obj: &[u8]) -> Option<Vec<u8>> {
     }
 
     let (text_off, text_size) = text?;
-    let mut code = obj.get(text_off..text_off.checked_add(text_size)?)?.to_vec();
+    let mut code = obj
+        .get(text_off..text_off.checked_add(text_size)?)?
+        .to_vec();
 
     // Apply ELF relocations. All symbols the generated code references are
     // defined in .text itself (the code + the appended stubs), so every target
@@ -13546,13 +13548,17 @@ fn fn220041_marshal_probe() {
     params[33] = 1; // Z=1 (also forces taken)
     params[105] = 0xDEADBEEF55AA00;
     for (i, p) in params.iter().enumerate() {
-        uc.mem_write(sp0 + (i as u64) * 8, &p.to_le_bytes()).unwrap();
+        uc.mem_write(sp0 + (i as u64) * 8, &p.to_le_bytes())
+            .unwrap();
     }
     uc.reg_write(RegisterARM64::SP, sp0).unwrap();
     uc.reg_write(RegisterARM64::X30, 0xdead0000).unwrap();
 
     let res = uc.emu_start(code_vaddr, tail_taken, 0, 0);
-    eprintln!("emu result: {res:?} pc={:#x}", uc.reg_read(RegisterARM64::PC).unwrap());
+    eprintln!(
+        "emu result: {res:?} pc={:#x}",
+        uc.reg_read(RegisterARM64::PC).unwrap()
+    );
     let mut b8 = [0u8; 8];
     let read = |a: u64| {
         uc.mem_read(a, &mut b8.clone()).unwrap();
@@ -13608,20 +13614,28 @@ fn fn220066_prologue_probe() {
     }
     params[105] = 0xCAFEBABE123456;
     for (i, p) in params.iter().enumerate() {
-        uc.mem_write(sp0 + (i as u64) * 8, &p.to_le_bytes()).unwrap();
+        uc.mem_write(sp0 + (i as u64) * 8, &p.to_le_bytes())
+            .unwrap();
     }
     uc.reg_write(RegisterARM64::SP, sp0).unwrap();
     uc.reg_write(RegisterARM64::X30, 0xdead0000).unwrap();
 
     let res = uc.emu_start(code_vaddr, stop, 0, 0);
-    eprintln!("emu result: {res:?} pc={:#x}", uc.reg_read(RegisterARM64::PC).unwrap());
+    eprintln!(
+        "emu result: {res:?} pc={:#x}",
+        uc.reg_read(RegisterARM64::PC).unwrap()
+    );
     let mut b = [0u8; 8];
     // SP ring in mem0: cursor at 0x90, ring at 0x400 + (t&15)*8
     uc.mem_read(mem0 + 0x90, &mut b).unwrap();
     let cursor = u64::from_le_bytes(b);
     eprintln!("ring cursor = {cursor}");
-    uc.mem_read(mem0 + 0x400 + ((cursor - 1) & 15) * 8, &mut b).unwrap();
-    eprintln!("SP ring last entry = {:#x} (sentinel 0xcafebabe123456)", u64::from_le_bytes(b));
+    uc.mem_read(mem0 + 0x400 + ((cursor - 1) & 15) * 8, &mut b)
+        .unwrap();
+    eprintln!(
+        "SP ring last entry = {:#x} (sentinel 0xcafebabe123456)",
+        u64::from_le_bytes(b)
+    );
     // snapshot block wrote SP to mem0[0x620]
     uc.mem_read(mem0 + 0x620, &mut b).unwrap();
     eprintln!("snapshot sp = {:#x}", u64::from_le_bytes(b));
@@ -13674,13 +13688,17 @@ fn fn220041_marshal_probe_taken() {
     params[4] = 0; // store address base
     params[105] = 0xDEADBEEF55AA00;
     for (i, p) in params.iter().enumerate() {
-        uc.mem_write(sp0 + (i as u64) * 8, &p.to_le_bytes()).unwrap();
+        uc.mem_write(sp0 + (i as u64) * 8, &p.to_le_bytes())
+            .unwrap();
     }
     uc.reg_write(RegisterARM64::SP, sp0).unwrap();
     uc.reg_write(RegisterARM64::X30, 0xdead0000).unwrap();
 
     let res = uc.emu_start(code_vaddr, stop, 0, 0);
-    eprintln!("emu result: {res:?} pc={:#x}", uc.reg_read(RegisterARM64::PC).unwrap());
+    eprintln!(
+        "emu result: {res:?} pc={:#x}",
+        uc.reg_read(RegisterARM64::PC).unwrap()
+    );
     let mut b = [0u8; 8];
     for i in [0u64, 1, 104, 105, 106, 107] {
         uc.mem_read(sp0 + i * 8, &mut b).unwrap();
@@ -13704,10 +13722,11 @@ fn mega_exe_unicorn() {
         eprintln!("MEGA_EXE_RUN not set; skipping");
         return;
     }
-    let exe_path = std::env::var("MEGA_EXE")
-        .unwrap_or_else(|_| "/tmp/mega_guest_exe".into());
+    let exe_path = std::env::var("MEGA_EXE").unwrap_or_else(|_| "/tmp/mega_guest_exe".into());
     let exe = std::rc::Rc::new(std::fs::read(&exe_path).expect("read exe"));
-    let mem0_img = std::fs::read(std::env::var("MEGA_MEM0").unwrap_or_else(|_| "/tmp/bb_mem0.bin".into())).expect("read mem0 image");
+    let mem0_img =
+        std::fs::read(std::env::var("MEGA_MEM0").unwrap_or_else(|_| "/tmp/bb_mem0.bin".into()))
+            .expect("read mem0 image");
 
     // Mach-O segment table (64-bit).
     let ncmds = u32::from_le_bytes(exe[16..20].try_into().unwrap());
@@ -13736,7 +13755,11 @@ fn mega_exe_unicorn() {
         unicorn_engine::unicorn_const::HookType::MEM_UNMAPPED,
         1,
         0,
-        move |uc: &mut Unicorn<'_, ()>, _mt: unicorn_engine::unicorn_const::MemType, addr: u64, size: usize, _val: i64| {
+        move |uc: &mut Unicorn<'_, ()>,
+              _mt: unicorn_engine::unicorn_const::MemType,
+              addr: u64,
+              size: usize,
+              _val: i64| {
             let page = addr & !0xFFFFu64;
             let end = ((addr + size as u64) + 0xFFFF) & !0xFFFF;
             let mut p = page;
@@ -13748,7 +13771,8 @@ fn mega_exe_unicorn() {
                         let _ = uc.mem_map(p, 0x10000, Prot::ALL);
                         // file content covering [chunk_start, chunk_end)
                         let fs = (*fileoff + (chunk_start - *vmaddr)) as usize;
-                        let fe = (*fileoff + (chunk_end - *vmaddr)).min(*fileoff + *filesz) as usize;
+                        let fe =
+                            (*fileoff + (chunk_end - *vmaddr)).min(*fileoff + *filesz) as usize;
                         if fs < fe {
                             let mut buf = vec![0u8; (chunk_end - chunk_start) as usize];
                             let n = fe - fs;
@@ -13764,7 +13788,10 @@ fn mega_exe_unicorn() {
             // unmapped error instead of spinning on a wild address.
             let mut mapped_any = false;
             for (vmaddr, vmsize, _, _) in segs_h.iter() {
-                if addr >= *vmaddr && addr < *vmaddr + *vmsize { mapped_any = true; break; }
+                if addr >= *vmaddr && addr < *vmaddr + *vmsize {
+                    mapped_any = true;
+                    break;
+                }
             }
             mapped_any
         },
@@ -13784,7 +13811,8 @@ fn mega_exe_unicorn() {
     // The __wasm_mem_N cells live in __DATA's bss (0x15c4f0570+), which the lazy
     // hook would map only during emulation; map that page eagerly so the direct
     // writes below land. File-backed __DATA (incl. __wasm_table) is lazy-mapped.
-    uc.mem_map(0x15c4f0570 & !0xFFFFu64, 0x10000, Prot::ALL).unwrap();
+    uc.mem_map(0x15c4f0570 & !0xFFFFu64, 0x10000, Prot::ALL)
+        .unwrap();
     // Fill the __wasm_mem_N base cells + page counts.
     let write_cell = |uc: &mut Unicorn<'_, ()>, addr: u64, v: u64| {
         uc.mem_write(addr, &v.to_le_bytes()).unwrap();
@@ -13802,8 +13830,16 @@ fn mega_exe_unicorn() {
     let stack_size = 0x800000u64; // 8MB
     uc.mem_map(stack, stack_size, Prot::ALL).unwrap();
     let sp0 = stack + stack_size - 0x10000;
-    for r in [RegisterARM64::X0, RegisterARM64::X1, RegisterARM64::X2, RegisterARM64::X3,
-              RegisterARM64::X4, RegisterARM64::X5, RegisterARM64::X6, RegisterARM64::X7] {
+    for r in [
+        RegisterARM64::X0,
+        RegisterARM64::X1,
+        RegisterARM64::X2,
+        RegisterARM64::X3,
+        RegisterARM64::X4,
+        RegisterARM64::X5,
+        RegisterARM64::X6,
+        RegisterARM64::X7,
+    ] {
         uc.reg_write(r, 0u64).unwrap();
     }
     let mut params = vec![0u64; 108];

@@ -6,7 +6,6 @@
 //!
 //! The DCE implementation is based on the wax-core analysis framework.
 
-use wasm_encoder::Instruction;
 
 use crate::*;
 pub use wax_core::analysis::dce::*;

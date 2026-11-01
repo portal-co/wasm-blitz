@@ -40,8 +40,7 @@ pub fn vecced<T>(a: impl Iterator<Item = T>) -> alloc::vec::IntoIter<T> {
 }
 use core::{
     fmt::{Display, Formatter},
-    mem::{transmute, transmute_copy},
-    str::MatchIndices,
+    mem::transmute_copy,
 };
 pub use wasm_encoder;
 pub use wasmparser;

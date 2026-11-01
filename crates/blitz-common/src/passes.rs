@@ -4,8 +4,7 @@
 //! can be applied to WASM code during compilation. Each pass transforms the
 //! stream of machine operators in some way.
 
-use crate::{ops::*, *};
-use alloc::vec::Vec;
+use crate::*;
 
 /// Macro to apply dead code elimination pass to a machine operator stream.
 ///

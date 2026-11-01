@@ -18,20 +18,26 @@
 use alloc::vec::Vec;
 extern crate alloc;
 
+use portal_pc_asm_common::types::mem::MemorySize;
+use portal_solutions_asm_regalloc as regalloc;
 use portal_solutions_asm_riscv64::RiscV64Arch;
 use portal_solutions_asm_riscv64::out::Writer;
-use portal_solutions_asm_regalloc as regalloc;
+use portal_solutions_asm_riscv64::{
+    RegisterClass,
+    out::arg::{ArgKind, MemArgKind},
+};
 use portal_solutions_blitz_common::{
     asm::Reg,
     ops::{MachOperator, ProbeMode, ProbePlacement},
-    wasm_encoder::{Instruction, reencode::{self as reencode, Reencode}},
+    wasm_encoder::{
+        Instruction,
+        reencode::{self as reencode, Reencode},
+    },
 };
-use portal_pc_asm_common::types::mem::MemorySize;
-use portal_solutions_asm_riscv64::{RegisterClass, out::arg::{ArgKind, MemArgKind}};
 
 use crate::RiscvLabel;
 use crate::codegen::ProbeBase;
-use crate::naive::{State, WriterExt as NaiveExt, flush_regalloc, push, pop, pop_regalloc_to, SCR};
+use crate::naive::{SCR, State, WriterExt as NaiveExt, flush_regalloc, pop, push};
 
 /// Public SysV-facing state and policy names, matching the other native backends.
 pub use crate::naive::{CallAbi, MemBase, State as SysVState};
@@ -47,13 +53,20 @@ pub const PROBE_BASE_REG: u8 = 7;
 
 // Argument registers in RISC-V psABI order: a0–a7
 const ARG_REGS: [Reg; 8] = [
-    Reg(10), Reg(11), Reg(12), Reg(13), Reg(14), Reg(15), Reg(16), Reg(17),
+    Reg(10),
+    Reg(11),
+    Reg(12),
+    Reg(13),
+    Reg(14),
+    Reg(15),
+    Reg(16),
+    Reg(17),
 ];
 // Return register
 const A0: Reg = Reg(10);
 const A1: Reg = Reg(11);
 // Frame pointer
-const FP: Reg = Reg(8);   // s0
+const FP: Reg = Reg(8); // s0
 // Stack pointer
 const SP: Reg = Reg(2);
 // Return address
@@ -65,7 +78,10 @@ const T3: Reg = Reg(28);
 
 fn mem64(base: Reg, disp: i32) -> MemArgKind {
     MemArgKind::Mem {
-        base: ArgKind::Reg { reg: base, size: MemorySize::_64 },
+        base: ArgKind::Reg {
+            reg: base,
+            size: MemorySize::_64,
+        },
         offset: None,
         disp,
         size: MemorySize::_64,
@@ -75,7 +91,6 @@ fn mem64(base: Reg, disp: i32) -> MemArgKind {
 
 /// Extension trait for generating RISC-V psABI-compatible functions.
 pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context> {
-
     fn sysv_call_target(
         state: &State<'_>,
         func_imports: &[(&str, &str)],
@@ -87,18 +102,35 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
         let results = state.call_results.get(wi).copied().unwrap_or(0);
         let label = if is_import {
             let (m, n) = func_imports[wi];
-            RiscvLabel::External { name: alloc::format!("{m}__{n}") }
+            RiscvLabel::External {
+                name: alloc::format!("{m}__{n}"),
+            }
         } else {
-            RiscvLabel::Indexed { idx: (idx - state.n_imports) as usize | (1 << 28) }
+            RiscvLabel::Indexed {
+                idx: (idx - state.n_imports) as usize | (1 << 28),
+            }
         };
         (label, arity, results, is_import)
     }
 
     /// Pop the table index and resolve `__wasm_table[index]` into t0.
-    fn sysv_load_indirect_target(&mut self, ctx: &mut Context, arch: RiscV64Arch) -> Result<(), Self::Error>
-    where Self: Sized {
+    fn sysv_load_indirect_target(
+        &mut self,
+        ctx: &mut Context,
+        arch: RiscV64Arch,
+    ) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
         pop(self, ctx, arch, &T0)?;
-        self.la_label(ctx, arch, &T1, RiscvLabel::External { name: "__wasm_table".into() })?;
+        self.la_label(
+            ctx,
+            arch,
+            &T1,
+            RiscvLabel::External {
+                name: "__wasm_table".into(),
+            },
+        )?;
         self.li(ctx, arch, &T2, 3)?;
         self.sll(ctx, arch, &T0, &T0, &T2)?;
         self.add(ctx, arch, &T1, &T1, &T0)?;
@@ -240,9 +272,13 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
     }
 
     /// Store `src` into local N in the FP-relative frame.
-    fn sysv_store_local(&mut self, ctx: &mut Context, arch: RiscV64Arch, src: Reg, n: usize)
-        -> Result<(), Self::Error>
-    {
+    fn sysv_store_local(
+        &mut self,
+        ctx: &mut Context,
+        arch: RiscV64Arch,
+        src: Reg,
+        n: usize,
+    ) -> Result<(), Self::Error> {
         let disp = -((n as i32 + 1) * 8);
         self.sd(ctx, arch, &src, &mem64(FP, disp))
     }
@@ -266,7 +302,15 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                 flush_regalloc(self, ctx, arch, state)?;
                 let (label, arity, results, is_import) =
                     Self::sysv_call_target(state, func_imports, *idx);
-                self.sysv_emit_marshalled_call(ctx, arch, Some(label), None, arity, results, is_import)
+                self.sysv_emit_marshalled_call(
+                    ctx,
+                    arch,
+                    Some(label),
+                    None,
+                    arity,
+                    results,
+                    is_import,
+                )
             }
             Instruction::ReturnCall(idx) if state.call_abi == CallAbi::AllStack => {
                 flush_regalloc(self, ctx, arch, state)?;
@@ -276,14 +320,32 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                     // Host-ABI import / oversized arity: marshalled call then
                     // epilogue (not nested return_call→call→return for internals).
                     self.sysv_emit_marshalled_call(
-                        ctx, arch, Some(label), None, arity, results, is_import,
+                        ctx,
+                        arch,
+                        Some(label),
+                        None,
+                        arity,
+                        results,
+                        is_import,
                     )?;
                     self.sysv_handle_insn(
-                        ctx, arch, state, func_imports, &Instruction::Return, rewriter, target,
+                        ctx,
+                        arch,
+                        state,
+                        func_imports,
+                        &Instruction::Return,
+                        rewriter,
+                        target,
                     )
                 } else {
                     self.sysv_emit_tail_call(
-                        ctx, arch, Some(label), None, arity, state.sysv_frame_sz, state.shard.is_some(),
+                        ctx,
+                        arch,
+                        Some(label),
+                        None,
+                        arity,
+                        state.sysv_frame_sz,
+                        state.shard.is_some(),
                     )
                 }
             }
@@ -295,21 +357,41 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                 self.sysv_load_indirect_target(ctx, arch)?;
                 self.sysv_emit_marshalled_call(ctx, arch, None, Some(T0), arity, results, false)
             }
-            Instruction::ReturnCallIndirect { type_index, .. } if state.call_abi == CallAbi::AllStack => {
+            Instruction::ReturnCallIndirect { type_index, .. }
+                if state.call_abi == CallAbi::AllStack =>
+            {
                 flush_regalloc(self, ctx, arch, state)?;
                 let ty = *type_index as usize;
                 let arity = state.sig_params.get(ty).copied().unwrap_or(0);
-                assert!(arity as usize <= state.param_count, "tail callee arity exceeds incoming AllStack area");
+                assert!(
+                    arity as usize <= state.param_count,
+                    "tail callee arity exceeds incoming AllStack area"
+                );
                 self.sysv_load_indirect_target(ctx, arch)?;
                 self.sysv_emit_tail_call(
-                    ctx, arch, None, Some(T0), arity, state.sysv_frame_sz, state.shard.is_some(),
+                    ctx,
+                    arch,
+                    None,
+                    Some(T0),
+                    arity,
+                    state.sysv_frame_sz,
+                    state.shard.is_some(),
                 )
             }
             // Local access: delegate to naive which uses regalloc with [FP-(n+1)*8] offsets.
             // SysV frame places locals at the same offsets, so this is correct.
-            Instruction::LocalGet(_) | Instruction::LocalSet(_) | Instruction::LocalTee(_) => {
-                self.handle_op_(ctx, arch, state, func_imports, &[], &[], op, rewriter, target)
-            }
+            Instruction::LocalGet(_) | Instruction::LocalSet(_) | Instruction::LocalTee(_) => self
+                .handle_op_(
+                    ctx,
+                    arch,
+                    state,
+                    func_imports,
+                    &[],
+                    &[],
+                    op,
+                    rewriter,
+                    target,
+                ),
 
             // Return: always emit RISC-V SysV epilogue.
             // flush_regalloc spills any register-held values to the memory stack,
@@ -408,7 +490,17 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
             }
 
             // Everything else: naive handler
-            other => self.handle_op_(ctx, arch, state, func_imports, &[], &[], other, rewriter, target),
+            other => self.handle_op_(
+                ctx,
+                arch,
+                state,
+                func_imports,
+                &[],
+                &[],
+                other,
+                rewriter,
+                target,
+            ),
         }
     }
 
@@ -441,23 +533,35 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                 state.probe_plan = data.probe_plan.clone();
                 state.op_index = 0;
 
-                self.set_label(ctx, arch, RiscvLabel::Indexed {
-                    idx: *id as usize | (1 << 28),
-                }).map_err(Err::from)?;
+                self.set_label(
+                    ctx,
+                    arch,
+                    RiscvLabel::Indexed {
+                        idx: *id as usize | (1 << 28),
+                    },
+                )
+                .map_err(Err::from)?;
 
                 // Function-entry probe (probe 0): probe-table base arrives in the
                 // virtual-param register t2; read it directly before frame setup
                 // so a0–a7 are intact for the tail-jump.  Scratch t0/t1.
                 if let Some(cfg) = data.probes.as_ref().copied().filter(|c| c.enabled) {
                     let mut bw = crate::codegen::BlitzW {
-                        writer: self, ctx, arch, scratch2: 6,
+                        writer: self,
+                        ctx,
+                        arch,
+                        scratch2: 6,
                         probe_base: ProbeBase::Reg(PROBE_BASE_REG),
                     };
                     portal_solutions_blitz_codegen::emit_probe_site(
-                        &mut bw, cfg.table_base_off, 0, 5,
+                        &mut bw,
+                        cfg.table_base_off,
+                        0,
+                        5,
                         portal_solutions_blitz_codegen::ProbeBinding::TailTakeover,
                         &mut state.label_index,
-                    ).map_err(Err::from)?;
+                    )
+                    .map_err(Err::from)?;
                 }
 
                 // Frame layout (from FP downward):
@@ -468,8 +572,12 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                 //   [SP+8]  = saved old-FP   ← bottom two slots for callee-saves
                 //   [SP+0]  = saved RA
                 let shard_extra = if state.shard.is_some() { 1 } else { 0 };
-                let frame_slots =
-                    data.num_params + data.num_locals + 2 + state.control_depth * 2 + 3 + shard_extra;
+                let frame_slots = data.num_params
+                    + data.num_locals
+                    + 2
+                    + state.control_depth * 2
+                    + 3
+                    + shard_extra;
                 let frame_sz = (frame_slots * 8) as i32;
                 state.sysv_frame_sz = frame_sz;
                 self.addi(ctx, arch, &SP, &SP, -frame_sz)
@@ -520,7 +628,8 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
             MachOperator::Local { count, .. } => {
                 self.li(ctx, arch, &A0, 0).map_err(Err::from)?;
                 for _ in 0..*count {
-                    self.sysv_store_local(ctx, arch, A0, state.local_count).map_err(Err::from)?;
+                    self.sysv_store_local(ctx, arch, A0, state.local_count)
+                        .map_err(Err::from)?;
                     state.local_count += 1;
                 }
                 Ok(())
@@ -529,17 +638,25 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
             MachOperator::StartBody | MachOperator::EndBody => Ok(()),
 
             MachOperator::Instruction { op: insn, .. } => {
-                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::Before).map_err(Err::from)?;
-                self.sysv_handle_insn(ctx, arch, state, func_imports, insn, rewriter, target).map_err(Err::from)?;
-                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::After).map_err(Err::from)?;
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::Before)
+                    .map_err(Err::from)?;
+                self.sysv_handle_insn(ctx, arch, state, func_imports, insn, rewriter, target)
+                    .map_err(Err::from)?;
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::After)
+                    .map_err(Err::from)?;
                 state.op_index += 1;
                 Ok(())
             }
-            MachOperator::Operator { op: Some(op_wasm), .. } => {
+            MachOperator::Operator {
+                op: Some(op_wasm), ..
+            } => {
                 let insn = rewriter.instruction(op_wasm.clone())?;
-                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::Before).map_err(Err::from)?;
-                self.sysv_handle_insn(ctx, arch, state, func_imports, &insn, rewriter, target).map_err(Err::from)?;
-                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::After).map_err(Err::from)?;
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::Before)
+                    .map_err(Err::from)?;
+                self.sysv_handle_insn(ctx, arch, state, func_imports, &insn, rewriter, target)
+                    .map_err(Err::from)?;
+                self.sysv_emit_indexed_probes(ctx, arch, state, ProbePlacement::After)
+                    .map_err(Err::from)?;
                 state.op_index += 1;
                 Ok(())
             }
@@ -588,27 +705,53 @@ pub trait SysVWriterExt<Context>: Writer<RiscvLabel, Context> + NaiveExt<Context
                     None
                 }
                 ProbeMode::Passive => {
-                    let occ = state.regalloc.as_ref().map(crate::naive::regalloc_occupied).unwrap_or_default();
-                    crate::naive::emit_cmds(self, ctx, arch, occ.iter().cloned().map(regalloc::Cmd::Push))?;
+                    let occ = state
+                        .regalloc
+                        .as_ref()
+                        .map(crate::naive::regalloc_occupied)
+                        .unwrap_or_default();
+                    crate::naive::emit_cmds(
+                        self,
+                        ctx,
+                        arch,
+                        occ.iter().cloned().map(regalloc::Cmd::Push),
+                    )?;
                     Some(occ)
                 }
             };
             let probe_base = state.probe_base;
             let mut bw = crate::codegen::BlitzW {
-                writer: self, ctx, arch, scratch2: 6, probe_base,
+                writer: self,
+                ctx,
+                arch,
+                scratch2: 6,
+                probe_base,
             };
             portal_solutions_blitz_codegen::emit_probe_site(
-                &mut bw, cfg.table_base_off, spec.probe_id, 5, spec.binding, &mut state.label_index,
+                &mut bw,
+                cfg.table_base_off,
+                spec.probe_id,
+                5,
+                spec.binding,
+                &mut state.label_index,
             )?;
             if let Some(occ) = passive_occupied {
-                crate::naive::emit_cmds(self, ctx, arch, occ.iter().rev().cloned().map(regalloc::Cmd::Pop))?;
+                crate::naive::emit_cmds(
+                    self,
+                    ctx,
+                    arch,
+                    occ.iter().rev().cloned().map(regalloc::Cmd::Pop),
+                )?;
             }
         }
         Ok(())
     }
 }
 
-impl<T: Writer<RiscvLabel, Context> + NaiveExt<Context> + ?Sized, Context> SysVWriterExt<Context> for T {}
+impl<T: Writer<RiscvLabel, Context> + NaiveExt<Context> + ?Sized, Context> SysVWriterExt<Context>
+    for T
+{
+}
 
 // ---------------------------------------------------------------------------
 // Code sharing (v1: SysV + rewindable binary writer, disabled by default)
@@ -627,11 +770,24 @@ fn sysv_share_region_delta(insn: &Instruction<'_>) -> Option<i32> {
     match insn {
         I::I32Const(_) | I::I64Const(_) | I::LocalGet(_) => Some(1),
         I::LocalSet(_) => Some(-1),
-        I::I32Add | I::I64Add | I::I32Sub | I::I64Sub
-        | I::I32And | I::I64And | I::I32Or | I::I64Or
-        | I::I32Xor | I::I64Xor | I::I32Mul | I::I64Mul
-        | I::I32Shl | I::I64Shl | I::I32ShrU | I::I64ShrU
-        | I::I32ShrS | I::I64ShrS => Some(-1),
+        I::I32Add
+        | I::I64Add
+        | I::I32Sub
+        | I::I64Sub
+        | I::I32And
+        | I::I64And
+        | I::I32Or
+        | I::I64Or
+        | I::I32Xor
+        | I::I64Xor
+        | I::I32Mul
+        | I::I64Mul
+        | I::I32Shl
+        | I::I64Shl
+        | I::I32ShrU
+        | I::I64ShrU
+        | I::I32ShrS
+        | I::I64ShrS => Some(-1),
         _ => None,
     }
 }
@@ -688,7 +844,10 @@ impl<B> Rv64Sharing<B> {
     }
     /// Enabled v1 configuration with the default size thresholds.
     pub fn enabled() -> Self {
-        Self::new(CodeSharingConfig { enabled: true, ..CodeSharingConfig::default() })
+        Self::new(CodeSharingConfig {
+            enabled: true,
+            ..CodeSharingConfig::default()
+        })
     }
 }
 
@@ -724,8 +883,6 @@ pub trait SysVSharingWriterExt<Context>: SysVWriterExt<Context> {
             + From<<Self as RewindableCodeWriter<RiscvLabel>>::Error>,
         Self: Sized + RewindableCodeWriter<RiscvLabel, Blob = B>,
     {
-
-
         // Function boundary: reset per-function staging. A non-empty staging
         // here means the previous body lacked a function-level End; finalize
         // anyway so staged blobs are never dropped with their code missing.
@@ -746,10 +903,26 @@ pub trait SysVSharingWriterExt<Context>: SysVWriterExt<Context> {
                 staging.finalize::<_, _, _, Err>(&mut sw)?;
                 sharing.next_helper = sw.next_helper;
             }
-            return self.sysv_handle_op::<E, Err>(ctx, arch, state, func_imports, op, rewriter, target);
+            return self.sysv_handle_op::<E, Err>(
+                ctx,
+                arch,
+                state,
+                func_imports,
+                op,
+                rewriter,
+                target,
+            );
         }
         if !sharing.config.enabled {
-            return self.sysv_handle_op::<E, Err>(ctx, arch, state, func_imports, op, rewriter, target);
+            return self.sysv_handle_op::<E, Err>(
+                ctx,
+                arch,
+                state,
+                func_imports,
+                op,
+                rewriter,
+                target,
+            );
         }
 
         // Normalize raw wasmparser operators (the WasmSink path) through the
@@ -764,8 +937,8 @@ pub trait SysVSharingWriterExt<Context>: SysVWriterExt<Context> {
             _ => None,
         };
         // Instrumentation is dynamic context outside the v1 contract.
-        let probes_active = state.probes.as_ref().is_some_and(|c| c.enabled)
-            || state.probe_plan.is_some();
+        let probes_active =
+            state.probes.as_ref().is_some_and(|c| c.enabled) || state.probe_plan.is_some();
         let region_delta = if probes_active {
             None
         } else {
@@ -777,22 +950,23 @@ pub trait SysVSharingWriterExt<Context>: SysVWriterExt<Context> {
         // Close an open candidate at any op that cannot join the region.
         if region_delta.is_none()
             && let Some(anchor) = sharing.open_anchor.take()
-                && sharing.depth == Some(0) {
-                    flush_regalloc(self, ctx, arch, state).map_err(Err::from)?;
-                    sharing
-                        .staging
-                        .stage_candidate(
-                            &mut *self,
-                            RiscvLabel::Indexed { idx: anchor },
-                            crate::codegen::RV64_SYSV_SHARE_CONTRACT,
-                        )
-                        .map_err(Err::from)?;
-                    // Canonical register state: after the flush everything is
-                    // spilled, so resetting the allocator discards no values
-                    // and makes the next region's register choices identical
-                    // to the first occurrence's.
-                    state.regalloc = None;
-                }
+            && sharing.depth == Some(0)
+        {
+            flush_regalloc(self, ctx, arch, state).map_err(Err::from)?;
+            sharing
+                .staging
+                .stage_candidate(
+                    &mut *self,
+                    RiscvLabel::Indexed { idx: anchor },
+                    crate::codegen::RV64_SYSV_SHARE_CONTRACT,
+                )
+                .map_err(Err::from)?;
+            // Canonical register state: after the flush everything is
+            // spilled, so resetting the allocator discards no values
+            // and makes the next region's register choices identical
+            // to the first occurrence's.
+            state.regalloc = None;
+        }
 
         // Open a candidate at an eligible op with a provably empty WASM stack.
         // The body-switch guard in naive's handler emits a jump when
@@ -809,7 +983,8 @@ pub trait SysVSharingWriterExt<Context>: SysVWriterExt<Context> {
             state.regalloc = None;
             let anchor = state.label_index;
             state.label_index += 1;
-            self.set_label(ctx, arch, RiscvLabel::Indexed { idx: anchor }).map_err(Err::from)?;
+            self.set_label(ctx, arch, RiscvLabel::Indexed { idx: anchor })
+                .map_err(Err::from)?;
             sharing.open_anchor = Some(anchor);
         }
 
@@ -852,8 +1027,8 @@ mod sysv_sharing_tests {
     use super::*;
     use portal_solutions_asm_riscv64::out::rv_asm_backend::RvAsmWriter;
     use portal_solutions_blitz_common::ops::FnData;
-    use portal_solutions_blitz_common::wasmparser::ValType;
     use portal_solutions_blitz_common::wasm_encoder::reencode::RoundtripReencoder;
+    use portal_solutions_blitz_common::wasmparser::ValType;
 
     /// Test error joining the writer's `Infallible` core errors, reencode
     /// errors, and rewind-transaction errors.
@@ -864,13 +1039,19 @@ mod sysv_sharing_tests {
         Rewind,
     }
     impl From<core::convert::Infallible> for TestErr {
-        fn from(x: core::convert::Infallible) -> Self { match x {} }
+        fn from(x: core::convert::Infallible) -> Self {
+            match x {}
+        }
     }
     impl From<reencode::Error<core::convert::Infallible>> for TestErr {
-        fn from(_: reencode::Error<core::convert::Infallible>) -> Self { TestErr::Reencode }
+        fn from(_: reencode::Error<core::convert::Infallible>) -> Self {
+            TestErr::Reencode
+        }
     }
     impl From<portal_solutions_asm_riscv64::out::rv_asm_backend::RvRewindError> for TestErr {
-        fn from(_: portal_solutions_asm_riscv64::out::rv_asm_backend::RvRewindError) -> Self { TestErr::Rewind }
+        fn from(_: portal_solutions_asm_riscv64::out::rv_asm_backend::RvRewindError) -> Self {
+            TestErr::Rewind
+        }
     }
 
     fn test_ops() -> [MachOperator<'static>; 13] {
@@ -879,20 +1060,53 @@ mod sysv_sharing_tests {
         data.num_returns = 0;
         [
             MachOperator::StartFn { id: 0, data },
-            MachOperator::Local { count: 1, ty: ValType::I64 },
+            MachOperator::Local {
+                count: 1,
+                ty: ValType::I64,
+            },
             MachOperator::StartBody,
-            MachOperator::Instruction { op: Instruction::I64Const(40), annot: () },
-            MachOperator::Instruction { op: Instruction::I64Const(2), annot: () },
-            MachOperator::Instruction { op: Instruction::I64Add, annot: () },
-            MachOperator::Instruction { op: Instruction::LocalSet(0), annot: () },
+            MachOperator::Instruction {
+                op: Instruction::I64Const(40),
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::I64Const(2),
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::I64Add,
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::LocalSet(0),
+                annot: (),
+            },
             // MemorySize + Drop: depth-neutral, but not region-eligible, so it
             // separates the two identical candidate runs.
-            MachOperator::Instruction { op: Instruction::MemorySize(0), annot: () },
-            MachOperator::Instruction { op: Instruction::Drop, annot: () },
-            MachOperator::Instruction { op: Instruction::I64Const(40), annot: () },
-            MachOperator::Instruction { op: Instruction::I64Const(2), annot: () },
-            MachOperator::Instruction { op: Instruction::I64Add, annot: () },
-            MachOperator::Instruction { op: Instruction::LocalSet(0), annot: () },
+            MachOperator::Instruction {
+                op: Instruction::MemorySize(0),
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::Drop,
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::I64Const(40),
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::I64Const(2),
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::I64Add,
+                annot: (),
+            },
+            MachOperator::Instruction {
+                op: Instruction::LocalSet(0),
+                annot: (),
+            },
         ]
     }
 
@@ -900,10 +1114,23 @@ mod sysv_sharing_tests {
         let mut w = RvAsmWriter::<RiscvLabel>::new();
         let mut ctx = ();
         let mut state = State::default();
-        for op in test_ops().iter().chain([MachOperator::Instruction { op: Instruction::End, annot: () }].iter()) {
+        for op in test_ops().iter().chain(
+            [MachOperator::Instruction {
+                op: Instruction::End,
+                annot: (),
+            }]
+            .iter(),
+        ) {
             w.sysv_handle_op::<core::convert::Infallible, TestErr>(
-                &mut ctx, RiscV64Arch::default(), &mut state, &[], op, &mut RoundtripReencoder, 0,
-            ).unwrap();
+                &mut ctx,
+                RiscV64Arch::default(),
+                &mut state,
+                &[],
+                op,
+                &mut RoundtripReencoder,
+                0,
+            )
+            .unwrap();
         }
         w.into_bytes()
     }
@@ -915,10 +1142,24 @@ mod sysv_sharing_tests {
         let mut ctx = ();
         let mut state = State::default();
         let mut sharing: Rv64Sharing<SharingBlob> = Rv64Sharing::enabled();
-        for op in test_ops().iter().chain([MachOperator::Instruction { op: Instruction::End, annot: () }].iter()) {
+        for op in test_ops().iter().chain(
+            [MachOperator::Instruction {
+                op: Instruction::End,
+                annot: (),
+            }]
+            .iter(),
+        ) {
             w.sysv_handle_op_sharing::<core::convert::Infallible, TestErr, SharingBlob>(
-                &mut ctx, RiscV64Arch::default(), &mut state, &mut sharing, &[], op, &mut RoundtripReencoder, 0,
-            ).unwrap();
+                &mut ctx,
+                RiscV64Arch::default(),
+                &mut state,
+                &mut sharing,
+                &[],
+                op,
+                &mut RoundtripReencoder,
+                0,
+            )
+            .unwrap();
         }
         w.into_parts()
     }
@@ -927,7 +1168,12 @@ mod sysv_sharing_tests {
     fn repeated_region_is_outlined_and_smaller() {
         let plain = compile_plain();
         let (shared, labels) = compile_sharing();
-        assert!(shared.len() < plain.len(), "shared {} must be smaller than plain {}", shared.len(), plain.len());
+        assert!(
+            shared.len() < plain.len(),
+            "shared {} must be smaller than plain {}",
+            shared.len(),
+            plain.len()
+        );
         // One helper entry label from the helper namespace was placed.
         let helper_idx = crate::codegen::RV64_HELPER_LABEL_BASE;
         assert!(labels.contains_key(&RiscvLabel::Indexed { idx: helper_idx }));
@@ -939,13 +1185,23 @@ mod sysv_sharing_tests {
         let jal_offsets: Vec<usize> = (0..shared.len() / 4)
             .map(|i| i * 4)
             .filter(|&off| {
-                let w = u32::from_le_bytes([shared[off], shared[off + 1], shared[off + 2], shared[off + 3]]);
+                let w = u32::from_le_bytes([
+                    shared[off],
+                    shared[off + 1],
+                    shared[off + 2],
+                    shared[off + 3],
+                ]);
                 (w & 0x7F) == 0x6F && ((w >> 7) & 0x1F) == 1
             })
             .collect();
         assert_eq!(jal_offsets.len(), 2);
         for off in jal_offsets {
-            let w = u32::from_le_bytes([shared[off], shared[off + 1], shared[off + 2], shared[off + 3]]);
+            let w = u32::from_le_bytes([
+                shared[off],
+                shared[off + 1],
+                shared[off + 2],
+                shared[off + 3],
+            ]);
             let imm = (((w >> 31) & 1) << 20)
                 | (((w >> 12) & 0xFF) << 12)
                 | (((w >> 20) & 1) << 11)
@@ -961,10 +1217,24 @@ mod sysv_sharing_tests {
         let mut ctx = ();
         let mut state = State::default();
         let mut sharing: Rv64Sharing<SharingBlob> = Rv64Sharing::default();
-        for op in test_ops().iter().chain([MachOperator::Instruction { op: Instruction::End, annot: () }].iter()) {
+        for op in test_ops().iter().chain(
+            [MachOperator::Instruction {
+                op: Instruction::End,
+                annot: (),
+            }]
+            .iter(),
+        ) {
             w.sysv_handle_op_sharing::<core::convert::Infallible, TestErr, SharingBlob>(
-                &mut ctx, RiscV64Arch::default(), &mut state, &mut sharing, &[], op, &mut RoundtripReencoder, 0,
-            ).unwrap();
+                &mut ctx,
+                RiscV64Arch::default(),
+                &mut state,
+                &mut sharing,
+                &[],
+                op,
+                &mut RoundtripReencoder,
+                0,
+            )
+            .unwrap();
         }
         assert_eq!(w.into_bytes(), compile_plain());
     }
