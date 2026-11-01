@@ -12545,15 +12545,28 @@ fn megabinary_unicorn_watch_sp() {
             .unwrap(); // ret
     }
 
-    // Register file: 108 params on the incoming stack, all 0 except
-    // SP(105)=0x530000, text_base(106)=0x400000, host_mem_base(107)=0.
-    // Register file per speet's entry contract: ALL params zero except
-    // param 105 (guest SP) = 0x530000. (Params 106/107, the baked
-    // text_base/host_mem_base, stay 0 — the frontend bakes those as
-    // i64.consts in the dispatch lowering, it does not read them here.)
-    let mut args = vec![0u64; 108];
-    args[105] = 0x530000;
-    let frame = ((108u64 + 2) * 8 + 15) & !15;
+    // Register file: N params on the incoming stack, all 0 except SP at the
+    // arch's SP param index. Defaults are the aarch64 register file
+    // (108 params, SP=param 105); the x86_64 register file is 61 params with
+    // SP=param 4 (speet-x86_64 BASE_PARAMS=59 + 2 layout params). Override
+    // via MEGA_N_PARAMS / MEGA_SP_PARAM / MEGA_SP for the x86_64 megabinary.
+    // (Layout params — the baked text_base/host_mem_base — stay 0: the
+    // frontend bakes those as i64.consts in the dispatch lowering.)
+    let n_params: usize = std::env::var("MEGA_N_PARAMS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(108);
+    let sp_param: usize = std::env::var("MEGA_SP_PARAM")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(105);
+    let initial_sp: u64 = std::env::var("MEGA_SP")
+        .ok()
+        .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+        .unwrap_or(0x530000);
+    let mut args = vec![0u64; n_params];
+    args[sp_param] = initial_sp;
+    let frame = ((n_params as u64 + 2) * 8 + 15) & !15;
     let sp = (HOST_STACK + HOST_STACK_SIZE - frame - 16) & !15;
     for (i, &a) in args.iter().enumerate() {
         uc.mem_write(sp + (i as u64) * 8, &a.to_le_bytes()).unwrap();
@@ -12757,7 +12770,7 @@ fn megabinary_unicorn_watch_sp() {
                 u64::from_le_bytes(p31),
             ));
             let mut buf = [0u8; 8];
-            if uc.mem_read(cur_sp + 105 * 8, &mut buf).is_ok() {
+            if uc.mem_read(cur_sp + sp_param as u64 * 8, &mut buf).is_ok() {
                 let v = u64::from_le_bytes(buf);
                 let mut last = last_sp2.lock().unwrap();
                 if v != *last {
