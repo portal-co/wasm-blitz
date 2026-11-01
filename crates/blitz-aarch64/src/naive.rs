@@ -1523,16 +1523,22 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
             }
 
             // ---- memory.size / memory.grow ----
-            Instruction::MemorySize(_) => {
-                // Load address of __wasm_mem_pages, load 32-bit page count.
+            Instruction::MemorySize(mem_idx) => {
+                // Load address of __wasm_mem_pages[_N], load 32-bit page count.
+                // Multi-memory: honor the memory index (same naming as
+                // `apply_mem_base`: index 0 is the bare symbol).
+                let mi = *mem_idx;
+                let pages_sym = if mi == 0 {
+                    "__wasm_mem_pages".into()
+                } else {
+                    alloc::format!("__wasm_mem_pages_{mi}")
+                };
                 crate::load_label_addr(
                     self,
                     ctx,
                     arch,
                     &reg(T0),
-                    AArch64Label::External {
-                        name: "__wasm_mem_pages".into(),
-                    },
+                    AArch64Label::External { name: pages_sym },
                 )?;
                 let mem = MemArgKind::Mem {
                     base: ArgKind::Reg {
@@ -1549,34 +1555,42 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 self.uxt(ctx, arch, &reg(T0), &reg32(T0))?;
                 self.wasm_push(ctx, arch, T0)
             }
-            Instruction::MemoryGrow(_) => {
+            Instruction::MemoryGrow(mem_idx) => {
                 // delta is on the WASM stack; the runtime helper takes a
                 // plain C (AAPCS64) triple
                 // `__wasm_memory_grow(uint32_t delta, uint8_t **mem,
-                // uint32_t *pages)` — marshal X0 = delta, X1 = &__wasm_mem,
-                // X2 = &__wasm_mem_pages (the previous bare `bl` passed no
+                // uint32_t *pages)` — marshal X0 = delta, X1 = &__wasm_mem[_N],
+                // X2 = &__wasm_mem_pages[_N] (the previous bare `bl` passed no
                 // register arguments at all, so the helper read garbage
                 // pointers for mem/pages — only latent until a guest
-                // actually grew its memory).
+                // actually grew its memory). Multi-memory: honor the memory
+                // index — passing the mem0 cells for a grow of memory N
+                // leaves memory N un-grown (the busybox handler module's
+                // private memory crashed exactly this way).
+                let mi = *mem_idx;
+                let (mem_sym, pages_sym) = if mi == 0 {
+                    ("__wasm_mem".into(), "__wasm_mem_pages".into())
+                } else {
+                    (
+                        alloc::format!("__wasm_mem_{mi}"),
+                        alloc::format!("__wasm_mem_pages_{mi}"),
+                    )
+                };
                 self.wasm_pop(ctx, arch, Reg(0))?; // X0 ← delta
                 crate::load_label_addr(
                     self,
                     ctx,
                     arch,
                     &reg(Reg(1)),
-                    AArch64Label::External {
-                        name: "__wasm_mem".into(),
-                    },
-                )?; // X1 ← &__wasm_mem
+                    AArch64Label::External { name: mem_sym },
+                )?; // X1 ← &__wasm_mem[_N]
                 crate::load_label_addr(
                     self,
                     ctx,
                     arch,
                     &reg(Reg(2)),
-                    AArch64Label::External {
-                        name: "__wasm_mem_pages".into(),
-                    },
-                )?; // X2 ← &__wasm_mem_pages
+                    AArch64Label::External { name: pages_sym },
+                )?; // X2 ← &__wasm_mem_pages[_N]
                 crate::load_label_addr(
                     self,
                     ctx,

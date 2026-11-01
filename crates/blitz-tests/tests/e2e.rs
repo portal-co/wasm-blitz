@@ -12338,7 +12338,7 @@ fn megabinary_unicorn_watch_sp() {
     let TABLE = alloc(table_bytes);
     let STUB = alloc(0x1000);
     let SYMS = alloc(0x100000); // up to 256 symbol cells
-    let SCRATCH_MEM = alloc(0x1000000); // 16MB scratch for extra memories
+    let SCRATCH_MEM = alloc(0x4000000); // 64MB scratch for extra memories
 
     // Build __wasm_table: wasm fn idx -> host addr. Imports → STUB, locals →
     // CODE + entry offset (Indexed { internal_id + 0x8000_0000 }).
@@ -12370,10 +12370,16 @@ fn megabinary_unicorn_watch_sp() {
     // `__wasm_memory_*` symbols are CALLABLE runtime helpers, not data: they
     // get stub slots intercepted by code hooks below.
     let mut sym_addrs: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    // Extra memories get a generous scratch region each so their
+    // __wasm_memory_grow has room (busybox ls grows mem2 to ~155 pages).
+    const EXTRA_MEM_STRIDE: u64 = 0x1000000; // 16MB per extra memory
     let mut next_sym = SYMS;
     let mut next_mem = SCRATCH_MEM;
     let mut mem_cells: Vec<(u64, u64)> = Vec::new(); // (cell_addr, mem_base)
     let mut mem_bases: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
+    // Per-memory pages cells: mem idx -> (cell addr, capacity pages).
+    let mut pages_cells: std::collections::BTreeMap<u32, (u64, u64)> =
+        std::collections::BTreeMap::new();
     let mut wasi_stubs: Vec<(String, u64)> = Vec::new(); // (name, stub_addr)
     let mut helper_stubs: Vec<(String, u64)> = Vec::new(); // (name, stub_addr)
     let mut data_seg_cells: Vec<(u64, u64)> = Vec::new(); // (sym_addr, seg_index)
@@ -12393,6 +12399,16 @@ fn megabinary_unicorn_watch_sp() {
                 *mem_cells.last().map(|(c, _)| c).unwrap()
             } else if name == "__wasm_mem_pages" {
                 pages_cell = Some(next_sym);
+                pages_cells.insert(0, (next_sym, mem0_capacity / 0x10000));
+                let a = next_sym;
+                next_sym += 0x1000;
+                a
+            } else if let Some(rest) = name.strip_prefix("__wasm_mem_pages_") {
+                // Multi-memory pages cell (memory.size / memory.grow on memN).
+                // Must precede the `__wasm_mem_` prefix branch below, whose
+                // `unwrap_or(0)` would otherwise alias this to mem0.
+                let n: u32 = rest.parse().unwrap_or(0);
+                pages_cells.insert(n, (next_sym, EXTRA_MEM_STRIDE / 0x10000));
                 let a = next_sym;
                 next_sym += 0x1000;
                 a
@@ -12401,7 +12417,7 @@ fn megabinary_unicorn_watch_sp() {
                 mem_cells.push((next_sym, next_mem));
                 mem_bases.insert(n, next_mem);
                 next_sym += 0x1000;
-                next_mem += 0x100000; // 1MB scratch per extra memory
+                next_mem += EXTRA_MEM_STRIDE;
                 mem_cells.last().map(|(c, _)| *c).unwrap()
             } else if name.starts_with("wasi_snapshot_preview1") {
                 // Each import gets its own stub slot (a `ret`) so we can tell
@@ -12495,6 +12511,14 @@ fn megabinary_unicorn_watch_sp() {
     if let Some(cell) = pages_cell {
         let pages = (mem0.len() / 0x10000) as u32;
         uc.mem_write(cell, &(pages as u64).to_le_bytes()).unwrap();
+    }
+    // __wasm_mem_pages_N cells: each extra memory's declared minimum.
+    for (idx, (cell, _cap)) in &pages_cells {
+        if *idx == 0 {
+            continue; // handled above
+        }
+        let pages = mem_pages.get(*idx as usize).copied().unwrap_or(1);
+        uc.mem_write(*cell, &(pages as u64).to_le_bytes()).unwrap();
     }
     // __wasm_global_N cells: their init values.
     for (cell, idx) in &global_cells {
@@ -12753,23 +12777,32 @@ fn megabinary_unicorn_watch_sp() {
     if !helper_stubs.is_empty() {
         let helper_map = std::sync::Arc::new(helper_stubs.clone());
         let mem_bases = std::sync::Arc::new(mem_bases.clone());
-        let mem0_capacity_pages = mem0_capacity / 0x10000;
+        // Grow capacity per pages-cell address (mem0 and each extra memory) —
+        // the helper receives `&pages` in X2, so multi-memory grows update
+        // the right memory.
+        let grow_caps = std::sync::Arc::new(
+            pages_cells
+                .iter()
+                .map(|(_idx, (cell, cap))| (*cell, *cap))
+                .collect::<std::collections::BTreeMap<u64, u64>>(),
+        );
         // One hook per helper stub (hooks are address-ranged).
         for (name, addr) in helper_map.iter() {
             let name = name.clone();
             let mem_bases = mem_bases.clone();
-            let pages_cell = pages_cell;
+            let grow_caps = grow_caps.clone();
             uc.add_code_hook(*addr, *addr + 1, move |uc, _a, _sz| {
                 let lr = uc.reg_read(RegisterARM64::LR).unwrap_or(0);
                 match name.as_str() {
                     "__wasm_memory_grow" => {
                         let delta = uc.reg_read(RegisterARM64::X0).unwrap_or(0) as u32;
-                        let cell = pages_cell.unwrap();
+                        let cell = uc.reg_read(RegisterARM64::X2).unwrap_or(0);
+                        let cap = grow_caps.get(&cell).copied().unwrap_or(0);
                         let mut buf = [0u8; 8];
                         uc.mem_read(cell, &mut buf).unwrap();
                         let old = u64::from_le_bytes(buf) as u32;
                         let new = old.wrapping_add(delta);
-                        if (new as u64) > mem0_capacity_pages {
+                        if (new as u64) > cap {
                             uc.reg_write(RegisterARM64::X0, 0xFFFF_FFFF).unwrap();
                         } else {
                             uc.mem_write(cell, &(new as u64).to_le_bytes()).unwrap();
