@@ -108,7 +108,12 @@ fn parse_elf_symbols(b: &[u8]) -> (u16, Vec<ParsedSym>) {
         let (name_off, value, size, shndx_off) = if is64 {
             (ru32(b, o), ru64(b, o + 8), ru64(b, o + 16), o + 6)
         } else {
-            (ru32(b, o), ru32(b, o + 4) as u64, ru32(b, o + 8) as u64, o + 14)
+            (
+                ru32(b, o),
+                ru32(b, o + 4) as u64,
+                ru32(b, o + 8) as u64,
+                o + 14,
+            )
         };
         assert_eq!(ru16(b, shndx_off), 0xfff1, "st_shndx must be SHN_ABS");
         out.push(ParsedSym {
@@ -298,8 +303,8 @@ fn collect_symbols_names_sizes_and_aliases() {
     info.imported_funcs = 1;
     info.names.insert(1, "add one".to_string()); // absolute index 1 = defined f0; needs sanitizing
     let entries = vec![
-        (0x30u64, WasmSymbol::Func(0)),          // named via name section
-        (0x50, WasmSymbol::Func(1)),             // fallback: wasm_func_2
+        (0x30u64, WasmSymbol::Func(0)),             // named via name section
+        (0x50, WasmSymbol::Func(1)),                // fallback: wasm_func_2
         (0x50, WasmSymbol::Data("__table".into())), // alias at same address
         (0x80, WasmSymbol::Func(2)),
     ];
@@ -392,10 +397,22 @@ fn dump_sample_files() {
         return;
     }
     let syms = sample_symbols();
-    std::fs::write("/tmp/symmap.macho", emit_macho(&syms, Arch::AArch64).unwrap()).unwrap();
-    std::fs::write("/tmp/symmap-x86_64.macho", emit_macho(&syms, Arch::X86_64).unwrap()).unwrap();
+    std::fs::write(
+        "/tmp/symmap.macho",
+        emit_macho(&syms, Arch::AArch64).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        "/tmp/symmap-x86_64.macho",
+        emit_macho(&syms, Arch::X86_64).unwrap(),
+    )
+    .unwrap();
     std::fs::write("/tmp/symmap.elf", emit_elf(&syms, Arch::AArch64).unwrap()).unwrap();
-    std::fs::write("/tmp/symmap-32.elf", emit_elf(&syms, Arch::Riscv32).unwrap()).unwrap();
+    std::fs::write(
+        "/tmp/symmap-32.elf",
+        emit_elf(&syms, Arch::Riscv32).unwrap(),
+    )
+    .unwrap();
     std::fs::write("/tmp/symmap.coff", emit_coff(&syms, Arch::X86_64).unwrap()).unwrap();
     std::fs::write("/tmp/symmap.map", emit_perf_map(&syms)).unwrap();
     eprintln!("wrote /tmp/symmap.{{macho,x86_64.macho,elf,32.elf,coff,map}}");
@@ -410,7 +427,9 @@ fn dump_sample_files() {
 fn named_module_wasm() -> Vec<u8> {
     let mut module = Module::new();
     let mut types = TypeSection::new();
-    types.ty().function([ValType::I64, ValType::I64], [ValType::I64]);
+    types
+        .ty()
+        .function([ValType::I64, ValType::I64], [ValType::I64]);
     module.section(&types);
     let mut funcs = FunctionSection::new();
     funcs.function(0);
@@ -658,7 +677,7 @@ fn end_to_end_aarch64() {
 #[test]
 fn end_to_end_riscv64() {
     use portal_solutions_asm_riscv64::out::rv_asm_backend::RvAsmWriter;
-    use portal_solutions_blitz_riscv64::{RiscvLabel, RiscV64Arch, sysv};
+    use portal_solutions_blitz_riscv64::{RiscV64Arch, RiscvLabel, sysv};
 
     let wasm: &'static [u8] = Box::leak(named_module_wasm().into_boxed_slice());
     let info = wasm_symbol_info(wasm).unwrap();

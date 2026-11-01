@@ -59,10 +59,10 @@ impl Arch {
     /// ELF `e_machine` value.
     fn elf_machine(self) -> u16 {
         match self {
-            Arch::X86_64 => 62,   // EM_X86_64
-            Arch::I686 => 3,      // EM_386
-            Arch::AArch64 => 183, // EM_AARCH64
-            Arch::Arm => 40,      // EM_ARM
+            Arch::X86_64 => 62,                   // EM_X86_64
+            Arch::I686 => 3,                      // EM_386
+            Arch::AArch64 => 183,                 // EM_AARCH64
+            Arch::Arm => 40,                      // EM_ARM
             Arch::Riscv64 | Arch::Riscv32 => 243, // EM_RISCV
         }
     }
@@ -156,7 +156,10 @@ impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Error::UnsupportedCombination => {
-                write!(f, "no symbol file encoding for this architecture/format combination")
+                write!(
+                    f,
+                    "no symbol file encoding for this architecture/format combination"
+                )
             }
             Error::Parse(e) => write!(f, "invalid WASM module: {e}"),
             Error::TooManySymbols => write!(f, "too many symbols"),
@@ -464,7 +467,17 @@ pub fn emit_elf(symbols: &[Symbol], arch: Arch) -> Result<Vec<u8>, Error> {
         symentsize,
     );
     // [2] .strtab, [3] .shstrtab (both SHT_STRTAB = 3).
-    shdr(&mut b, sh_name_strtab, 3, strtab_off, strtab.len(), 0, 0, 1, 0);
+    shdr(
+        &mut b,
+        sh_name_strtab,
+        3,
+        strtab_off,
+        strtab.len(),
+        0,
+        0,
+        1,
+        0,
+    );
     shdr(
         &mut b,
         sh_name_shstrtab,
