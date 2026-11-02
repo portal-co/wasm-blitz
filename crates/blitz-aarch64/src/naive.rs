@@ -2484,6 +2484,54 @@ pub trait WriterExt<Context>: Writer<AArch64Label, Context> {
                 self.wasm_push(ctx, arch, T0)
             }
 
+            // rotl(a, n) = (a << n) | (a >> (64 - n)); aarch64 LSL/LSR
+            // register counts are taken mod 64, so the n=0 corner (64-0=64)
+            // behaves as shift-by-0 and the result is a|a = a. Same shape
+            // for the 32-bit forms via the W registers (mod 32) plus a final
+            // uxt to keep the slot's upper half zero.
+            Instruction::I64Rotl => {
+                self.wasm_pop(ctx, arch, T1)?; // n
+                self.wasm_pop(ctx, arch, T0)?; // a
+                self.mov_imm(ctx, arch, &reg(T2), 64)?;
+                self.sub(ctx, arch, &reg(T2), &reg(T2), &reg(T1))?; // 64-n
+                self.lsr(ctx, arch, &reg(T2), &reg(T0), &reg(T2))?; // a >> (64-n)
+                self.lsl(ctx, arch, &reg(T1), &reg(T0), &reg(T1))?; // a << n
+                self.orr(ctx, arch, &reg(T0), &reg(T1), &reg(T2))?;
+                self.wasm_push(ctx, arch, T0)
+            }
+            Instruction::I64Rotr => {
+                self.wasm_pop(ctx, arch, T1)?; // n
+                self.wasm_pop(ctx, arch, T0)?; // a
+                self.mov_imm(ctx, arch, &reg(T2), 64)?;
+                self.sub(ctx, arch, &reg(T2), &reg(T2), &reg(T1))?; // 64-n
+                self.lsl(ctx, arch, &reg(T2), &reg(T0), &reg(T2))?; // a << (64-n)
+                self.lsr(ctx, arch, &reg(T1), &reg(T0), &reg(T1))?; // a >> n
+                self.orr(ctx, arch, &reg(T0), &reg(T1), &reg(T2))?;
+                self.wasm_push(ctx, arch, T0)
+            }
+            Instruction::I32Rotl => {
+                self.wasm_pop(ctx, arch, T1)?;
+                self.wasm_pop(ctx, arch, T0)?;
+                self.mov_imm(ctx, arch, &reg(T2), 32)?;
+                self.sub(ctx, arch, &reg32(T2), &reg32(T2), &reg32(T1))?;
+                self.lsr(ctx, arch, &reg32(T2), &reg32(T0), &reg32(T2))?;
+                self.lsl(ctx, arch, &reg32(T1), &reg32(T0), &reg32(T1))?;
+                self.orr(ctx, arch, &reg32(T0), &reg32(T1), &reg32(T2))?;
+                self.uxt(ctx, arch, &reg(T0), &reg32(T0))?;
+                self.wasm_push(ctx, arch, T0)
+            }
+            Instruction::I32Rotr => {
+                self.wasm_pop(ctx, arch, T1)?;
+                self.wasm_pop(ctx, arch, T0)?;
+                self.mov_imm(ctx, arch, &reg(T2), 32)?;
+                self.sub(ctx, arch, &reg32(T2), &reg32(T2), &reg32(T1))?;
+                self.lsl(ctx, arch, &reg32(T2), &reg32(T0), &reg32(T2))?;
+                self.lsr(ctx, arch, &reg32(T1), &reg32(T0), &reg32(T1))?;
+                self.orr(ctx, arch, &reg32(T0), &reg32(T1), &reg32(T2))?;
+                self.uxt(ctx, arch, &reg(T0), &reg32(T0))?;
+                self.wasm_push(ctx, arch, T0)
+            }
+
             other => {
                 panic!("unimplemented WASM instruction in AArch64 naive handle_insn: {other:?}")
             }

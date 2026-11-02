@@ -160,7 +160,7 @@ where
 /// `blitz-x86-64::sysv` does) immediately after that sibling pushes a raw,
 /// untracked value. Reserving `t`'s register in between makes the second
 /// `pop()` skip it and materialize a genuinely different one.
-fn guard_reg<W, K, const N: usize>(w: &mut W, t: &portal_solutions_asm_regalloc::Target<K>) -> portal_solutions_asm_regalloc::RegAllocFrame<K>
+pub fn guard_reg<W, K, const N: usize>(w: &mut W, t: &portal_solutions_asm_regalloc::Target<K>) -> portal_solutions_asm_regalloc::RegAllocFrame<K>
 where
     W: RegAllocWriter<K, N>,
     K: Clone + Eq + TryFrom<usize>,
@@ -173,7 +173,7 @@ where
 
 /// Undo [`guard_reg`], restoring whatever was there before (always `Empty`
 /// in practice, since `pop()` only ever hands back a register it just freed).
-fn unguard_reg<W, K, const N: usize>(
+pub fn unguard_reg<W, K, const N: usize>(
     w: &mut W,
     t: &portal_solutions_asm_regalloc::Target<K>,
     prev: portal_solutions_asm_regalloc::RegAllocFrame<K>,

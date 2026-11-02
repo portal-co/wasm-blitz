@@ -1994,6 +1994,19 @@ pub trait WriterExt<Context>: Writer<RiscvLabel, Context> {
                 self.jalr(ctx, arch, &Reg(1), &Reg(5), 0)?;
                 self.set_label(ctx, arch, RiscvLabel::Indexed { idx: exit_idx })?;
             }
+            Instruction::I64Rotl | Instruction::I64Rotr => {
+                // rotl(a,n) = (a << n) | (a >> (64-n)); rotr mirrors. RV64
+                // shift counts are taken mod 64, so the n=0 corner (64-0=64)
+                // behaves as shift-by-0 and the result is a|a = a.
+                let rotl = matches!(op, Instruction::I64Rotl);
+                rot_riscv64(self, ctx, arch, state, rotl, 64)?;
+            }
+            Instruction::I32Rotl | Instruction::I32Rotr => {
+                // Duplicate the value into both 32-bit halves, rotate in
+                // 64-bit, mask back: rotl32(a,n) = low32(rotl64(a|a<<32, n&31)).
+                let rotl = matches!(op, Instruction::I32Rotl);
+                rot_riscv64(self, ctx, arch, state, rotl, 32)?;
+            }
             other => panic!("unimplemented WASM instruction in RISC-V naive handle_op: {other:?}"),
         }
         Ok(())
@@ -3003,4 +3016,112 @@ mod memidx_tests {
         });
         assert!(e0.iter().any(|n| n == "__wasm_memory_copy"), "{e0:?}");
     }
+}
+
+/// Rotate lowering for the RISC-V backend: guards the t0/t1 scratch
+/// registers plus the first popped operand so the allocator cannot alias
+/// them (it frees a register the instant `pop` hands it out), then emits the
+/// (a << n) | (a >> (width-n)) pair and pushes the result on the lhs slot.
+fn rot_riscv64<Context, W: Writer<RiscvLabel, Context>>(
+    w: &mut W,
+    ctx: &mut Context,
+    arch: RiscV64Arch,
+    state: &mut State<'_>,
+    rotl: bool,
+    width: u64,
+) -> Result<(), W::Error> {
+    if state.regalloc.is_none() {
+        let r = riscv_regalloc::init_regalloc::<32>(arch);
+        state.regalloc = Some(regalloc::RegAlloc {
+            frames: Frames(r.frames),
+            tos: r.tos,
+        });
+    }
+    // Flush first: chained operand values may already live in t0/t1 (the
+    // scratch regs this lowering uses); flush materializes the operand stack
+    // so pops below re-materialize into non-scratch registers.
+    if let Some(ralloc) = state.regalloc.as_mut() {
+        let it = ralloc.flush();
+        emit_cmds(w, ctx, arch, it)?;
+        ralloc.tos = None;
+    }
+    // Reserve t0/t1 for the whole sequence.
+    let mut saved = Vec::new();
+    {
+        let frames = &mut state.regalloc.as_mut().unwrap().frames[riscv_regalloc::RegKind::Int];
+        for r in [5usize, 6] {
+            saved.push(core::mem::replace(
+                &mut frames[r],
+                portal_solutions_asm_regalloc::RegAllocFrame::Reserved,
+            ));
+        }
+    }
+    let result = (|| -> Result<(), W::Error> {
+        let (tn, cmds_n) = state
+            .regalloc
+            .as_mut()
+            .unwrap()
+            .pop(riscv_regalloc::RegKind::Int);
+        emit_cmds(w, ctx, arch, cmds_n)?;
+        // Reserve n's register so the second pop picks a different one.
+        let prev_n = core::mem::replace(
+            &mut state.regalloc.as_mut().unwrap().frames[riscv_regalloc::RegKind::Int]
+                [tn.reg as usize],
+            portal_solutions_asm_regalloc::RegAllocFrame::Reserved,
+        );
+        let (ta, cmds_a) = state
+            .regalloc
+            .as_mut()
+            .unwrap()
+            .pop(riscv_regalloc::RegKind::Int);
+        emit_cmds(w, ctx, arch, cmds_a)?;
+        state.regalloc.as_mut().unwrap().frames[riscv_regalloc::RegKind::Int][tn.reg as usize] =
+            prev_n;
+        let rn = Reg(tn.reg);
+        let ra = Reg(ta.reg);
+        let t0 = Reg(5);
+        let t1 = Reg(6);
+        if width == 32 {
+            // Duplicate halves: a | (a << 32).
+            w.li(ctx, arch, &t0, 32)?;
+            w.sll(ctx, arch, &t1, &ra, &t0)?;
+            w.or(ctx, arch, &ra, &ra, &t1)?;
+            // n &= 31
+            w.li(ctx, arch, &t0, 31)?;
+            w.and(ctx, arch, &rn, &rn, &t0)?;
+        }
+        w.li(ctx, arch, &t0, width)?;
+        w.sub(ctx, arch, &t0, &t0, &rn)?; // width - n
+        if rotl {
+            w.srl(ctx, arch, &t0, &ra, &t0)?; // a >> (width-n)
+            w.sll(ctx, arch, &t1, &ra, &rn)?; // a << n
+        } else {
+            w.sll(ctx, arch, &t0, &ra, &t0)?;
+            w.srl(ctx, arch, &t1, &ra, &rn)?;
+        }
+        w.or(ctx, arch, &ra, &t1, &t0)?;
+        if width == 32 {
+            // Mask back to 32 bits (canonical sll/srl-by-32 zext).
+            w.li(ctx, arch, &t0, 32)?;
+            w.sll(ctx, arch, &ra, &ra, &t0)?;
+            w.srl(ctx, arch, &ra, &ra, &t0)?;
+        }
+        let it = state
+            .regalloc
+            .as_mut()
+            .unwrap()
+            .push_existing(regalloc::Target {
+                reg: ta.reg,
+                kind: ta.kind,
+            });
+        emit_cmds(w, ctx, arch, it)?;
+        Ok(())
+    })();
+    {
+        let frames = &mut state.regalloc.as_mut().unwrap().frames[riscv_regalloc::RegKind::Int];
+        for (r, prev) in [5usize, 6].into_iter().zip(saved.drain(..)) {
+            frames[r] = prev;
+        }
+    }
+    result
 }

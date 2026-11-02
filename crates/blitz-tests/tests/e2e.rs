@@ -5835,6 +5835,86 @@ fn assert_native_bin_exec_shl(arch: NativeArch, abi: NativeAbi) {
 }
 native_bin_variants!(exec_shl, assert_native_bin_exec_shl);
 
+fn assert_native_bin_exec_rotl(arch: NativeArch, abi: NativeAbi) {
+    let wasm = make_module(
+        &[ValType::I64, ValType::I64],
+        &[ValType::I64],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I64Rotl,
+        ],
+    );
+    let code = compile_native_binary(&wasm, arch, abi);
+    assert!(!code.is_empty());
+    match abi {
+        NativeAbi::Naive => run_native_naive_smoke(arch, &code),
+        // rotl(0x0123456789ABCDEF, 12) = 0x23456789ABCDEF01
+        NativeAbi::Sysv => assert_eq!(
+            run_native_sysv_with_args(arch, &code, &[0x0123456789ABCDEF, 12]),
+            0x3456789ABCDEF012u64
+        ),
+        NativeAbi::Lfi => {}
+    }
+}
+// x86-64 backends lack rotate lowering (asm-x86-64 WriterCore has no
+// rol/ror yet); cover the implemented arches only.
+#[test]
+fn test_native_aarch64_naive_bin_exec_rotl() {
+    assert_native_bin_exec_rotl(NativeArch::AArch64, NativeAbi::Naive);
+}
+#[test]
+fn test_native_aarch64_sysv_bin_exec_rotl() {
+    assert_native_bin_exec_rotl(NativeArch::AArch64, NativeAbi::Sysv);
+}
+#[test]
+fn test_native_riscv64_naive_bin_exec_rotl() {
+    assert_native_bin_exec_rotl(NativeArch::Riscv64, NativeAbi::Naive);
+}
+#[test]
+fn test_native_riscv64_sysv_bin_exec_rotl() {
+    assert_native_bin_exec_rotl(NativeArch::Riscv64, NativeAbi::Sysv);
+}
+
+fn assert_native_bin_exec_rotr32(arch: NativeArch, abi: NativeAbi) {
+    let wasm = make_module(
+        &[ValType::I32, ValType::I32],
+        &[ValType::I32],
+        &[
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Rotr,
+        ],
+    );
+    let code = compile_native_binary(&wasm, arch, abi);
+    assert!(!code.is_empty());
+    match abi {
+        NativeAbi::Naive => run_native_naive_smoke(arch, &code),
+        // rotr32(0x12345678, 8) = 0x78123456
+        NativeAbi::Sysv => assert_eq!(
+            run_native_sysv_with_args(arch, &code, &[0x12345678, 8]),
+            0x78123456
+        ),
+        NativeAbi::Lfi => {}
+    }
+}
+#[test]
+fn test_native_aarch64_naive_bin_exec_rotr32() {
+    assert_native_bin_exec_rotr32(NativeArch::AArch64, NativeAbi::Naive);
+}
+#[test]
+fn test_native_aarch64_sysv_bin_exec_rotr32() {
+    assert_native_bin_exec_rotr32(NativeArch::AArch64, NativeAbi::Sysv);
+}
+#[test]
+fn test_native_riscv64_naive_bin_exec_rotr32() {
+    assert_native_bin_exec_rotr32(NativeArch::Riscv64, NativeAbi::Naive);
+}
+#[test]
+fn test_native_riscv64_sysv_bin_exec_rotr32() {
+    assert_native_bin_exec_rotr32(NativeArch::Riscv64, NativeAbi::Sysv);
+}
+
 fn assert_native_exec_brtable(arch: NativeArch, abi: NativeAbi) {
     use wasm_encoder::BlockType;
     let wasm = make_module(
